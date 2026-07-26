@@ -108,7 +108,7 @@ jq -r '.nodes[] | select(.title | test("Test")) | "\(.title)\t\(.symbol.sources[
 Проверить на реальном коде, что конвенция соблюдается:
 
 ```bash
-uv run python tools/unclassified.py $CF
+uv run docpipe scan --root $CF --stats
 ```
 
 Раздел «Окончания имён» покажет, какие суффиксы в АС CF реально используются. Если
@@ -197,7 +197,7 @@ grep -rho 'using [A-Za-z.]*Ignite[A-Za-z.]*;' --include=*.cs $CF | sort | uniq -
 
 ### 3.4 Порядок работы
 
-1. `uv run python tools/unclassified.py $CF` — посмотреть пять срезов;
+1. `uv run docpipe scan --root $CF --stats` — посмотреть пять срезов;
 2. взять самое частое, написать одно правило, прогнать `scan`;
 3. повторять, пока `unclassified` перестанет заметно падать;
 4. проверить `matched_rules` у спорных типов — там видно, какие правила совпали
@@ -365,7 +365,7 @@ jq '[.nodes[].symbol.members | length] | add / length' artifacts/doc-tree.json
 - [ ] проверено наличие маркерных интерфейсов DI, при необходимости добавлено правило (§3.3)
 - [ ] `enrolled` в `docpipe.yaml` перечисляет продуктовые проекты
 - [ ] `domains` задают осмысленную группировку модулей
-- [ ] `unclassified` доведён до приемлемого уровня итерациями по `tools/unclassified.py`
+- [ ] `unclassified` доведён до приемлемого уровня итерациями по `scan --stats`
 - [ ] `parse_error_files` просмотрен, среди потерянных типов нет важных (§4.3)
 - [ ] дублей `doc_path` нет (§5)
 - [ ] `.docpipe/` добавлен в `.gitignore` репозитория АС CF

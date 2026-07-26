@@ -49,7 +49,10 @@ def test_run_meta_is_valid(sample_solution: Path, tmp_path: Path) -> None:
     assert meta.stats["nodes"] == 6
     assert meta.stats["symbols"] == 10
     assert meta.stats["excluded"] == 1
-    assert meta.stats["unclassified"] == 3
+    # Два интерфейса ушли в `interface_covered`: у обоих есть документируемая
+    # реализация, и в `unclassified` им не место — см. T20.
+    assert meta.stats["interface_covered"] == 2
+    assert meta.stats["unclassified"] == 1
     assert meta.parse_error_files == []
 
 

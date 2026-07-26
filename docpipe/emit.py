@@ -12,13 +12,14 @@
 import socket
 import time
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.metadata import version as package_version
 from pathlib import Path
 
 from docpipe import __version__
 from docpipe.cache import ParseCache
-from docpipe.classify import Ruleset, classify, is_excluded, load_ruleset
+from docpipe.classify import Ruleset, load_ruleset
 from docpipe.config import DocpipeConfig
 from docpipe.discovery import discover, in_scope, normalize_scope
 from docpipe.dotnet.csproj import parse_csproj, resolve_references
@@ -34,8 +35,8 @@ from docpipe.model import (
     Module,
     ParserVersions,
     RunMeta,
-    Symbol,
 )
+from docpipe.stats import Stats, collect_stats
 from docpipe.tree import build_nodes
 
 DEFAULT_EXCLUDE = ["**/obj/**", "**/bin/**", "**/*.g.cs"]
@@ -178,6 +179,15 @@ def _outside_scope_results(
     return restored, missing
 
 
+@dataclass(frozen=True)
+class ScanResult:
+    """Всё, что даёт прогон. `stats` не входит в сидкар: срезы там не нужны."""
+
+    manifest: Manifest
+    meta: RunMeta
+    stats: Stats
+
+
 def scan(
     root: Path,
     config: DocpipeConfig | None = None,
@@ -187,7 +197,21 @@ def scan(
     scope: list[str] | None = None,
     previous: Manifest | None = None,
 ) -> tuple[Manifest, RunMeta]:
-    """Прогон: исходники -> манифест и метаданные прогона.
+    """Прогон: манифест и метаданные. Обёртка над `run` для частого случая."""
+    result = run(root, config, ruleset, cache_dir, jobs, scope, previous)
+    return result.manifest, result.meta
+
+
+def run(
+    root: Path,
+    config: DocpipeConfig | None = None,
+    ruleset: Ruleset | None = None,
+    cache_dir: Path | None = None,
+    jobs: int = 1,
+    scope: list[str] | None = None,
+    previous: Manifest | None = None,
+) -> ScanResult:
+    """Прогон: исходники -> манифест, метаданные прогона и статистика.
 
     С `scope` обход и разбор ограничены указанными каталогами, символы вне
     скоупа берутся из кэша, а узлы вне скоупа переносятся из `previous`.
@@ -260,12 +284,13 @@ def scan(
         result.path for result in results if result.parse_errors and not result.declarations
     )
 
+    statistics = collect_stats(index, manifest.nodes, ruleset)
     meta = RunMeta(
         generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
         host=socket.gethostname(),
         duration_seconds=round(time.perf_counter() - started, 3),
         docpipe_version=__version__,
-        stats=_stats(all_results, index, manifest.nodes, configured, ruleset)
+        stats=_counters(all_results, statistics, manifest.nodes, configured)
         | (
             {"restored_from_cache": len(outside), "missing_from_cache": len(missing)}
             if scope
@@ -273,31 +298,23 @@ def scan(
         ),
         parse_error_files=broken,
     )
-    return manifest, meta
+    return ScanResult(manifest=manifest, meta=meta, stats=statistics)
 
 
-def _stats(
+def _counters(
     results: list[FileParseResult],
-    index: dict[str, Symbol],
+    statistics: Stats,
     nodes: list[DocNode],
     modules: list[Module],
-    ruleset: Ruleset,
 ) -> dict[str, int]:
-    excluded = sum(1 for symbol in index.values() if is_excluded(symbol, ruleset))
-    classified = sum(
-        1
-        for symbol in index.values()
-        if not is_excluded(symbol, ruleset) and classify(symbol, ruleset)
-    )
+    """Плоские счётчики для сидкара. Срезы туда не идут: они для человека, не для файла."""
     return {
         "files": len(results),
         "parse_errors": sum(result.parse_errors for result in results),
         "declarations": sum(len(result.declarations) for result in results),
-        "symbols": len(index),
-        "excluded": excluded,
-        "classified": classified,
-        "unclassified": len(index) - excluded - classified,
+        "symbols": statistics.total,
         "modules": len(modules),
         "modules_enrolled": sum(1 for module in modules if module.enrolled),
         "nodes": len(nodes),
+        **statistics.counts,
     }

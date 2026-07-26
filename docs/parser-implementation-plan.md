@@ -2364,7 +2364,13 @@ uv run pytest tests/test_diff.py -q
 
 **Цель:** инструменты настройки правил на большом проекте.
 
-**Изменить:** `docpipe/cli.py`, `docpipe/tree.py`; создать `tests/test_stats.py`
+**Изменить:** `docpipe/cli.py`, `docpipe/emit.py`; создать `docpipe/stats.py`,
+`tests/test_stats.py`
+
+Счётчики и проверки живут в отдельном модуле, а не в `tree.py`: там сборка узлов,
+и сто строк статистики её бы заслонили. `emit.run` возвращает `ScanResult`
+с манифестом, метаданными и статистикой; `emit.scan` остаётся обёрткой,
+отдающей первые два, — чтобы не переписывать все вызовы ради одного поля.
 
 **Спецификация**
 
@@ -2372,25 +2378,33 @@ uv run pytest tests/test_diff.py -q
 На фикстуре вывод должен быть в точности такой (числа реальные, тест их проверяет):
 
 ```
-kind              count
-----------------  -----
-controller            2
-ignite_service        1
-provider              1
-service               1
-workflow              1
-unclassified          3
-excluded              1
-----------------  -----
-total symbols        10
+kind                count
+------------------  -----
+controller              2
+ignite_service          1
+provider                1
+service                 1
+workflow                1
+interface_covered       2
+unclassified            1
+excluded                1
+------------------  -----
+total symbols          10
 ```
+
+Ширина первой колонки — не 16, а по самой длинной метке: `interface_covered` длиннее,
+и при фиксированной ширине метка съезжает в колонку чисел.
 
 Разбор этих чисел (пригодится при отладке): 6 классифицированных —
 `BaseApiController` и `PricingController` → `controller`, `RiskComputeService` →
 `ignite_service`, `CurveProvider` → `provider`, `PricingService` → `service`,
-`ValuationWorkflow` → `workflow`. 3 неклассифицированных — `IPricingProvider` и
-`IPricingService` (интерфейсы не проходят `type_kind: [class, record]`) и `Program`
-(не подходит ни под одно правило). 1 исключённый — `PriceDto` (по `name_regex`).
+`ValuationWorkflow` → `workflow`. 2 в `interface_covered` — `IPricingProvider`
+и `IPricingService`: правила их не берут (`type_kind: [class, record]`), но у обоих
+есть документируемая реализация. 1 неклассифицированный — `Program`. 1 исключённый —
+`PriceDto` (по `name_regex`).
+
+> Сумма всех счётчиков обязана равняться `total`: каждый символ учтён ровно один раз,
+> иначе цифрам нельзя верить. На это есть отдельный тест.
 
 `GeneratedService` в счётчики **не попадает вообще**: он отсекается на этапе discovery
 и символом не становится. Это ожидаемо — `excluded` считает только то, что отбросила
@@ -2422,8 +2436,8 @@ total symbols        10
 - атрибуты;
 - namespace.
 
-Пока команды нет, ту же выборку даёт `tools/unclassified.py`; при реализации T20
-скрипт нужно удалить, а не оставлять рядом.
+Реализовано в `docpipe/stats.py`; временный скрипт `tools/unclassified.py`, служивший
+до этого, удалён.
 
 `--dry-run` — выполняет полный прогон, но вместо записи печатает diff против существующего
 `--out` (если файла нет — печатает `added` для всех узлов).
@@ -2458,7 +2472,8 @@ total symbols        10
 **Критерии приёмки**
 - `--stats` на фикстуре печатает таблицу с числами из спецификации выше
   (`controller 2`, `ignite_service 1`, `provider 1`, `service 1`, `workflow 1`,
-  `unclassified 3`, `excluded 1`, `total symbols 10`) и **не создаёт** выходной файл;
+  `interface_covered 2`, `unclassified 1`, `excluded 1`, `total symbols 10`)
+  и **не создаёт** ни манифест, ни сидкар;
 - `--dry-run` на неизменённой фикстуре против существующего манифеста печатает «изменений нет»;
 - `validate` на валидном манифесте → код 0; на файле `{}` → код 1;
 - `validate` на манифесте с двумя узлами, у которых совпадает `doc_path`, → код 1;

@@ -9,10 +9,16 @@ from docpipe import __version__
 from docpipe.classify import load_ruleset
 from docpipe.config import load_config
 from docpipe.diff import diff_manifests, format_changes
+from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
-from docpipe.emit import scan as run_scan
 from docpipe.hashing import stable_json_dumps
-from docpipe.model import Manifest
+from docpipe.model import Manifest, RunMeta
+from docpipe.stats import (
+    format_breakdown,
+    format_stats,
+    stats_from_manifest,
+    validate_manifest,
+)
 
 app = typer.Typer(
     name="docpipe",
@@ -77,6 +83,14 @@ def scan(
         Path | None,
         typer.Option("--from-manifest", help="Манифест, из которого брать узлы вне скоупа."),
     ] = None,
+    show_stats: Annotated[
+        bool,
+        typer.Option("--stats", help="Показать счётчики и подсказки по правилам, не писать файлы."),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Показать дифф против существующего --out, не писать."),
+    ] = False,
 ) -> None:
     """Построить дерево документации по исходникам .NET.
 
@@ -109,7 +123,25 @@ def scan(
 
     cache_dir = None if no_cache else root / settings.cache_dir
 
-    manifest, meta = run_scan(root, settings, ruleset, cache_dir, jobs, scope or None, previous)
+    result = run_scan(root, settings, ruleset, cache_dir, jobs, scope or None, previous)
+    manifest, meta = result.manifest, result.meta
+
+    # `--stats` и `--dry-run` ничего не пишут: их зовут в цикле настройки правил,
+    # где перезаписывать манифест на каждой итерации незачем.
+    if show_stats:
+        typer.echo(format_stats(result.stats))
+        typer.echo(format_breakdown(result.stats))
+        return
+
+    if dry_run:
+        existing = (
+            Manifest.model_validate_json(out.read_text(encoding="utf-8"))
+            if out.is_file()
+            else Manifest(ruleset_version=manifest.ruleset_version, parser=manifest.parser)
+        )
+        typer.echo(format_changes(diff_manifests(existing, manifest)))
+        return
+
     write_manifest(manifest, out)
     write_run_meta(meta, out)
 
@@ -163,6 +195,60 @@ def diff(
         typer.echo(stable_json_dumps([change.model_dump(mode="json") for change in changes]))
     else:
         typer.echo(format_changes(changes))
+
+
+@app.command()
+def validate(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест для проверки.")],
+) -> None:
+    """Проверить манифест: схему и инварианты, которые она не покрывает.
+
+    Каждый инвариант однажды нарушался на реальном коде и приводил к молчаливой
+    потере документов, поэтому проверка отдельная, а не «оно же по схеме валидно».
+    """
+    try:
+        manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Манифест не прошёл проверку схемой: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    # Список файлов со сломанным разбором живёт в сидкаре: в манифесте ему
+    # не место, он про прогон, а не про результат.
+    sidecar = run_meta_path(manifest_path)
+    parse_error_files: list[str] = []
+    if sidecar.is_file():
+        parse_error_files = RunMeta.model_validate_json(
+            sidecar.read_text(encoding="utf-8")
+        ).parse_error_files
+
+    errors, warnings = validate_manifest(manifest, parse_error_files)
+
+    for warning in warnings:
+        typer.echo(f"Предупреждение: {warning}", err=True)
+    for error in errors:
+        typer.echo(f"Ошибка: {error}", err=True)
+
+    if errors:
+        raise typer.Exit(code=1)
+    typer.echo(f"Манифест корректен: {len(manifest.modules)} модулей, {len(manifest.nodes)} узлов.")
+
+
+@app.command()
+def stats(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест.")],
+) -> None:
+    """Показать состав готового манифеста.
+
+    `unclassified` здесь быть не может: в манифест попадают только узлы.
+    Чтобы увидеть непокрытое, нужен `scan --stats` — он держит индекс символов.
+    """
+    try:
+        manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Не удалось прочитать манифест: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    typer.echo(format_stats(stats_from_manifest(manifest), total_label="total nodes"))
 
 
 if __name__ == "__main__":
