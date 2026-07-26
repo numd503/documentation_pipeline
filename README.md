@@ -410,6 +410,7 @@ grep -rc "^#if" --include=*.cs . | awk -F: '$2>0' | wc -l
 ```
 
 Подробности и цифры — в [`docs/findings-stress.md`](docs/findings-stress.md).
+Чек-лист под АС CF со всеми решениями, которые предстоит принять, — в [`CASHFLOW.md`](CASHFLOW.md).
 
 ## Как это работает
 
@@ -462,6 +463,7 @@ tests/fixtures/
 | Документ | О чём |
 |---|---|
 | [`purpose.md`](purpose.md) | постановка задачи |
+| [`CASHFLOW.md`](CASHFLOW.md) | **что проверить и решить при настройке на репозитории АС CF** |
 | [`docs/parser-architecture.md`](docs/parser-architecture.md) | архитектура шага 1: решения и их обоснование |
 | [`docs/parser-implementation-plan.md`](docs/parser-implementation-plan.md) | исполнительный план на 24 задачи с критериями приёмки |
 | [`docs/implementation-log.md`](docs/implementation-log.md) | журнал: что сделано, что проверено, где план разошёлся с реальностью |
