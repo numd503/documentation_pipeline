@@ -60,7 +60,7 @@
 **Шаг 1 закончен.** Дальше — шаг 2 (материализация `.md`-скелетов по манифесту)
 и шаг 3 (наполнение агентом). Их в этом плане нет намеренно.
 
-458 тестов, 3714 строк кода.
+460 тестов, 3733 строки кода.
 
 ## Как этим пользоваться
 
@@ -218,7 +218,7 @@ uv run docpipe scan --root . --out artifacts/doc-tree.json \
 ### Проверка
 
 ```bash
-uv run pytest -q                                    # 458 тестов
+uv run pytest -q                                    # 460 тестов
 uv run docpipe schema --out schema/doc-tree.schema.json   # JSON Schema из моделей
 ```
 

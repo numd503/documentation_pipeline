@@ -50,6 +50,7 @@ _SUFFIXES = (
 INTERFACE_COVERED = "interface_covered"
 UNCLASSIFIED = "unclassified"
 EXCLUDED = "excluded"
+NOT_ENROLLED = "not_enrolled"
 
 
 @dataclass(frozen=True)
@@ -61,13 +62,23 @@ class Stats:
     breakdown: dict[str, list[tuple[str, int]]] = field(default_factory=dict)
 
 
-def collect_stats(index: dict[str, Symbol], nodes: list[DocNode], ruleset: Ruleset) -> Stats:
+def collect_stats(
+    index: dict[str, Symbol],
+    nodes: list[DocNode],
+    ruleset: Ruleset,
+    enrolled: set[str] | None = None,
+) -> Stats:
     """Посчитать символы по видам и собрать срезы по непокрытым.
 
     `interface_covered` выделен из `unclassified` намеренно: интерфейс, у которого
     есть задокументированная реализация, — это осознанное решение документировать
     реализацию, а не пробел в правилах. В eShopOnWeb таких 9 из 199, и без
     отдельной категории они засоряли бы главный сигнал настройки.
+
+    `not_enrolled` — символы модулей, которые вообще не входят в документацию.
+    Считать их неклассифицированными нельзя: правила к ним и не применялись,
+    а в `unclassified` они дают ложный сигнал «допишите правил». На semantic-kernel
+    это 1258 символов из 1258 — то есть весь счётчик был бы мусором.
     """
     documented_bases = {
         fqn for node in nodes if node.symbol for fqn in node.symbol.base_type_closure
@@ -77,6 +88,9 @@ def collect_stats(index: dict[str, Symbol], nodes: list[DocNode], ruleset: Rules
     rest: list[Symbol] = []
 
     for symbol in index.values():
+        if enrolled is not None and symbol.module not in enrolled:
+            counts[NOT_ENROLLED] += 1
+            continue
         if is_excluded(symbol, ruleset):
             counts[EXCLUDED] += 1
             continue
@@ -141,7 +155,7 @@ def _top(values: Iterable[str]) -> list[tuple[str, int]]:
 
 def format_stats(stats: Stats, total_label: str = "total symbols") -> str:
     """Таблица счётчиков. Виды идут по алфавиту, служебные категории — после них."""
-    special = [INTERFACE_COVERED, UNCLASSIFIED, EXCLUDED]
+    special = [INTERFACE_COVERED, UNCLASSIFIED, EXCLUDED, NOT_ENROLLED]
     kinds = sorted(kind for kind in stats.counts if kind not in special)
     order = kinds + [kind for kind in special if kind in stats.counts]
 

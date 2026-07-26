@@ -284,7 +284,12 @@ def run(
         result.path for result in results if result.parse_errors and not result.declarations
     )
 
-    statistics = collect_stats(index, manifest.nodes, ruleset)
+    statistics = collect_stats(
+        index,
+        manifest.nodes,
+        ruleset,
+        {module.csproj for module in configured if module.enrolled},
+    )
     meta = RunMeta(
         generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
         host=socket.gethostname(),

@@ -315,3 +315,28 @@ def test_stats_command_on_manifest(sample_solution: Path, tmp_path: Path) -> Non
 def test_stats_command_on_missing_file(tmp_path: Path) -> None:
     result = runner.invoke(app, ["stats", str(tmp_path / "no.json")])
     assert result.exit_code == 2
+
+
+def test_not_enrolled_symbols_are_counted_separately(sample_solution: Path, tmp_path: Path) -> None:
+    """Символы неenrolled модулей — не «неклассифицированные».
+
+    Правила к ним и не применялись, а в `unclassified` они дают ложный сигнал
+    «допишите правил». На semantic-kernel это 1597 символов из 1258 «непокрытых» —
+    то есть счётчик состоял из них целиком и настраивать по нему было нельзя.
+    """
+    from docpipe.config import DocpipeConfig
+
+    config = DocpipeConfig(enrolled=["src/Sample.Pricing.Api/**"])
+    stats = run(sample_solution, config).stats
+
+    assert stats.counts["not_enrolled"] == 2  # два типа Sample.Common
+    assert "BaseApiController" not in str(stats.breakdown)
+    assert sum(stats.counts.values()) == stats.total
+
+
+def test_breakdown_ignores_not_enrolled(sample_solution: Path) -> None:
+    """Срезы подсказывают правила, поэтому неenrolled в них не место."""
+    from docpipe.config import DocpipeConfig
+
+    stats = run(sample_solution, DocpipeConfig(enrolled=["src/Sample.Common/**"])).stats
+    assert all("Pricing" not in name for rows in stats.breakdown.values() for name, _ in rows)
