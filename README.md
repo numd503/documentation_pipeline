@@ -53,26 +53,154 @@
 | ✅ T09 | кэш разобранных файлов: на ABP тёплый прогон в 10 раз быстрее холодного |
 | ✅ T10–T11 | индекс символов: слияние `partial`, резолв баз, замыкание наследования |
 | ✅ T12–T13 | HTTP-маршруты контроллеров, регистрации в DI-контейнере |
-| ✅ T14–T16 | классификация, сборка дерева, команда `scan` и запись манифеста |
-| ⬜ T17–T21 | тесты детерминизма, скоуп-режим, diff, stats, финализация |
+| ✅ T14–T17 | классификация, сборка дерева, команда `scan`, тесты детерминизма |
+| ⬜ T18–T21 | скоуп-режим, diff, stats, финализация |
 | ⬜ T05b | связанные исходники `<Compile Include>` — по итогам стресс-теста |
 
-373 теста, 3087 строк кода.
+382 теста, 3087 строк кода.
 
-## Быстрый старт
+## Как этим пользоваться
+
+### Установка
 
 ```bash
 uv sync
-uv run docpipe version
-uv run docpipe scan --root path/to/repo --out artifacts/doc-tree.json
-uv run pytest -q
+uv run docpipe --help
 ```
 
-`scan` пишет два файла: детерминированный манифест и сидкар `<out>.run.json`
-с метаданными прогона. Всё недетерминированное — только в сидкаре, поэтому проверка
-воспроизводимости сводится к побайтовому сравнению манифестов.
-
 .NET SDK не требуется: C# разбирается через `tree-sitter`, без сборки проекта.
+Достаточно, чтобы исходники лежали на диске.
+
+### Первый прогон
+
+```bash
+uv run docpipe scan --root /путь/к/репозиторию --out artifacts/doc-tree.json
+```
+
+Выводит что-то вроде:
+
+```
+Модулей: 671, узлов: 828. Записано: artifacts/doc-tree.json и artifacts/doc-tree.run.json
+Внимание: 1 файлов разобраны с ошибками и не дали ни одного типа — см. parse_error_files в сидкаре.
+```
+
+Попробовать можно прямо на тестовом решении из этого репозитория:
+
+```bash
+uv run docpipe scan --root tests/fixtures/SampleSolution --out /tmp/dt.json
+cat /tmp/dt.run.json          # статистика прогона
+jq '.nodes[].doc_path' /tmp/dt.json
+```
+
+### Что получается на выходе
+
+Два файла, и разделение между ними принципиально.
+
+**`doc-tree.json` — манифест.** Не содержит ни одного недетерминированного поля:
+ни времени, ни имени машины, ни абсолютных путей. Два прогона дают побайтово
+одинаковый файл, поэтому его можно коммитить и смотреть в диффе.
+
+```jsonc
+{
+  "schema_version": "1.0",
+  "ruleset_version": "2026-07-26.1",
+  "parser": { "tree_sitter": "0.26.0", "grammar_c_sharp": "0.23.5" },
+  "modules": [
+    { "id": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+      "name": "Sample.Pricing.Api", "domain": "Sample.Pricing.Api", "enrolled": true,
+      "target_frameworks": ["net8.0", "net9.0"],
+      "project_references": ["src/Sample.Common/Sample.Common.csproj"] }
+  ],
+  "nodes": [
+    { "id": "type:src/…/Sample.Pricing.Api.csproj#…PricingController`0",
+      "kind": "controller",
+      "doc_path": "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md",
+      "matched_rules": ["controller.aspnet"],       // все совпавшие правила, для аудита
+      "endpoints": [{ "http_method": "GET", "route": "api/v1/Pricing/{id:guid}" }],
+      "dependencies": [{ "target": "…IPricingService", "via": "constructor",
+                         "confidence": "high" }],
+      "signature_hash": "sha256:…",                 // без номеров строк и путей
+      "symbol": { "…": "полное описание типа: члены, базы, атрибуты, XML-doc" } }
+  ]
+}
+```
+
+**`doc-tree.run.json` — сидкар.** Всё недетерминированное плюс статистика:
+
+```json
+{ "generated_at": "…", "host": "…", "duration_seconds": 9.7,
+  "stats": { "symbols": 8966, "classified": 828, "unclassified": 7142, "excluded": 996 },
+  "parse_error_files": ["modules/…/CmsKitWebUnifiedModule.cs"] }
+```
+
+`parse_error_files` — файлы, где разбор дал ошибки и **ни одного** типа. Обычно это
+директива препроцессора внутри выражения; больше этот случай ничем не виден.
+
+### Флаги `scan`
+
+| Флаг | Зачем |
+|---|---|
+| `--root PATH` | корень репозитория с исходниками (обязательный) |
+| `--out FILE` | куда писать манифест, по умолчанию `artifacts/doc-tree.json` |
+| `--config FILE` | `docpipe.yaml`: что документировать и как группировать |
+| `--rules FILE` | свой набор правил вместо `rules/dotnet.yaml` |
+| `--jobs N` | разбор в N процессов. На ABP: 9,6 с → 4,9 с при `--jobs 4` |
+| `--no-cache` | не использовать кэш разобранных файлов |
+
+Кэш включён по умолчанию и создаётся **внутри сканируемого репозитория**:
+`<root>/.docpipe/cache/parse.sqlite`. Каталог стоит добавить в его `.gitignore`
+(в этом репозитории он уже там). Если трогать чужое дерево нежелательно —
+`--no-cache` или свой `cache_dir` в конфигурации.
+
+Кэш не меняет результат, только время: на ABP тёплый прогон 2,8 с против 10,2 с
+холодного. Попадание определяется хэшем содержимого, а не временем модификации,
+поэтому checkout другой ветки его не сбивает.
+
+### Настройка под свой репозиторий
+
+**`docpipe.yaml`** — что документировать:
+
+```yaml
+roots: ["."]
+enrolled:                       # какие проекты попадают в документацию
+  - "src/**"                    # тесты парсятся ради графа наследования,
+                                # но документов не порождают
+domains:                        # группировка модулей по смыслу
+  "src/Cf.Pricing.*/**": "pricing"
+  "src/Cf.Risk.*/**": "risk"
+out: "artifacts/doc-tree.json"
+cache_dir: ".docpipe/cache"
+```
+
+**`rules/dotnet.yaml`** — что считать сущностью. Правила — данные, а не код:
+
+```yaml
+- id: controller.aspnet
+  kind: controller
+  template: controller
+  priority: 100
+  when:
+    any:
+      - attribute: ["ApiController"]
+      - inherits: ["ControllerBase"]     # работает и через свой базовый класс
+                                         # в другом модуле
+```
+
+Доступные предикаты: `attribute`, `base_type`, `inherits`, `name_regex`, `name_suffix`,
+`namespace_regex`, `path_glob`, `type_kind`, `modifier`, `has_member_with_attribute`.
+Они комбинируются через `any` / `all` любой вложенности.
+
+Набор по умолчанию намеренно консервативен — на чужом коде он покрывает 1–9 % типов.
+Настраивать его нужно по статистике: `unclassified` в сидкаре показывает, каких правил
+не хватает. Ошибка в имени предиката роняет загрузку сразу, а не даёт молча
+не срабатывающее правило.
+
+### Проверка
+
+```bash
+uv run pytest -q                                    # 382 теста
+uv run docpipe schema --out schema/doc-tree.schema.json   # JSON Schema из моделей
+```
 
 ## Как это работает
 
