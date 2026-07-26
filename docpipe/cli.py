@@ -74,8 +74,19 @@ def scan(
     Пишет два файла: детерминированный манифест и сидкар `<out>.run.json`
     с метаданными прогона. Всё недетерминированное — только в сидкаре.
     """
-    settings = load_config(config)
-    ruleset = load_ruleset(rules or Path(settings.rules))
+    if not root.is_dir():
+        raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
+
+    # Ошибки конфигурации — это опечатка пользователя, а не сбой программы.
+    # Traceback на полстраницы вместо строчки «файл не найден» ровно в тот
+    # момент, когда человек первый раз пробует команду руками, — плохой обмен.
+    try:
+        settings = load_config(config)
+        ruleset = load_ruleset(rules or Path(settings.rules))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
     cache_dir = None if no_cache else root / settings.cache_dir
 
     manifest, meta = run_scan(root, settings, ruleset, cache_dir, jobs)

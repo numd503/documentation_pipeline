@@ -218,3 +218,57 @@ def test_broken_file_is_reported(wild_solution: Path, tmp_path: Path) -> None:
     meta = RunMeta.model_validate_json(run_meta_path(out).read_text(encoding="utf-8"))
     assert meta.parse_error_files == ["src/Wild.Api/Modules/ConditionalModule.cs"]
     assert "не дали ни одного типа" in result.output
+
+
+# --------------------------------------------------------------------------------------
+# Ошибки пользователя — сообщением, а не traceback
+# --------------------------------------------------------------------------------------
+
+
+def test_missing_root_is_reported(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app, ["scan", "--root", str(tmp_path / "nope"), "--out", str(tmp_path / "o.json")]
+    )
+    assert result.exit_code == 2
+    assert "каталог не найден" in result.output
+
+
+def test_missing_rules_file_is_reported(sample_solution: Path, tmp_path: Path) -> None:
+    """Опечатка в пути — это ошибка пользователя, а не сбой программы."""
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            "--root",
+            str(sample_solution),
+            "--rules",
+            str(tmp_path / "nope.yaml"),
+            "--out",
+            str(tmp_path / "o.json"),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "Ошибка конфигурации" in result.output
+
+
+def test_broken_rules_file_is_reported(sample_solution: Path, tmp_path: Path) -> None:
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(
+        "ruleset_version: t\nrules:\n  - {id: r, kind: k, template: t, priority: 1,"
+        " when: {attribut: [X]}}\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            "--root",
+            str(sample_solution),
+            "--rules",
+            str(rules),
+            "--out",
+            str(tmp_path / "o.json"),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "неизвестный предикат" in result.output

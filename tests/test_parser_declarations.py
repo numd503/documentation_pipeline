@@ -336,3 +336,19 @@ def test_parsing_is_deterministic(sample_solution: Path) -> None:
 )
 def test_normalize_type_text(raw: str, expected: str) -> None:
     assert normalize_type_text(raw) == expected
+
+
+def test_primary_constructor_arguments_are_not_base_types() -> None:
+    """`class X(A a) : Base(a)` — `(a)` в списке баз это аргументы, а не тип.
+
+    Находка при настройке правил на semantic-kernel: без фильтра в `base_types`
+    попадал `(output)`, и мусор расползался по замыканию наследования
+    и `signature_hash`. На четырёх репозиториях таких записей было 425.
+    """
+    source = (
+        b"namespace N;\n"
+        b"public class MyTests(ITestOutputHelper output) : BaseTest(output), IDisposable\n"
+        b"{\n}\n"
+    )
+    declaration = parse_source(source, "N.cs").declarations[0]
+    assert declaration.base_types == ["BaseTest", "IDisposable"]

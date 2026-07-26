@@ -236,10 +236,24 @@ def _type_parameters(declaration: Node) -> list[str]:
 
 
 def _base_types(declaration: Node) -> list[str]:
+    """Имена базовых типов.
+
+    `argument_list` пропускается: тип с primary constructor передаёт аргументы
+    базовому классу прямо в списке баз, и эти аргументы лежат там отдельным узлом:
+
+        class MyTests(ITestOutputHelper output) : BaseTest(output), IDisposable
+
+    Без фильтра в `base_types` попадал бы `(output)` — не тип, а список аргументов.
+    Такой мусор расползается дальше по замыканию наследования и `signature_hash`.
+    """
     base_list = next((c for c in declaration.children if c.type == "base_list"), None)
     if base_list is None:
         return []
-    return [normalize_type_text(_text(child)) for child in base_list.named_children]
+    return [
+        normalize_type_text(_text(child))
+        for child in base_list.named_children
+        if child.type != "argument_list"
+    ]
 
 
 def _owning_type(member: Node) -> Node | None:
