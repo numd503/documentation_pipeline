@@ -1,0 +1,98 @@
+# Правила классификации типов .NET.
+#
+# Это данные, а не код: добавить вид сущности — значит дописать сюда правило
+# и завести шаблон. Граница пайплайна проходит ровно здесь: решение «этот класс —
+# контроллер» принимает правило, решение «что этот контроллер делает» — агент шага 3.
+#
+# Набор намеренно консервативен. Настраивать его нужно по `docpipe scan --stats`
+# на конкретном репозитории: доля unclassified показывает, каких правил не хватает.
+
+version: "1"
+ruleset_version: "2026-07-26.1"
+
+# Что вообще не документируется. Проверяется до правил.
+exclude:
+  path_glob:
+    - "**/obj/**"
+    - "**/bin/**"
+    - "**/*.g.cs"
+    - "**/*.Designer.cs"
+    - "**/*.generated.cs"
+    - "**/Migrations/**"
+  name_regex:
+    - "^.*Dto$"
+    - "^.*Request$"
+    - "^.*Response$"
+    - "^.*Options$"
+    - "^.*Settings$"
+  type_kind_deny: ["enum"]
+  require_public: true
+
+rules:
+  - id: controller.aspnet
+    kind: controller
+    template: controller
+    priority: 100
+    when:
+      any:
+        - attribute: ["ApiController"]
+        - base_type: ["ControllerBase", "Controller"]
+        - inherits: ["ControllerBase", "Controller"]
+
+  - id: ignite.service
+    kind: ignite_service
+    template: ignite-service
+    priority: 95
+    when:
+      all:
+        - type_kind: ["class", "record"]
+        - inherits: ["IService", "Apache.Ignite.Core.Services.IService"]
+
+  - id: ignite.compute
+    kind: ignite_compute
+    template: ignite-compute
+    priority: 94
+    when:
+      all:
+        - type_kind: ["class", "record"]
+        - inherits: ["IComputeFunc", "IComputeJob", "IComputeTask"]
+
+  - id: workflow
+    kind: workflow
+    template: workflow
+    priority: 90
+    when:
+      all:
+        - type_kind: ["class", "record"]
+        - any:
+            - name_suffix: ["Workflow"]
+            - inherits: ["IWorkflow"]
+
+  - id: provider
+    kind: provider
+    template: provider
+    priority: 50
+    when:
+      all:
+        - type_kind: ["class", "record"]
+        - any:
+            - name_suffix: ["Provider"]
+            - inherits: ["IProvider"]
+
+  - id: repository
+    kind: repository
+    template: repository
+    priority: 45
+    when:
+      all:
+        - type_kind: ["class", "record"]
+        - name_suffix: ["Repository"]
+
+  - id: service
+    kind: service
+    template: service
+    priority: 40
+    when:
+      all:
+        - type_kind: ["class", "record"]
+        - name_suffix: ["Service"]
