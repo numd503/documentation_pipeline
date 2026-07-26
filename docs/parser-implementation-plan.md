@@ -1185,21 +1185,54 @@ uv run pytest tests/test_parser_members.py -q
 
 **Цель:** заполнить `usings` и `global_usings`.
 
-**Изменить:** `docpipe/dotnet/parser.py`; создать `tests/test_parser_usings.py`
+**Изменить:** `docpipe/dotnet/parser.py`; создать `docpipe/dotnet/queries/usings.scm`,
+`tests/test_parser_usings.py`
 
-**Спецификация.** Из `using_directive`: имя namespace — текст потомка `qualified_name`
-или `identifier`. Различение по прямым потомкам (см. раздел о грамматике):
+**Спецификация.** Искать `using_directive` **запросом по всему дереву**, а не перебором
+детей `compilation_unit`: директива может лежать внутри блочного namespace
+(`namespace N { using X; … }`) — в ABP таких 8. Ложных срабатываний внутри методов
+не будет: `using var s = …` разбирается как `local_declaration_statement`,
+а `using (…) { }` — как `using_statement`.
+
+Различение по **прямым потомкам** (`global` и `static` — узлы анонимные, в
+`named_children` не попадают):
 - есть потомок `=` → алиас (`using X = A.B.C;`), **игнорировать полностью**;
 - есть потомок `static` → `using static`, **игнорировать**;
 - есть потомок `global` → в `global_usings`;
 - иначе → в `usings`.
 
 Порядок проверок важен: `global using static` должен отбрасываться, а не попадать
-в `global_usings`. Оба списка сортируются и дедуплицируются.
+в `global_usings`.
+
+Имя — текст **последнего именованного потомка**: у алиаса перед именем стоит ещё
+`identifier` самого алиаса, у прочих форм оно единственное. Узел имени бывает трёх
+типов: `identifier` (`using System;`), `qualified_name` (`using A.B.C;`) и
+`alias_qualified_name` (`using global::AutoMapper;`).
+
+> **Префикс `global::` снимать.** Это квалификатор глобального пространства имён,
+> а не часть имени: `using global::AutoMapper;` импортирует ровно `AutoMapper`,
+> и без снятия префикса резолв на T10 такой namespace не найдёт. В ABP таких две штуки.
+>
+> Здесь же ловушка для реализации, ищущей слово `global` в тексте директивы:
+> в этой форме `global` прямым потомком **не является**, и global using это не делает.
+>
+> Прочие extern-алиасы (`using MyLib::Some.Namespace;`) оставлять как есть: без
+> разрешения алиасов сборок они всё равно не резолвятся, а врать в манифесте хуже.
+
+Оба списка сортируются и дедуплицируются.
 
 **Критерии приёмки** — `PricingController.cs`:
 `usings == ["Microsoft.AspNetCore.Mvc", "Sample.Common.Web", "Sample.Pricing.Api.Services"]`,
 `global_usings == []`.
+
+На `WildSolution/src/Wild.Api/GlobalUsings.cs` (файл существует ровно ради этого):
+`global_usings == ["System.Text.Json", "Wild.Api.Contracts"]`, `usings == []`.
+
+Отдельные тесты на формы, каждая из которых ломает наивную реализацию:
+`global using static System.Console;` → **не** в `global_usings`;
+`using global::AutoMapper;` → `usings == ["AutoMapper"]`;
+директива внутри блочного namespace → находится;
+`using var s = …` внутри метода → директивой не считается.
 
 **Проверка**
 ```bash

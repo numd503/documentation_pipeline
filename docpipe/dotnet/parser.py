@@ -337,6 +337,52 @@ def _build_members(nodes: list[Node]) -> list[Member]:
     return found
 
 
+def _using_name(directive: Node) -> str:
+    """Импортируемое пространство имён из `using_directive`.
+
+    Имя — последний именованный потомок: у алиаса перед ним стоит ещё
+    `identifier` самого алиаса, у остальных форм оно единственное.
+    Ключевые слова `global` и `static` — узлы анонимные и сюда не попадают.
+
+    `global::` — квалификатор глобального пространства имён, а не часть имени:
+    `using global::AutoMapper;` импортирует ровно `AutoMapper`. Без снятия
+    префикса резолв на T10 не нашёл бы такой namespace (в ABP таких два).
+    Прочие extern-алиасы (`MyAlias::Foo`) оставляем как есть — без разрешения
+    алиасов сборок они всё равно не резолвятся, а врать в манифесте хуже.
+    """
+    if not directive.named_children:
+        return ""
+    return _text(directive.named_children[-1]).removeprefix("global::")
+
+
+def _usings(tree_root: Node) -> tuple[list[str], list[str]]:
+    """`(usings, global_usings)` — отсортированные и дедуплицированные.
+
+    Отбрасываются две формы:
+
+    - **алиас** (`using X = A.B.C;`) — импортирует не пространство имён, а имя
+      для одного типа, и резолву по namespace не помогает;
+    - **`using static`** — импортирует статические члены, а не типы.
+
+    Порядок проверок важен: `global using static System.Console;` — это
+    `static`, и в `global_usings` ему не место.
+    """
+    plain: set[str] = set()
+    globals_: set[str] = set()
+
+    for directive in QueryCursor(_query("usings.scm")).captures(tree_root).get("using", []):
+        kinds = {child.type for child in directive.children}
+        if "=" in kinds or "static" in kinds:
+            continue
+
+        name = _using_name(directive)
+        if not name:
+            continue
+        (globals_ if "global" in kinds else plain).add(name)
+
+    return sorted(plain), sorted(globals_)
+
+
 def _count_errors(node: Node) -> int:
     total = 1 if node.type == "ERROR" or node.is_missing else 0
     stack = list(node.children)
@@ -387,10 +433,13 @@ def parse_source(source: bytes, path: str) -> FileParseResult:
         for node in captures.get("declaration", [])
     ]
     declarations.sort(key=lambda d: (d.span.start, d.span.end, d.name))
+    usings, global_usings = _usings(tree.root_node)
 
     return FileParseResult(
         path=path,
         content_hash=content_hash(source),
+        usings=usings,
+        global_usings=global_usings,
         declarations=declarations,
         parse_errors=_count_errors(tree.root_node),
     )
