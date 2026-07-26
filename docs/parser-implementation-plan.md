@@ -519,6 +519,74 @@ uv run pytest tests/test_fixture.py -q
 
 ---
 
+## T01b — Фикстура: конструкции из реальных репозиториев
+
+**Цель:** второе решение с случаями, которых нет в `SampleSolution`. Все они найдены
+прогоном на eShopOnWeb (см. [`findings-eshoponweb.md`](findings-eshoponweb.md)) и все
+ломают наивную реализацию, написанную только под `SampleSolution`.
+
+**Почему отдельное решение, а не расширение первого:** критерии приёмки T04–T20 завязаны
+на точные количества в `SampleSolution` (11 файлов, 10 символов, 6 узлов). Расширение
+той фикстуры потребовало бы перенумеровать их все.
+
+**Создать:** дерево `tests/fixtures/WildSolution/` (11 файлов `.cs`, 2 `.csproj`, 1 `.sln`),
+`tests/test_fixture_wild.py`; добавить фикстуру `wild_solution` в `tests/conftest.py`
+
+```
+tests/fixtures/WildSolution/
+├── WildSolution.sln
+├── src/Wild.Api/
+│   ├── Wild.Api.csproj
+│   ├── Program.cs                        top-level statements + 4 DI-регистрации
+│   ├── GlobalUsings.cs                   global using ×2, using static, алиас
+│   ├── Constants.cs                      Wild.Api.Constants
+│   ├── Duplicates/Constants.cs           Wild.Api.Duplicates.Constants — коллизия slug
+│   ├── Endpoints/AuthenticateEndpoint.cs многострочный base_list
+│   ├── Endpoints/CatalogListEndpoint.cs  generic-интерфейс в базе
+│   ├── Legacy/BlockNamespace.cs          namespace в блочной форме
+│   ├── Legacy/NoNamespace.cs             тип в глобальном namespace
+│   ├── Pages/Login.cshtml.cs             вложенный InputModel
+│   └── Pages/Register.cshtml.cs          вложенный InputModel (то же имя)
+└── tests/Wild.Tests/
+    ├── Wild.Tests.csproj                 тестовый проект: парсится, но не enrolled
+    └── CatalogListEndpointTests.cs
+```
+
+Что какой файл проверяет:
+
+| Случай | Ломает без обработки | Задача |
+|---|---|---|
+| Многострочный `base_list` | `signature_hash`, правила `base_type` | T06, T15 |
+| Top-level statements | все DI-регистрации теряются | T13 |
+| Тип без namespace | FQN с ведущей точкой | T10 |
+| Блочный namespace | namespace не определяется | T06 |
+| `global using` / `static` / алиас | резолв FQN | T08, T10 |
+| Вложенные типы с общим именем | два узла схлопываются в один | T10 |
+| Два `Constants` в одном модуле | коллизия `doc_path` | T15 |
+| Тестовый проект | тесты попадают в документацию | T15 |
+
+**Критерии приёмки**
+- ровно 11 файлов `.cs` и 2 `.csproj` по перечисленным путям;
+- **каждый** файл разбирается с `parse_errors == 0` и `has_error is False`;
+- `AuthenticateEndpoint`: сырой текст базы содержит `\n`;
+- `Program.cs`: среди детей корня есть `global_statement`, **нет** `class_declaration`
+  и `method_declaration`; в дереве 4 вызова `Add*`;
+- `NoNamespace.cs`: нет ни `namespace_declaration`, ни `file_scoped_namespace_declaration`;
+- `BlockNamespace.cs`: класс лежит **внутри** `namespace_declaration`;
+- `GlobalUsings.cs`: 2 директивы с `global`, 1 со `static`, 1 с `=`;
+- `Login.cshtml.cs` и `Register.cshtml.cs` дают `LoginModel.InputModel`
+  и `RegisterModel.InputModel`;
+- `Constants.cs` и `Duplicates/Constants.cs` дают разные namespace, но один slug.
+
+**Проверка**
+```bash
+uv run pytest tests/test_fixture_wild.py -q
+```
+
+**Зависит от:** T02 (для `slugify` в тесте коллизии)
+
+---
+
 ## T02 — `hashing.py`: хэши, стабильный дамп, slug
 
 **Цель:** примитивы, от которых зависит детерминизм всей системы.
@@ -691,9 +759,40 @@ def discover(root: Path, exclude_globs: list[str],
 ```
 
 Правила:
-- обход через `Path.rglob`, результат **всегда** прогоняется через `sorted()`;
-- путь исключается, если совпал хотя бы с одним glob из `exclude_globs`
-  (использовать `fnmatch` по POSIX-пути; `**/obj/**` должен ловить `src/A/obj/x/y.cs`);
+- обход через `os.walk(followlinks=False)`, результат **всегда** через `sorted()`;
+- путь исключается, если совпал хотя бы с одним glob из `exclude_globs`;
+
+**Ловушка `fnmatch` и `**`.** `fnmatch` не понимает `**` как «ноль или больше
+сегментов» — он транслирует `*` в `.*` без учёта разделителей. Проверено:
+
+```
+fnmatch("src/A/obj/x/y.cs", "**/obj/**")  -> True
+fnmatch("obj/y.cs",         "**/obj/**")  -> False   ← дыра
+fnmatch("src/A/Sample.g.cs", "**/*.g.cs") -> True
+fnmatch("Sample.g.cs",       "**/*.g.cs") -> False   ← дыра
+```
+
+Из-за обязательного `/` в шаблоне файлы в корневых `obj/`/`bin/` и сгенерированные
+файлы в корне репозитория молча просачиваются в документацию. Лечится вторым
+прогоном с отброшенным префиксом:
+
+```python
+def matches_glob(path: str, glob: str) -> bool:
+    if fnmatch(path, glob):
+        return True
+    if glob.startswith("**/"):
+        return fnmatch(path, glob[3:])
+    return False
+```
+
+Использовать `matches_glob` везде, где сравниваются пути с шаблонами — в T04 и в
+`exclude.path_glob`/`path_glob` из T14.
+
+**Отсечение каталогов (обязательно).** Из каждого glob, оканчивающегося на `/**`,
+вывести glob каталога (`**/obj/**` → `**/obj`) и не заходить в совпавшие каталоги
+через `dirnames[:] = [...]`. На большом репозитории это разница между обходом всего
+`node_modules`/`.git` и мгновенным пропуском. На результат не влияет: если каталог
+совпал, любой файл под ним совпал бы и с исходным шаблоном.
 - при заданном `scope` файл включается, только если его путь начинается с одного из
   элементов scope (сравнение по сегментам пути, не по подстроке);
 - символические ссылки не разыменовываются.
@@ -703,7 +802,14 @@ def discover(root: Path, exclude_globs: list[str],
   (в фикстуре 12 файлов `.cs`, один отсекается исключениями);
 - `csproj_files` — ровно 2, `sln_files` — ровно 1;
 - со `scope=["src/Sample.Common"]` возвращается ровно 2 `.cs`;
-- тест «перемешанного ФС»: результат совпадает при двух вызовах подряд.
+- тест «перемешанного ФС»: результат совпадает при двух вызовах подряд;
+- **контрольный тест:** с пустым списком исключений находится ровно 12 `.cs`,
+  включая `Sample.Generated.g.cs`. Без него тест на исключения может проходить
+  просто потому, что файла нет на диске;
+- `scope=["src/Sample"]` даёт **пустой** результат — сравнение идёт по сегментам
+  пути, а не по подстроке (иначе scope захватил бы соседний модуль с общим префиксом);
+- все 9 случаев `matches_glob` из таблицы выше, включая корневые `obj/y.cs` и `Sample.g.cs`;
+- симлинк на каталог с исходниками не порождает дублей.
 
 **Проверка**
 ```bash
@@ -768,7 +874,14 @@ uv run pytest tests/test_project_graph.py -q
 - `type_parameters` — имена из `type_parameter_list`;
 - `modifiers` — прямые потомки типа `modifier`, **отсортированные**;
 - `base_types` — текст каждого именованного элемента `base_list` (отбросив `:` и `,`),
-  как есть, без нормализации (`IPricingProvider<string>` сохраняется целиком);
+  **нормализованный в два шага** (второй обязателен, иначе останется `X .WithRequest<A>`):
+
+  ```python
+  text = re.sub(r"\s+", " ", raw).strip()
+  text = re.sub(r"\s*\.\s*", ".", text)
+  ```
+
+  Generic-аргументы сохраняются (`IPricingProvider<string>` остаётся целиком);
 - `attributes` — см. ниже;
 - `span` — `SourceSpan(path, start_point[0]+1, end_point[0]+1)`;
 - `xml_doc` — см. ниже.
@@ -808,6 +921,21 @@ def parse_file(path: Path, repo_root: Path) -> FileParseResult: ...
 - `parse_errors == 0`.
 
 На `Providers/CurveProvider.cs`: `base_types == ["IPricingProvider<string>"]`.
+
+**Схлопывание пробелов — не косметика.** В дикой природе встречается такое
+(реальный случай из eShopOnWeb):
+
+```csharp
+public class AuthenticateEndpoint : EndpointBaseAsync
+    .WithRequest<AuthenticateRequest>
+    .WithActionResult<AuthenticateResponse>
+```
+
+Без нормализации в `base_types` попадёт строка с `\n` и отступами. Тогда
+`signature_hash` (T15) начнёт зависеть от форматирования файла: переформатировали —
+хэш изменился — агент на шаге 3 перегенерировал документ впустую. Это ломает
+главное свойство инкрементальности. Плюс правило `base_type: ["EndpointBaseAsync"]`
+перестаёт совпадать, а JSON манифеста становится нечитаемым.
 На `Abstractions/IPricingProvider.cs`: `type_kind == "interface"`, `type_parameters == ["T"]`.
 На `Models/PriceDto.cs`: `type_kind == "record"`.
 На всех 11 неисключённых файлах фикстуры: суммарно `parse_errors == 0`.
@@ -1069,8 +1197,25 @@ uv run pytest tests/test_endpoints.py -q
 **Спецификация.** Искать `invocation_expression`, где имя метода совпадает с
 `^(Try)?Add(Scoped|Singleton|Transient|HostedService)$`.
 
+**Обход — по всему дереву файла, на любой глубине вложенности.** Не ограничивайся
+вызовами внутри `method_declaration`: в современном .NET `Program.cs` пишется через
+top-level statements, и регистрации лежат прямо в `global_statement`, без класса
+и метода вообще:
+
+```csharp
+// Program.cs целиком, без namespace и без класса
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddScoped<IBasketService, BasketService>();
+```
+
+В eShopOnWeb так написаны все три `Program.cs`. Реализация, ищущая вызовы внутри
+методов (как в фикстуре, где `Program` — обычный статический класс), **не найдёт
+ни одной регистрации в реальном проекте**.
+
 Навигация до имени метода (см. раздел о грамматике): `invocation_expression` →
 `member_access_expression` → либо `generic_name` → `identifier`, либо напрямую `identifier`.
+Получатель может быть цепочкой (`builder.Services`) — это `member_access_expression`
+внутри `member_access_expression`, на разбор имени метода не влияет.
 `type_argument_list` лежит внутри `generic_name`, **не** внутри `invocation_expression`.
 Обработать оба случая; при отсутствии `member_access_expression` (вызов без получателя)
 пропустить.
@@ -1218,7 +1363,7 @@ def classify(symbol: Symbol, ruleset: Ruleset) -> Classification | None: ...
 | Предикат | Матчится против |
 |---|---|
 | `attribute` | имена `symbol.attributes` |
-| `base_type` | `symbol.base_types` **и** `base_types_raw`, сравнение по последнему сегменту после `.` и с полным FQN |
+| `base_type` | `symbol.base_types` и `base_types_raw` через `base_type_candidates` (ниже) |
 | `inherits` | `symbol.base_type_closure`, тем же способом |
 | `name_regex` | `re.fullmatch` по `symbol.name` |
 | `name_suffix` | `symbol.name.endswith(v)` |
@@ -1230,6 +1375,39 @@ def classify(symbol: Symbol, ruleset: Ruleset) -> Classification | None: ...
 
 Узлы `when` рекурсивны: `any` (OR по потомкам), `all` (AND по потомкам), либо лист-предикат.
 Внутри `all`/`any` могут быть вложенные `any`/`all` — см. правило `workflow`.
+
+**Сопоставление имён базовых типов.** Наивное «последний сегмент после точки» работает
+для `Sample.Common.Web.BaseApiController` → `BaseApiController`, но ломается на
+fluent-базах, которые реально встречаются:
+
+```
+EndpointBaseAsync.WithRequest<AuthenticateRequest>.WithActionResult<AuthenticateResponse>
+```
+
+Здесь значимо **первое** звено (`EndpointBaseAsync`), а последний сегмент даёт
+бессмысленное `WithRequest`. Различить их можно по признаку «точка после первого `<`»:
+
+```python
+def base_type_candidates(text: str) -> set[str]:
+    head = text.split("<")[0]
+    candidates = {text, head, head.split(".")[-1]}
+    # Fluent-база X.WithRequest<A>.WithResult<B>: значимо первое звено.
+    if "<" in text and "." in text[text.index("<") :]:
+        candidates.add(head.split(".")[0])
+    return candidates
+```
+
+Предикат совпадает, если значение из правила есть в множестве кандидатов. Проверено:
+
+| Базовый тип | Кандидаты |
+|---|---|
+| `Sample.Common.Web.BaseApiController` | `BaseApiController`, полный FQN |
+| `EndpointBaseAsync.WithRequest<A>.WithActionResult<B>` | `EndpointBaseAsync`, `WithRequest`, … |
+| `IEndpoint<IResult, ListRequest, IRepository<CatalogItem>>` | `IEndpoint`, полный текст |
+| `IPricingProvider<string>` | `IPricingProvider`, полный текст |
+
+Условие с `<` важно: без него `Sample.Common.Web.BaseApiController` дал бы кандидата
+`Sample`, и правило `base_type: ["Sample"]` совпало бы со всем подряд.
 
 Алгоритм:
 1. Применить `exclude`. Символ отбрасывается, если: любой его `sources[*].path` совпал с
@@ -1545,6 +1723,16 @@ total symbols        10
 `excluded` — отброшенные секцией `exclude`. Для сбора этих счётчиков `classify` должен
 возвращать причину: расширить возврат до `Classification | Literal["excluded"] | None`
 либо добавить отдельную функцию `classify_with_reason`.
+
+**Отдельная категория `interface_covered`.** Интерфейс, у которого в индексе есть
+хотя бы одна реализация, ставшая узлом, — это не «не смогли классифицировать», а
+осознанное решение документировать реализацию. В eShopOnWeb таких 9 из 199
+«неклассифицированных» (`IBasketService`, `IOrderService`, …). Смешивать их с типами,
+про которые правила действительно ничего не знают, нельзя: цифра `unclassified`
+существует ровно для того, чтобы по ней настраивать правила, и мусор в ней
+обесценивает команду.
+
+Итоговый набор счётчиков: `<kind>…`, `interface_covered`, `unclassified`, `excluded`.
 
 `--dry-run` — выполняет полный прогон, но вместо записи печатает diff против существующего
 `--out` (если файла нет — печатает `added` для всех узлов).

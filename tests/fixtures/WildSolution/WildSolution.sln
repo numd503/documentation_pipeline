@@ -1,0 +1,7 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Wild.Api", "src\Wild.Api\Wild.Api.csproj", "{33333333-3333-3333-3333-333333333333}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Wild.Tests", "tests\Wild.Tests\Wild.Tests.csproj", "{44444444-4444-4444-4444-444444444444}"
+EndProject
+Global
+EndGlobal
