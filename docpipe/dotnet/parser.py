@@ -296,11 +296,16 @@ def _member_names(member: Node) -> list[str]:
         )
         if declaration is None:
             return []
-        return [
+        # Пустые имена отбрасываются: при восстановлении после ошибки грамматика
+        # выдаёт `field_declaration` без имени (обломок выражения из-под `#if`
+        # или конструкция новее самой грамматики). Безымянный член в манифесте
+        # превратился бы в безымянный раздел документации.
+        names = [
             _text(c.child_by_field_name("name"))
             for c in declaration.named_children
             if c.type == "variable_declarator"
         ]
+        return [name for name in names if name]
 
     name = _text(member.child_by_field_name("name"))
     return [name] if name else []

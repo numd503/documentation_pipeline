@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from docpipe.dotnet.csproj import parse_csproj
+from docpipe.dotnet.csproj import parse_csproj, resolve_references
 from docpipe.dotnet.sln import parse_sln
 
 # --------------------------------------------------------------------------------------
@@ -194,6 +194,69 @@ def test_reference_outside_repo_root_is_kept_as_is(tmp_path: Path) -> None:
         "</ItemGroup></Project>",
     )
     assert parse_csproj(path, root).project_references == ["../../ext/Ext.csproj"]
+
+
+# --------------------------------------------------------------------------------------
+# Находки стресс-теста — см. docs/findings-stress.md
+# --------------------------------------------------------------------------------------
+
+
+def test_reference_with_msbuild_variable_is_not_turned_into_a_fake_path(tmp_path: Path) -> None:
+    """`$(RepoRoot)\\src\\B\\B.csproj` нельзя склеивать с каталогом проекта.
+
+    Получился бы правдоподобный, но выдуманный путь `src/A/$(RepoRoot)/src/B/B.csproj`,
+    который никогда ни с чем не совпадёт и при этом выглядит как настоящий.
+    """
+    path = _write(
+        tmp_path / "src/A/A.csproj",
+        "<Project><ItemGroup>"
+        '<ProjectReference Include="$(RepoRoot)\\src\\B\\B.csproj" />'
+        "</ItemGroup></Project>",
+    )
+    assert parse_csproj(path, tmp_path).project_references == ["$(RepoRoot)/src/B/B.csproj"]
+
+
+def test_references_are_resolved_by_file_name(tmp_path: Path) -> None:
+    """Значение `$(RepoRoot)` вычисляется функцией MSBuild, но имя файла записано буквально.
+
+    В OpenTelemetry так разрешаются 107 ссылок из 109: без этого шага
+    граф зависимостей там состоял бы из двух рёбер вместо ста девяти.
+    """
+    first = _write(
+        tmp_path / "src/A/A.csproj",
+        "<Project><ItemGroup>"
+        '<ProjectReference Include="$(RepoRoot)\\src\\B\\B.csproj" />'
+        "</ItemGroup></Project>",
+    )
+    second = _write(tmp_path / "src/B/B.csproj", "<Project />")
+
+    modules = resolve_references([parse_csproj(p, tmp_path) for p in (first, second)])
+    assert modules[0].project_references == ["src/B/B.csproj"]
+
+
+def test_ambiguous_file_name_is_left_unresolved(tmp_path: Path) -> None:
+    """Имена проектов уникальны не везде — в ABP 39 повторов, угадывать нельзя."""
+    app = _write(
+        tmp_path / "app/App.csproj",
+        '<Project><ItemGroup><ProjectReference Include="$(Root)\\Common.csproj" />'
+        "</ItemGroup></Project>",
+    )
+    left = _write(tmp_path / "one/Common.csproj", "<Project />")
+    right = _write(tmp_path / "two/Common.csproj", "<Project />")
+
+    modules = resolve_references([parse_csproj(p, tmp_path) for p in (app, left, right)])
+    assert modules[0].project_references == ["$(Root)/Common.csproj"]
+
+
+def test_already_resolved_references_are_untouched(tmp_path: Path) -> None:
+    first = _write(
+        tmp_path / "src/A/A.csproj",
+        '<Project><ItemGroup><ProjectReference Include="..\\B\\B.csproj" /></ItemGroup></Project>',
+    )
+    second = _write(tmp_path / "src/B/B.csproj", "<Project />")
+
+    modules = resolve_references([parse_csproj(p, tmp_path) for p in (first, second)])
+    assert modules[0].project_references == ["src/B/B.csproj"]
 
 
 def test_slnx_projects_at_any_folder_depth(tmp_path: Path) -> None:

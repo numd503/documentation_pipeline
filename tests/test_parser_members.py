@@ -305,3 +305,26 @@ def test_members_are_deterministic(sample_solution: Path) -> None:
         sample_solution / "src/Sample.Pricing.Api/Controllers/PricingController.cs", sample_solution
     )
     assert first.declarations[0].members == second.declarations[0].members
+
+
+def test_member_without_a_name_is_dropped() -> None:
+    """Обломок выражения из-под `#if` грамматика отдаёт как `field_declaration` без имени.
+
+    Находка стресс-теста: три таких члена на OpenTelemetry и semantic-kernel.
+    Безымянный член в манифесте превратился бы в безымянный раздел документации.
+    """
+    source = b"""namespace N;
+public class C
+{
+    public int Real;
+#if NET
+    public string Value => x.Replace("a", "b");
+#else
+        => x.Replace("c", "d");
+#endif
+}
+"""
+    result = parse_source(source, "N.cs")
+    assert result.parse_errors > 0
+    assert all(member.name for member in result.declarations[0].members)
+    assert "Real" in [member.name for member in result.declarations[0].members]

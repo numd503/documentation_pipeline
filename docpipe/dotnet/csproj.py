@@ -101,12 +101,18 @@ def _resolve_reference(include: str, csproj_dir: Path, repo_root: Path) -> str:
     """`Include` из `ProjectReference` -> репо-относительный путь `.csproj`.
 
     Путь в `Include` задан относительно каталога проекта и с разделителями
-    Windows. Если цель лежит вне корня обхода (или содержит неразвёрнутую
-    подстановку MSBuild), возвращаем значение как есть: в манифесте такому
-    модулю всё равно не быть, но потерять ребро молча хуже, чем сохранить
-    неразрешённое.
+    Windows. Значение с неразвёрнутой подстановкой MSBuild возвращается как
+    есть: склеивать его с каталогом проекта нельзя — получился бы
+    правдоподобный, но выдуманный путь вида `src/A/$(RepoRoot)/src/B/B.csproj`.
+    Такие ссылки дорезолвит `resolve_references` по имени файла.
+
+    Ссылка за пределы корня обхода тоже сохраняется как есть: в манифесте
+    такому модулю всё равно не быть, но потерять ребро молча хуже.
     """
     normalized = include.replace("\\", "/").strip()
+    if "$(" in normalized:
+        return normalized
+
     try:
         target = (csproj_dir / normalized).resolve()
         return target.relative_to(repo_root).as_posix()
@@ -145,3 +151,35 @@ def parse_csproj(path: Path, repo_root: Path) -> Module:
         domain="",
         enrolled=True,
     )
+
+
+def resolve_references(modules: list[Module]) -> list[Module]:
+    """Дорезолвить `project_references`, не совпавшие с путём, по имени файла.
+
+    Путь в `Include` часто собран из подстановок MSBuild
+    (`$(RepoRoot)\\src\\A\\A.csproj`), а их значения вычисляются функциями
+    (`$([System.IO.Directory]::GetParent(...))`) — воспроизводить это здесь
+    нечем. Но имя файла проекта в такой ссылке записано буквально, и этого
+    достаточно: в OpenTelemetry так разрешаются 107 ссылок из 109.
+
+    Резолв только при **единственном** совпадении: имена проектов уникальны
+    не везде (в ABP 39 повторов), и угадывать между одноимёнными нельзя.
+    Неразрешённое остаётся как есть — ребро видно, просто не привязано.
+    """
+    known = {module.csproj for module in modules}
+    by_filename: dict[str, list[str]] = {}
+    for module in modules:
+        by_filename.setdefault(module.csproj.rpartition("/")[2], []).append(module.csproj)
+
+    resolved = []
+    for module in modules:
+        references = []
+        for reference in module.project_references:
+            if reference in known:
+                references.append(reference)
+                continue
+            candidates = by_filename.get(reference.rpartition("/")[2], [])
+            references.append(candidates[0] if len(candidates) == 1 else reference)
+        resolved.append(module.model_copy(update={"project_references": sorted(set(references))}))
+
+    return resolved
