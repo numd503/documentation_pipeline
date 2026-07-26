@@ -826,9 +826,31 @@ uv run pytest tests/test_discovery.py -q
 
 **Спецификация**
 
+**Три ловушки, проверенные на реальных проектах** (eShopOnWeb, 10 `.csproj`):
+
+1. **BOM.** Все 10 файлов сохранены в UTF-8 с BOM (`ef bb bf`). Чтение через
+   `read_text(encoding="utf-8")` оставит BOM первым символом, и `ET.fromstring`
+   упадёт с `not well-formed`. Читать **байтами**: `ET.fromstring(path.read_bytes())`.
+
+2. **`TargetFramework` обычно отсутствует в самом `.csproj`.** В eShopOnWeb его
+   не объявляет **ни один** проект — значение приходит из `Directory.Packages.props`
+   уровня решения. Без обхода вверх по дереву `target_frameworks` будет пуст
+   у каждого модуля. Искать `Directory.Build.props` и `Directory.Packages.props`,
+   поднимаясь от каталога проекта до корня обхода; побеждает ближайший файл,
+   собственное значение проекта важнее унаследованного.
+
+3. **XML-namespace в legacy-проектах.** Формат SDK идёт без namespace, но проекты
+   старого формата объявляют `xmlns="http://schemas.microsoft.com/developer/msbuild/2003"`,
+   и теги выглядят как `{http://…}PropertyGroup`. Сравнивать только по локальному
+   имени: `tag.rpartition("}")[2]`.
+
+Полного вычисления свойств MSBuild не делать: условия, подстановки `$(…)` и цепочки
+`Import` не разворачиваются. Задача — структурные факты, а не воспроизведение сборки.
+
 `csproj.py` — `parse_csproj(path: Path, repo_root: Path) -> Module`:
 - имя модуля = имя файла без `.csproj`;
-- `target_frameworks`: из `<TargetFramework>` или `<TargetFrameworks>` (сплит по `;`), отсортировать;
+- `target_frameworks`: из `<TargetFramework>` или `<TargetFrameworks>` (сплит по `;`),
+  при отсутствии — унаследованные из props-файлов (см. выше), отсортировать;
 - `project_references`: из `<ProjectReference Include="...">`, взять имя файла без расширения,
   разделители `\` привести к `/`, отсортировать;
 - `package_references`: из `<PackageReference Include="...">`, отсортировать;
@@ -840,11 +862,23 @@ uv run pytest tests/test_discovery.py -q
 пути `.csproj` из строк `Project(...) = "...", "путь", "..."`. Разделители `\` → `/`.
 Отсортировать. Файл читать как UTF-8 с `errors="replace"`.
 
+**Фильтровать по расширению `.csproj`.** Записи `Project(...)` описывают не только
+проекты C#: папки решения (тип `{2150E333-…}`) кладут в поле пути собственное имя
+(`"src", "src"` — не файл), а рядом встречаются `.dcproj`, `.vcxproj`, `.esproj`.
+В `eShopOnWeb.sln` из 14 записей `Project(...)` только 10 — проекты C#.
+
 **Критерии приёмки**
 - `Sample.Pricing.Api`: `target_frameworks == ["net8.0", "net9.0"]`,
   `project_references == ["Sample.Common"]`, `package_references == ["Apache.Ignite"]`.
 - `Sample.Common`: `target_frameworks == ["net8.0"]`, остальные списки пусты.
 - `parse_sln` возвращает ровно 2 пути, оба существуют на диске.
+- На `WildSolution`: `Wild.Api.csproj` разбирается несмотря на BOM;
+  `Wild.Tests.csproj` **без собственного** `TargetFramework` даёт `["net8.0"]`
+  из `Directory.Build.props`; `..\..\src\Wild.Api\Wild.Api.csproj` даёт `["Wild.Api"]`;
+  `PackageReference` с вложенными `PrivateAssets` разбирается.
+- Синтетические случаи: legacy-`.csproj` с `xmlns`; `.sln` с папкой решения
+  и `.dcproj`; ближайший props-файл побеждает дальний; собственный TFM побеждает
+  унаследованный; битый XML падает с `ET.ParseError`, а не даёт пустой модуль.
 
 **Проверка**
 ```bash
