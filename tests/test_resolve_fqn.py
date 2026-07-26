@@ -2,8 +2,7 @@
 
 from pathlib import Path
 
-from docpipe.discovery import discover
-from docpipe.dotnet.parser import parse_file, parse_source
+from docpipe.dotnet.parser import parse_source
 from docpipe.dotnet.resolve import (
     build_symbol_index,
     declaration_fqn,
@@ -12,8 +11,7 @@ from docpipe.dotnet.resolve import (
     symbol_key,
 )
 from docpipe.model import FileParseResult, Symbol
-
-EXCLUDE = ["**/obj/**", "**/bin/**", "**/*.g.cs"]
+from tests.conftest import by_fqn, index_of
 
 SAMPLE_FQNS = {
     "Sample.Common.Abstractions.IPricingProvider",
@@ -29,29 +27,6 @@ SAMPLE_FQNS = {
 }
 
 
-def _index_of(root: Path) -> dict[str, Symbol]:
-    """Индекс символов решения: обход, разбор, привязка файлов к проектам."""
-    found = discover(root, EXCLUDE)
-    csproj_dirs = {str(Path(c).parent): c for c in found.csproj_files}
-
-    def module_of(relative: str) -> str | None:
-        current = Path(relative).parent
-        while True:
-            if str(current) in csproj_dirs:
-                return csproj_dirs[str(current)]
-            if current == Path("."):
-                return None
-            current = current.parent
-
-    results = [parse_file(root / relative, root) for relative in found.cs_files]
-    file_to_module = {r: module for r in found.cs_files if (module := module_of(r))}
-    return build_symbol_index(results, file_to_module)
-
-
-def _by_fqn(index: dict[str, Symbol]) -> dict[str, Symbol]:
-    return {symbol.fqn: symbol for symbol in index.values()}
-
-
 def _synthetic(sources: dict[str, bytes], module: str = "m/M.csproj") -> dict[str, Symbol]:
     """Индекс из исходников в памяти. Все файлы принадлежат одному модулю."""
     results = [parse_source(text, path) for path, text in sources.items()]
@@ -64,14 +39,14 @@ def _synthetic(sources: dict[str, bytes], module: str = "m/M.csproj") -> dict[st
 
 
 def test_index_contains_exactly_ten_symbols(sample_solution: Path) -> None:
-    index = _index_of(sample_solution)
+    index = index_of(sample_solution)
     assert {symbol.fqn for symbol in index.values()} == SAMPLE_FQNS
     assert len(index) == 10
 
 
 def test_partial_class_becomes_one_symbol(sample_solution: Path) -> None:
     """Две половинки `partial class` — один тип, но два источника."""
-    symbol = _by_fqn(_index_of(sample_solution))["Sample.Pricing.Api.Services.PricingService"]
+    symbol = by_fqn(index_of(sample_solution))["Sample.Pricing.Api.Services.PricingService"]
 
     assert [source.path for source in symbol.sources] == [
         "src/Sample.Pricing.Api/Services/PricingService.Calculations.cs",
@@ -82,7 +57,7 @@ def test_partial_class_becomes_one_symbol(sample_solution: Path) -> None:
 
 
 def test_base_type_resolved_through_using(sample_solution: Path) -> None:
-    symbol = _by_fqn(_index_of(sample_solution))["Sample.Pricing.Api.Controllers.PricingController"]
+    symbol = by_fqn(index_of(sample_solution))["Sample.Pricing.Api.Controllers.PricingController"]
     assert symbol.base_types == ["Sample.Common.Web.BaseApiController"]
     assert symbol.base_types_raw == ["BaseApiController"]
 
@@ -92,18 +67,18 @@ def test_external_base_type_stays_raw(sample_solution: Path) -> None:
 
     Это не недоделка: правила классификации матчатся именно по таким именам.
     """
-    symbol = _by_fqn(_index_of(sample_solution))["Sample.Common.Web.BaseApiController"]
+    symbol = by_fqn(index_of(sample_solution))["Sample.Common.Web.BaseApiController"]
     assert symbol.base_types == ["ControllerBase"]
 
 
 def test_generic_argument_dropped_when_resolving(sample_solution: Path) -> None:
-    symbol = _by_fqn(_index_of(sample_solution))["Sample.Pricing.Api.Providers.CurveProvider"]
+    symbol = by_fqn(index_of(sample_solution))["Sample.Pricing.Api.Providers.CurveProvider"]
     assert symbol.base_types == ["Sample.Common.Abstractions.IPricingProvider"]
     assert symbol.base_types_raw == ["IPricingProvider<string>"]
 
 
 def test_nothing_is_ambiguous_in_the_fixture(sample_solution: Path) -> None:
-    assert not any(symbol.ambiguous for symbol in _index_of(sample_solution).values())
+    assert not any(symbol.ambiguous for symbol in index_of(sample_solution).values())
 
 
 # --------------------------------------------------------------------------------------
@@ -117,7 +92,7 @@ def test_generic_arity_gives_separate_symbols(wild_solution: Path) -> None:
     Ключ по одному FQN слил бы их в один символ, и два документа из трёх
     исчезли бы. В ABP таких групп 112.
     """
-    index = _index_of(wild_solution)
+    index = index_of(wild_solution)
     crud = [s for s in index.values() if s.fqn == "Wild.Api.Services.ICrudAppService"]
 
     assert len(crud) == 3
@@ -145,7 +120,7 @@ def test_symbol_key_format() -> None:
 
 
 def test_index_by_fqn_returns_all_symbols_of_one_fqn(wild_solution: Path) -> None:
-    grouped = index_by_fqn(_index_of(wild_solution))
+    grouped = index_by_fqn(index_of(wild_solution))
     assert len(grouped["Wild.Api.Services.ICrudAppService"]) == 3
     assert grouped["Wild.Api.Services.ICrudAppService"] == sorted(
         grouped["Wild.Api.Services.ICrudAppService"]
@@ -170,7 +145,7 @@ def test_nearest_namespace_wins_and_is_not_ambiguous() -> None:
             "use.cs": b"namespace A.B;\npublic class User : Target { }\n",
         }
     )
-    user = _by_fqn(index)["A.B.User"]
+    user = by_fqn(index)["A.B.User"]
 
     assert user.base_types == ["A.B.Target"]
     assert user.ambiguous is False
@@ -183,7 +158,7 @@ def test_using_is_consulted_only_when_namespace_fails() -> None:
             "use.cs": b"using Lib;\nnamespace App;\npublic class User : Target { }\n",
         }
     )
-    assert _by_fqn(index)["App.User"].base_types == ["Lib.Target"]
+    assert by_fqn(index)["App.User"].base_types == ["Lib.Target"]
 
 
 def test_two_usings_matching_is_ambiguous() -> None:
@@ -196,7 +171,7 @@ def test_two_usings_matching_is_ambiguous() -> None:
             b"public class User : Target { }\n",
         }
     )
-    user = _by_fqn(index)["App.User"]
+    user = by_fqn(index)["App.User"]
 
     assert user.ambiguous is True
     assert user.base_types == ["Left.Target"]  # лексикографически меньший
@@ -209,7 +184,7 @@ def test_fully_qualified_base_type() -> None:
             "use.cs": b"namespace App;\npublic class User : Lib.Deep.Target { }\n",
         }
     )
-    assert _by_fqn(index)["App.User"].base_types == ["Lib.Deep.Target"]
+    assert by_fqn(index)["App.User"].base_types == ["Lib.Deep.Target"]
 
 
 def test_global_namespace_type_is_found() -> None:
@@ -220,7 +195,7 @@ def test_global_namespace_type_is_found() -> None:
             "use.cs": b"namespace App;\npublic class User : Target { }\n",
         }
     )
-    assert _by_fqn(index)["App.User"].base_types == ["Target"]
+    assert by_fqn(index)["App.User"].base_types == ["Target"]
 
 
 def test_global_qualifier_is_stripped_from_base_type() -> None:
@@ -230,7 +205,7 @@ def test_global_qualifier_is_stripped_from_base_type() -> None:
             "use.cs": b"namespace App;\npublic class User : global::Lib.Target { }\n",
         }
     )
-    assert _by_fqn(index)["App.User"].base_types == ["Lib.Target"]
+    assert by_fqn(index)["App.User"].base_types == ["Lib.Target"]
 
 
 def test_global_using_applies_to_the_whole_module() -> None:
@@ -247,7 +222,7 @@ def test_global_using_applies_to_the_whole_module() -> None:
             "use.cs": b"namespace App;\npublic class User : Target { }\n",
         }
     )
-    assert _by_fqn(index)["App.User"].base_types == ["Lib.Target"]
+    assert by_fqn(index)["App.User"].base_types == ["Lib.Target"]
 
 
 def test_global_using_does_not_leak_into_another_module() -> None:
@@ -261,7 +236,7 @@ def test_global_using_does_not_leak_into_another_module() -> None:
         results,
         {"lib/Target.cs": "lib/L.csproj", "a/Globals.cs": "a/A.csproj", "b/User.cs": "b/B.csproj"},
     )
-    assert _by_fqn(index)["App.User"].base_types == ["Target"]
+    assert by_fqn(index)["App.User"].base_types == ["Target"]
 
 
 def test_interface_list_is_resolved_per_element() -> None:
@@ -271,7 +246,7 @@ def test_interface_list_is_resolved_per_element() -> None:
             "use.cs": b"using Lib;\nnamespace App;\npublic class C : IOne, ITwo { }\n",
         }
     )
-    assert _by_fqn(index)["App.C"].base_types == ["Lib.IOne", "Lib.ITwo"]
+    assert by_fqn(index)["App.C"].base_types == ["Lib.IOne", "Lib.ITwo"]
 
 
 # --------------------------------------------------------------------------------------
@@ -286,7 +261,7 @@ def test_merge_unions_modifiers_attributes_and_members() -> None:
             "a.cs": b"namespace N;\n[First]\ninternal partial class C { void One() { } }\n",
         }
     )
-    symbol = _by_fqn(index)["N.C"]
+    symbol = by_fqn(index)["N.C"]
 
     assert symbol.modifiers == ["internal", "partial", "public"]
     assert [a.name for a in symbol.attributes] == ["First", "Second"]
@@ -302,7 +277,7 @@ def test_merge_takes_first_non_empty_xml_doc() -> None:
         }
     )
     # a.cs идёт первым по имени файла, но документации в нём нет.
-    assert _by_fqn(index)["N.C"].xml_doc == "From b."
+    assert by_fqn(index)["N.C"].xml_doc == "From b."
 
 
 def test_duplicate_attributes_are_deduplicated() -> None:
@@ -312,7 +287,7 @@ def test_duplicate_attributes_are_deduplicated() -> None:
             "b.cs": b'namespace N;\n[Route("api")]\npublic partial class C { }\n',
         }
     )
-    assert len(_by_fqn(index)["N.C"].attributes) == 1
+    assert len(by_fqn(index)["N.C"].attributes) == 1
 
 
 def test_nested_type_and_namespaced_type_can_share_fqn() -> None:
@@ -327,7 +302,7 @@ def test_nested_type_and_namespaced_type_can_share_fqn() -> None:
             "flat.cs": b"namespace A.B;\npublic class C { }\n",
         }
     )
-    symbol = _by_fqn(index)["A.B.C"]
+    symbol = by_fqn(index)["A.B.C"]
     assert len(symbol.sources) == 2
     assert "partial" not in symbol.modifiers
 
@@ -364,9 +339,9 @@ def test_file_without_declarations_contributes_nothing() -> None:
 
 
 def test_index_is_deterministic(sample_solution: Path) -> None:
-    assert _index_of(sample_solution) == _index_of(sample_solution)
+    assert index_of(sample_solution) == index_of(sample_solution)
 
 
 def test_index_keys_are_sorted(sample_solution: Path) -> None:
-    keys = list(_index_of(sample_solution))
+    keys = list(index_of(sample_solution))
     assert keys == sorted(keys)
