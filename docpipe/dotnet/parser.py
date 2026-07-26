@@ -16,6 +16,7 @@ from pathlib import Path
 import tree_sitter_c_sharp as tscs
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
+from docpipe.dotnet.di import extract_registrations
 from docpipe.hashing import content_hash
 from docpipe.model import (
     Attribute,
@@ -435,12 +436,15 @@ def parse_source(source: bytes, path: str) -> FileParseResult:
     declarations.sort(key=lambda d: (d.span.start, d.span.end, d.name))
     usings, global_usings = _usings(tree.root_node)
 
+    di_calls = QueryCursor(_query("di.scm")).captures(tree.root_node).get("call", [])
+
     return FileParseResult(
         path=path,
         content_hash=content_hash(source),
         usings=usings,
         global_usings=global_usings,
         declarations=declarations,
+        di_registrations=extract_registrations(di_calls, path),
         parse_errors=_count_errors(tree.root_node),
     )
 

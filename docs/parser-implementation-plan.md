@@ -1625,11 +1625,28 @@ builder.Services.AddScoped<IBasketService, BasketService>();
 - если в `type_argument_list` два аргумента → `service_type` = первый,
   `impl_type` = второй, `confidence = "high"`;
 - если один аргумент → `service_type` = `impl_type` = он же, `confidence = "high"`;
-- если аргументов типа нет, но есть лямбда/`new` → `service_type` из текста, `impl_type = None`,
-  `confidence = "low"`;
-- generic-аргументы в именах типов сохраняются как есть (`IPricingProvider<string>`);
+- **если типов-аргументов нет, разобрать `typeof(...)` в обычных аргументах:**
+  - `typeof(X), typeof(Y)` → то же, что два типа-аргумента, `confidence = "high"`;
+  - `typeof(X)` → то же, что один;
+  - `typeof(X), <что-то ещё>` → `service_type = X`, `impl_type = None`, `confidence = "medium"`;
+- **всё остальное пропускать**;
+- generic-аргументы в именах типов сохраняются как есть (`IPricingProvider<string>`,
+  `IKernelAccessor<>`). Резолвом занимается T15, и он обязан снимать generic-часть
+  при сопоставлении с символом;
 - `file`, `line` — 1-based;
-- результат сортируется по `(file, line, service_type)`.
+- результат сортируется по `(line, service_type, impl_type)`.
+
+> **`typeof` — не запасной вариант, а обычная форма записи.** В ABP и eShopOnWeb так
+> записаны **47 регистраций из 267** — больше, чем двумя типами-аргументами:
+> `TryAddTransient(typeof(IKernelAccessor<>), typeof(KernelAccessor<>))`. Имена типов
+> здесь названы так же явно, как в `<…>`, и занижать `confidence` не за что.
+>
+> **Регистрацию без единого имени типа нужно пропускать, а не выдумывать ей тип.**
+> Первая редакция плана предписывала в этом случае брать «`service_type` из текста».
+> Текстом там оказывается тело лямбды (`sp => sp.GetRequiredService<X>()`),
+> переменная (`AddSingleton(builder)`) или приведение типа — в поле `service_type`
+> манифеста попал бы мусор. Регистрация, не называющая ни одного типа, документации
+> ничего не даёт: связать её с символом нельзя. Таких вызовов 50 из 267.
 
 Результат заполняет `FileParseResult.di_registrations`.
 
@@ -1637,9 +1654,22 @@ builder.Services.AddScoped<IBasketService, BasketService>();
 
 | service_type | impl_type | lifetime | confidence |
 |---|---|---|---|
-| `IPricingProvider<string>` | `CurveProvider` | `singleton` | `high` |
 | `IPricingService` | `PricingService` | `scoped` | `high` |
+| `IPricingProvider<string>` | `CurveProvider` | `singleton` | `high` |
 | `ValuationWorkflow` | `ValuationWorkflow` | `transient` | `high` |
+
+(порядок — по строке объявления)
+
+**Второй обязательный тест** — `WildSolution/src/Wild.Api/Program.cs` на top-level
+statements: 4 регистрации (`scoped`, `singleton`, `transient` через `TryAdd`, `hosted`)
+при полном отсутствии объявлений типов в файле. Реализация, ищущая вызовы внутри
+`method_declaration`, пройдёт критерии на `SampleSolution` и провалит этот.
+
+Синтетические случаи: `typeof(X), typeof(Y)`; одиночный `typeof(X)`;
+`typeof(X)` с фабрикой → `medium` и `impl_type is None`; лямбда без типов,
+переменная и приведение типа → **пусто**; `builder.Services.AddScoped<…>`
+(цепочка получателей); `AddControllers()` и `AddDbContext<T>()` → пусто
+(имя не подходит под шаблон); `AddScoped<IFoo, Foo>()` без получателя → пусто.
 
 **Проверка**
 ```bash
@@ -1898,7 +1928,9 @@ def build_nodes(symbols: dict[str, Symbol], modules: list[Module],
 7. **endpoints** — из T12. **dependencies**:
    - параметры конструктора: тип каждого параметра резолвится по индексу; `via="constructor"`,
      `confidence="high"` если резолвнулся, иначе `"low"`;
-   - DI-регистрации, где `impl_type` соответствует символу: `via="di"`.
+   - DI-регистрации, где `impl_type` соответствует символу: `via="di"`. Сопоставлять
+     **через `strip_generics`**: T13 сохраняет имена как написаны, и открытый дженерик
+     `KernelAccessor<>` буквально с именем символа `KernelAccessor` не совпадёт.
    Сортировать по `(target, via)`, дедуплицировать.
 8. **related**: для каждого символа-класса, чьё `base_type_closure` содержит интерфейс,
    присутствующий в индексе → `relation="implements"`; обратное ребро на интерфейсе не
