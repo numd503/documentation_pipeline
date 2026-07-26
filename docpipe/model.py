@@ -268,10 +268,17 @@ class Manifest(_Base):
 
 
 class RunMeta(_Base):
-    """Сидкар-файл `<manifest>.run.json`. Всё недетерминированное — здесь."""
+    """Сидкар-файл `<manifest>.run.json`. Всё недетерминированное — здесь.
+
+    `parse_error_files` — пути, где разбор дал ошибки и **ни одного** объявления.
+    Это единственный внешний признак того, что директива препроцессора внутри
+    выражения уничтожила тип целиком (см. findings-abp.md), поэтому список
+    нужен `validate` на T20, а не просто счётчик.
+    """
 
     generated_at: str
     host: str
     duration_seconds: float
     docpipe_version: str
     stats: dict[str, int] = Field(default_factory=dict)
+    parse_error_files: list[str] = Field(default_factory=list)

@@ -1,0 +1,590 @@
+{
+  "modules": [
+    {
+      "csproj": "src/Sample.Common/Sample.Common.csproj",
+      "domain": "Sample.Common",
+      "enrolled": true,
+      "id": "module:src/Sample.Common/Sample.Common.csproj",
+      "name": "Sample.Common",
+      "package_references": [],
+      "project_references": [],
+      "target_frameworks": [
+        "net8.0"
+      ]
+    },
+    {
+      "csproj": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+      "domain": "Sample.Pricing.Api",
+      "enrolled": true,
+      "id": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+      "name": "Sample.Pricing.Api",
+      "package_references": [
+        "Apache.Ignite"
+      ],
+      "project_references": [
+        "src/Sample.Common/Sample.Common.csproj"
+      ],
+      "target_frameworks": [
+        "net8.0",
+        "net9.0"
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "dependencies": [],
+      "doc_path": "docs/modules/Sample.Common/controllers/base-api-controller.md",
+      "domain": "Sample.Common",
+      "endpoints": [],
+      "id": "type:src/Sample.Common/Sample.Common.csproj#Sample.Common.Web.BaseApiController`0",
+      "kind": "controller",
+      "matched_rules": [
+        "controller.aspnet"
+      ],
+      "module": "Sample.Common",
+      "parent": "module:src/Sample.Common/Sample.Common.csproj",
+      "related": [],
+      "signature_hash": "sha256:6f76f705ad092a207f00f9c51274166f28f5b0f2d3f39fc04289f12f9ed091c9",
+      "symbol": {
+        "ambiguous": false,
+        "attributes": [
+          {
+            "args": [],
+            "name": "ApiController",
+            "named_args": {}
+          }
+        ],
+        "base_type_closure": [
+          "ControllerBase"
+        ],
+        "base_types": [
+          "ControllerBase"
+        ],
+        "base_types_raw": [
+          "ControllerBase"
+        ],
+        "fqn": "Sample.Common.Web.BaseApiController",
+        "members": [
+          {
+            "attributes": [],
+            "end_line": 9,
+            "kind": "property",
+            "line": 9,
+            "modifiers": [
+              "protected"
+            ],
+            "name": "TraceId",
+            "signature": "protected string TraceId",
+            "xml_doc": null
+          }
+        ],
+        "modifiers": [
+          "abstract",
+          "public"
+        ],
+        "module": "src/Sample.Common/Sample.Common.csproj",
+        "name": "BaseApiController",
+        "namespace": "Sample.Common.Web",
+        "sources": [
+          {
+            "end": 10,
+            "path": "src/Sample.Common/Web/BaseApiController.cs",
+            "start": 6
+          }
+        ],
+        "type_kind": "class",
+        "type_parameters": [],
+        "xml_doc": "Base class for all API controllers."
+      },
+      "template": "controller",
+      "title": "BaseApiController"
+    },
+    {
+      "dependencies": [
+        {
+          "confidence": "high",
+          "target": "Sample.Pricing.Api.Services.IPricingService",
+          "via": "constructor"
+        }
+      ],
+      "doc_path": "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md",
+      "domain": "Sample.Pricing.Api",
+      "endpoints": [
+        {
+          "http_method": "POST",
+          "line": 24,
+          "member": "RecalculateAsync",
+          "route": "api/v1/Pricing"
+        },
+        {
+          "http_method": "GET",
+          "line": 18,
+          "member": "GetAsync",
+          "route": "api/v1/Pricing/{id:guid}"
+        }
+      ],
+      "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Controllers.PricingController`0",
+      "kind": "controller",
+      "matched_rules": [
+        "controller.aspnet"
+      ],
+      "module": "Sample.Pricing.Api",
+      "parent": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+      "related": [],
+      "signature_hash": "sha256:0e29455f07023ae28072c3bef5b59c2725eead683869ad1b48c23170251613b4",
+      "symbol": {
+        "ambiguous": false,
+        "attributes": [
+          {
+            "args": [
+              "api/v1/[controller]"
+            ],
+            "name": "Route",
+            "named_args": {}
+          }
+        ],
+        "base_type_closure": [
+          "ControllerBase",
+          "Sample.Common.Web.BaseApiController"
+        ],
+        "base_types": [
+          "Sample.Common.Web.BaseApiController"
+        ],
+        "base_types_raw": [
+          "BaseApiController"
+        ],
+        "fqn": "Sample.Pricing.Api.Controllers.PricingController",
+        "members": [
+          {
+            "attributes": [],
+            "end_line": 11,
+            "kind": "field",
+            "line": 11,
+            "modifiers": [
+              "private",
+              "readonly"
+            ],
+            "name": "_pricing",
+            "signature": "private readonly IPricingService _pricing",
+            "xml_doc": null
+          },
+          {
+            "attributes": [],
+            "end_line": 16,
+            "kind": "constructor",
+            "line": 13,
+            "modifiers": [
+              "public"
+            ],
+            "name": "PricingController",
+            "signature": "public PricingController(IPricingService pricing)",
+            "xml_doc": null
+          },
+          {
+            "attributes": [
+              {
+                "args": [
+                  "{id:guid}"
+                ],
+                "name": "HttpGet",
+                "named_args": {}
+              }
+            ],
+            "end_line": 22,
+            "kind": "method",
+            "line": 18,
+            "modifiers": [
+              "async",
+              "public"
+            ],
+            "name": "GetAsync",
+            "signature": "public async Task<ActionResult<decimal>> GetAsync(Guid id, CancellationToken ct)",
+            "xml_doc": null
+          },
+          {
+            "attributes": [
+              {
+                "args": [],
+                "name": "HttpPost",
+                "named_args": {}
+              }
+            ],
+            "end_line": 25,
+            "kind": "method",
+            "line": 24,
+            "modifiers": [
+              "public"
+            ],
+            "name": "RecalculateAsync",
+            "signature": "public Task<ActionResult> RecalculateAsync()",
+            "xml_doc": null
+          }
+        ],
+        "modifiers": [
+          "public",
+          "sealed"
+        ],
+        "module": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+        "name": "PricingController",
+        "namespace": "Sample.Pricing.Api.Controllers",
+        "sources": [
+          {
+            "end": 26,
+            "path": "src/Sample.Pricing.Api/Controllers/PricingController.cs",
+            "start": 8
+          }
+        ],
+        "type_kind": "class",
+        "type_parameters": [],
+        "xml_doc": "Handles pricing requests."
+      },
+      "template": "controller",
+      "title": "PricingController"
+    },
+    {
+      "dependencies": [],
+      "doc_path": "docs/modules/Sample.Pricing.Api/ignite_services/risk-compute-service.md",
+      "domain": "Sample.Pricing.Api",
+      "endpoints": [],
+      "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Grid.RiskComputeService`0",
+      "kind": "ignite_service",
+      "matched_rules": [
+        "ignite.service",
+        "service"
+      ],
+      "module": "Sample.Pricing.Api",
+      "parent": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+      "related": [],
+      "signature_hash": "sha256:d5fc934fac3812b5ac007eefd293e5a03c183dcc5ba2a0616c11f71c9e887665",
+      "symbol": {
+        "ambiguous": false,
+        "attributes": [],
+        "base_type_closure": [
+          "IService"
+        ],
+        "base_types": [
+          "IService"
+        ],
+        "base_types_raw": [
+          "IService"
+        ],
+        "fqn": "Sample.Pricing.Api.Grid.RiskComputeService",
+        "members": [
+          {
+            "attributes": [],
+            "end_line": 8,
+            "kind": "method",
+            "line": 8,
+            "modifiers": [
+              "public"
+            ],
+            "name": "Init",
+            "signature": "public void Init(IServiceContext context)",
+            "xml_doc": null
+          },
+          {
+            "attributes": [],
+            "end_line": 9,
+            "kind": "method",
+            "line": 9,
+            "modifiers": [
+              "public"
+            ],
+            "name": "Execute",
+            "signature": "public void Execute(IServiceContext context)",
+            "xml_doc": null
+          },
+          {
+            "attributes": [],
+            "end_line": 10,
+            "kind": "method",
+            "line": 10,
+            "modifiers": [
+              "public"
+            ],
+            "name": "Cancel",
+            "signature": "public void Cancel(IServiceContext context)",
+            "xml_doc": null
+          }
+        ],
+        "modifiers": [
+          "public",
+          "sealed"
+        ],
+        "module": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+        "name": "RiskComputeService",
+        "namespace": "Sample.Pricing.Api.Grid",
+        "sources": [
+          {
+            "end": 11,
+            "path": "src/Sample.Pricing.Api/Grid/RiskComputeService.cs",
+            "start": 6
+          }
+        ],
+        "type_kind": "class",
+        "type_parameters": [],
+        "xml_doc": "Risk aggregation running on the compute grid."
+      },
+      "template": "ignite-service",
+      "title": "RiskComputeService"
+    },
+    {
+      "dependencies": [
+        {
+          "confidence": "high",
+          "target": "Sample.Common.Abstractions.IPricingProvider",
+          "via": "di"
+        }
+      ],
+      "doc_path": "docs/modules/Sample.Pricing.Api/providers/curve-provider.md",
+      "domain": "Sample.Pricing.Api",
+      "endpoints": [],
+      "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Providers.CurveProvider`0",
+      "kind": "provider",
+      "matched_rules": [
+        "provider"
+      ],
+      "module": "Sample.Pricing.Api",
+      "parent": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+      "related": [
+        {
+          "relation": "implements",
+          "target": "Sample.Common.Abstractions.IPricingProvider"
+        }
+      ],
+      "signature_hash": "sha256:4417c7fa09b3233aba42f96ec0c01d969cfeebdf54aa06e4357a1937c568a876",
+      "symbol": {
+        "ambiguous": false,
+        "attributes": [],
+        "base_type_closure": [
+          "Sample.Common.Abstractions.IPricingProvider"
+        ],
+        "base_types": [
+          "Sample.Common.Abstractions.IPricingProvider"
+        ],
+        "base_types_raw": [
+          "IPricingProvider<string>"
+        ],
+        "fqn": "Sample.Pricing.Api.Providers.CurveProvider",
+        "members": [
+          {
+            "attributes": [],
+            "end_line": 8,
+            "kind": "method",
+            "line": 8,
+            "modifiers": [
+              "public"
+            ],
+            "name": "Get",
+            "signature": "public string Get(string key)",
+            "xml_doc": null
+          }
+        ],
+        "modifiers": [
+          "public",
+          "sealed"
+        ],
+        "module": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+        "name": "CurveProvider",
+        "namespace": "Sample.Pricing.Api.Providers",
+        "sources": [
+          {
+            "end": 9,
+            "path": "src/Sample.Pricing.Api/Providers/CurveProvider.cs",
+            "start": 6
+          }
+        ],
+        "type_kind": "class",
+        "type_parameters": [],
+        "xml_doc": "Provides discount curves."
+      },
+      "template": "provider",
+      "title": "CurveProvider"
+    },
+    {
+      "dependencies": [
+        {
+          "confidence": "high",
+          "target": "Sample.Common.Abstractions.IPricingProvider",
+          "via": "constructor"
+        },
+        {
+          "confidence": "high",
+          "target": "Sample.Pricing.Api.Services.IPricingService",
+          "via": "di"
+        }
+      ],
+      "doc_path": "docs/modules/Sample.Pricing.Api/services/pricing-service.md",
+      "domain": "Sample.Pricing.Api",
+      "endpoints": [],
+      "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Services.PricingService`0",
+      "kind": "service",
+      "matched_rules": [
+        "service"
+      ],
+      "module": "Sample.Pricing.Api",
+      "parent": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+      "related": [
+        {
+          "relation": "implements",
+          "target": "Sample.Pricing.Api.Services.IPricingService"
+        }
+      ],
+      "signature_hash": "sha256:05cf41b6d0f4f482d6403b17ccca761c8a27fa815f5b04b552aad5bf70a6f2a6",
+      "symbol": {
+        "ambiguous": false,
+        "attributes": [],
+        "base_type_closure": [
+          "Sample.Pricing.Api.Services.IPricingService"
+        ],
+        "base_types": [
+          "Sample.Pricing.Api.Services.IPricingService"
+        ],
+        "base_types_raw": [
+          "IPricingService"
+        ],
+        "fqn": "Sample.Pricing.Api.Services.PricingService",
+        "members": [
+          {
+            "attributes": [],
+            "end_line": 5,
+            "kind": "method",
+            "line": 5,
+            "modifiers": [
+              "private",
+              "static"
+            ],
+            "name": "Discount",
+            "signature": "private static decimal Discount(decimal value)",
+            "xml_doc": null
+          },
+          {
+            "attributes": [],
+            "end_line": 8,
+            "kind": "field",
+            "line": 8,
+            "modifiers": [
+              "private",
+              "readonly"
+            ],
+            "name": "_curves",
+            "signature": "private readonly IPricingProvider<string> _curves",
+            "xml_doc": null
+          },
+          {
+            "attributes": [],
+            "end_line": 13,
+            "kind": "constructor",
+            "line": 10,
+            "modifiers": [
+              "public"
+            ],
+            "name": "PricingService",
+            "signature": "public PricingService(IPricingProvider<string> curves)",
+            "xml_doc": null
+          },
+          {
+            "attributes": [],
+            "end_line": 18,
+            "kind": "method",
+            "line": 15,
+            "modifiers": [
+              "public"
+            ],
+            "name": "PriceAsync",
+            "signature": "public Task<decimal> PriceAsync(Guid id, CancellationToken ct)",
+            "xml_doc": null
+          }
+        ],
+        "modifiers": [
+          "partial",
+          "public",
+          "sealed"
+        ],
+        "module": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+        "name": "PricingService",
+        "namespace": "Sample.Pricing.Api.Services",
+        "sources": [
+          {
+            "end": 6,
+            "path": "src/Sample.Pricing.Api/Services/PricingService.Calculations.cs",
+            "start": 3
+          },
+          {
+            "end": 19,
+            "path": "src/Sample.Pricing.Api/Services/PricingService.cs",
+            "start": 6
+          }
+        ],
+        "type_kind": "class",
+        "type_parameters": [],
+        "xml_doc": "Computes prices for instruments."
+      },
+      "template": "service",
+      "title": "PricingService"
+    },
+    {
+      "dependencies": [],
+      "doc_path": "docs/modules/Sample.Pricing.Api/workflows/valuation-workflow.md",
+      "domain": "Sample.Pricing.Api",
+      "endpoints": [],
+      "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Workflows.ValuationWorkflow`0",
+      "kind": "workflow",
+      "matched_rules": [
+        "workflow"
+      ],
+      "module": "Sample.Pricing.Api",
+      "parent": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+      "related": [],
+      "signature_hash": "sha256:77256ff0709b18d4470a4e1a89bc1e3dc7ebef797cda634fd6527e732026735e",
+      "symbol": {
+        "ambiguous": false,
+        "attributes": [],
+        "base_type_closure": [],
+        "base_types": [],
+        "base_types_raw": [],
+        "fqn": "Sample.Pricing.Api.Workflows.ValuationWorkflow",
+        "members": [
+          {
+            "attributes": [],
+            "end_line": 6,
+            "kind": "method",
+            "line": 6,
+            "modifiers": [
+              "public"
+            ],
+            "name": "RunAsync",
+            "signature": "public Task RunAsync(CancellationToken ct)",
+            "xml_doc": null
+          }
+        ],
+        "modifiers": [
+          "public",
+          "sealed"
+        ],
+        "module": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+        "name": "ValuationWorkflow",
+        "namespace": "Sample.Pricing.Api.Workflows",
+        "sources": [
+          {
+            "end": 7,
+            "path": "src/Sample.Pricing.Api/Workflows/ValuationWorkflow.cs",
+            "start": 4
+          }
+        ],
+        "type_kind": "class",
+        "type_parameters": [],
+        "xml_doc": "End-to-end valuation sequence."
+      },
+      "template": "workflow",
+      "title": "ValuationWorkflow"
+    }
+  ],
+  "parser": {
+    "grammar_c_sharp": "0.23.5",
+    "tree_sitter": "0.26.0"
+  },
+  "partial": null,
+  "ruleset_version": "2026-07-26.1",
+  "schema_version": "1.0"
+}
