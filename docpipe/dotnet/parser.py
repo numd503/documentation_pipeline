@@ -257,15 +257,26 @@ def _owning_type(member: Node) -> Node | None:
     return None
 
 
+def _is_trivia(node: Node) -> bool:
+    """Комментарий или директива препроцессора — то, что в сигнатуру не входит."""
+    return node.type == "comment" or node.type.startswith("preproc_")
+
+
 def _signature(member: Node) -> str:
     """Сигнатура: текст объявления до тела, стрелки, аксессоров или `;`.
 
-    Атрибуты отбрасываются, хотя они и являются потомками узла: в сигнатуре
-    они шумят, а для правил классификации есть отдельное поле `attributes`.
+    Отбрасываются атрибуты (в сигнатуре они шумят, а для правил есть отдельное
+    поле `attributes`) и вся тривия — комментарии и директивы препроцессора.
+
+    Тривия попадает внутрь объявления чаще, чем кажется: `#pragma` между
+    атрибутом и модификатором становится **потомком** узла, а не соседом,
+    и без вырезания сигнатура начиналась бы с
+    `#pragma warning disable CS0809 // Obsolete member…`. На четырёх реальных
+    репозиториях так портились 252 сигнатуры, а с ними и `signature_hash`.
     """
     parts: list[Node] = []
     for child in member.children:
-        if child.type == "attribute_list":
+        if child.type == "attribute_list" or (_is_trivia(child) and not parts):
             continue
         if child.type in _SIGNATURE_TERMINATORS:
             break
@@ -277,9 +288,34 @@ def _signature(member: Node) -> str:
     # Срез по байтам относительно самого узла: так не нужно тащить сюда
     # исходник целиком, а `member.text` — ровно его фрагмент.
     raw = member.text or b""
-    start = parts[0].start_byte - member.start_byte
-    end = parts[-1].end_byte - member.start_byte
-    return _WHITESPACE.sub(" ", raw[start:end].decode("utf-8", errors="replace")).strip()
+    start = parts[0].start_byte
+    end = parts[-1].end_byte
+
+    # Тривия внутри диапазона (комментарий посреди списка параметров) вырезается
+    # по байтам: после схлопывания пробелов границу строки уже не найти,
+    # и `//` съел бы остаток сигнатуры.
+    keep: list[bytes] = []
+    cursor = start
+    for node in _descendants(parts):
+        if not _is_trivia(node) or node.end_byte <= start or node.start_byte >= end:
+            continue
+        keep.append(raw[cursor - member.start_byte : node.start_byte - member.start_byte])
+        cursor = max(cursor, node.end_byte)
+    keep.append(raw[cursor - member.start_byte : end - member.start_byte])
+
+    text = b" ".join(keep).decode("utf-8", errors="replace")
+    return _WHITESPACE.sub(" ", text).strip()
+
+
+def _descendants(nodes: list[Node]) -> list[Node]:
+    """Все потомки перечисленных узлов в порядке появления в тексте."""
+    found: list[Node] = []
+    stack = list(reversed(nodes))
+    while stack:
+        current = stack.pop()
+        found.append(current)
+        stack.extend(reversed(current.children))
+    return sorted(found, key=lambda node: node.start_byte)
 
 
 def _member_names(member: Node) -> list[str]:

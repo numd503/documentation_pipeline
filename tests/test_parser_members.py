@@ -328,3 +328,40 @@ public class C
     assert result.parse_errors > 0
     assert all(member.name for member in result.declarations[0].members)
     assert "Real" in [member.name for member in result.declarations[0].members]
+
+
+def test_pragma_between_attribute_and_modifier_is_not_part_of_signature() -> None:
+    """`#pragma` в этом месте — **потомок** объявления, а не сосед.
+
+    Находка T15: без вырезания сигнатура начиналась бы с
+    `#pragma warning disable CS0809 // Obsolete member…`, и вместе с ней
+    портился бы `signature_hash`. На четырёх реальных репозиториях так
+    ломались 252 сигнатуры.
+    """
+    source = b"""namespace N;
+public class C
+{
+    [Obsolete("use another")]
+#pragma warning disable CS0809 // Obsolete member overrides non-obsolete member
+    public override int Extract(int a) => a;
+#pragma warning restore CS0809
+}
+"""
+    member = parse_source(source, "N.cs").declarations[0].members[0]
+    assert member.signature == "public override int Extract(int a)"
+
+
+def test_comment_inside_parameter_list_is_removed() -> None:
+    """После схлопывания пробелов границу строки не найти, и `//` съел бы остаток."""
+    source = b"""namespace N;
+public class C
+{
+    public void M(
+        // todo: replace with stable
+        HttpClient client)
+    {
+    }
+}
+"""
+    member = parse_source(source, "N.cs").declarations[0].members[0]
+    assert member.signature == "public void M( HttpClient client)"

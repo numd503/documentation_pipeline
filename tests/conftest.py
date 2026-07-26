@@ -4,10 +4,15 @@ from pathlib import Path
 
 import pytest
 
+from docpipe.classify import load_ruleset
+from docpipe.config import DocpipeConfig
 from docpipe.discovery import discover
+from docpipe.dotnet.csproj import parse_csproj, resolve_references
+from docpipe.dotnet.endpoints import extract_endpoints
 from docpipe.dotnet.parser import parse_file
-from docpipe.dotnet.resolve import build_symbol_index
-from docpipe.model import Symbol
+from docpipe.dotnet.resolve import build_symbol_index, compute_closures
+from docpipe.model import DocNode, Module, Symbol
+from docpipe.tree import build_nodes
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE_SOLUTION = FIXTURES / "SampleSolution"
@@ -65,3 +70,34 @@ def index_of(root: Path) -> dict[str, Symbol]:
 def by_fqn(index: dict[str, Symbol]) -> dict[str, Symbol]:
     """Индекс, переложенный на FQN. Только для тестов, где FQN заведомо уникален."""
     return {symbol.fqn: symbol for symbol in index.values()}
+
+
+def build_tree(
+    root: Path,
+    config: DocpipeConfig | None = None,
+    rules: Path | None = None,
+) -> tuple[list[Module], list[DocNode]]:
+    """Полный проход по решению: обход, разбор, индекс, классификация, дерево.
+
+    Живёт здесь, а не в тесте одной задачи: с T15 и дальше почти каждой проверке
+    нужен готовый манифест, а не его половина.
+    """
+    found = discover(root, EXCLUDE)
+    results = [parse_file(root / relative, root) for relative in found.cs_files]
+    file_to_module = {
+        relative: module
+        for relative in found.cs_files
+        if (module := module_of(relative, found.csproj_files))
+    }
+
+    index = compute_closures(build_symbol_index(results, file_to_module))
+    modules = resolve_references([parse_csproj(root / c, root) for c in found.csproj_files])
+
+    return build_nodes(
+        index,
+        modules,
+        load_ruleset(rules or Path("rules/dotnet.yaml")),
+        config or DocpipeConfig(),
+        [registration for result in results for registration in result.di_registrations],
+        {key: extract_endpoints(symbol) for key, symbol in index.items()},
+    )
