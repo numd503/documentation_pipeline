@@ -11,10 +11,14 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 # Расширения, которые ищем. Ключ — поле результата.
-_EXTENSIONS = {
-    "cs_files": ".cs",
-    "csproj_files": ".csproj",
-    "sln_files": ".sln",
+#
+# `.slnx` — новый XML-формат решения (VS 17.10+). Игнорировать его нельзя:
+# ABP мигрировал целиком, в его дереве 30 файлов `.slnx` и **ноль** `.sln`,
+# то есть поиск только по `.sln` нашёл бы там ровно ничего.
+_EXTENSIONS: dict[str, tuple[str, ...]] = {
+    "cs_files": (".cs",),
+    "csproj_files": (".csproj",),
+    "sln_files": (".sln", ".slnx"),
 }
 
 
@@ -24,7 +28,7 @@ class Discovered:
 
     cs_files: list[str]
     csproj_files: list[str]
-    sln_files: list[str]
+    sln_files: list[str]  # и `.sln`, и `.slnx`
 
 
 def matches_glob(path: str, glob: str) -> bool:
@@ -119,7 +123,7 @@ def discover(
 
         for filename in sorted(filenames):
             suffix = Path(filename).suffix
-            field = next((f for f, ext in _EXTENSIONS.items() if ext == suffix), None)
+            field = next((f for f, exts in _EXTENSIONS.items() if suffix in exts), None)
             if field is None:
                 continue
 

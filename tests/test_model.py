@@ -46,11 +46,11 @@ def _minimal_manifest() -> Manifest:
         parser=PARSER_VERSIONS,
         modules=[
             Module(
-                id="module:Sample.Pricing.Api",
+                id="module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
                 name="Sample.Pricing.Api",
                 csproj="src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
                 target_frameworks=["net8.0", "net9.0"],
-                project_references=["Sample.Common"],
+                project_references=["src/Sample.Common/Sample.Common.csproj"],
                 domain="pricing",
                 enrolled=True,
             )
@@ -62,7 +62,7 @@ def _minimal_manifest() -> Manifest:
                 template="controller",
                 title="PricingController",
                 doc_path="docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md",
-                parent="module:Sample.Pricing.Api",
+                parent="module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
                 module="Sample.Pricing.Api",
                 domain="pricing",
                 symbol=_minimal_symbol(),

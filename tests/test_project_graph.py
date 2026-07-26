@@ -23,10 +23,10 @@ def test_multi_targeted_project(sample_solution: Path) -> None:
         sample_solution / "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj", sample_solution
     )
     assert module.name == "Sample.Pricing.Api"
-    assert module.id == "module:Sample.Pricing.Api"
+    assert module.id == "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj"
     assert module.csproj == "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj"
     assert module.target_frameworks == ["net8.0", "net9.0"]
-    assert module.project_references == ["Sample.Common"]
+    assert module.project_references == ["src/Sample.Common/Sample.Common.csproj"]
     assert module.package_references == ["Apache.Ignite"]
 
 
@@ -91,9 +91,14 @@ def test_target_framework_inherited_from_props(wild_solution: Path) -> None:
 
 
 def test_project_reference_with_nested_relative_path(wild_solution: Path) -> None:
-    """`..\\..\\src\\Wild.Api\\Wild.Api.csproj` -> имя модуля."""
+    """`..\\..\\src\\Wild.Api\\Wild.Api.csproj` -> репо-относительный путь.
+
+    Раньше здесь бралось `.stem`, то есть имя проекта. На ABP это ломается:
+    имена не уникальны (39 повторов), и ребро графа уходило бы в произвольный
+    из одноимённых модулей. Путь разрешается однозначно — 2384 ссылки из 2384.
+    """
     module = parse_csproj(wild_solution / "tests/Wild.Tests/Wild.Tests.csproj", wild_solution)
-    assert module.project_references == ["Wild.Api"]
+    assert module.project_references == ["src/Wild.Api/Wild.Api.csproj"]
 
 
 def test_package_reference_with_child_elements(wild_solution: Path) -> None:
@@ -139,7 +144,93 @@ def test_legacy_csproj_with_xml_namespace(tmp_path: Path) -> None:
     )
     module = parse_csproj(path, tmp_path)
     assert module.target_frameworks == ["net48"]
-    assert module.project_references == ["Shared"]
+    assert module.project_references == ["Shared/Shared.csproj"]
+
+
+# --------------------------------------------------------------------------------------
+# Находки прогона на ABP — см. docs/findings-abp.md
+# --------------------------------------------------------------------------------------
+
+
+def test_module_id_is_built_from_path_not_name(tmp_path: Path) -> None:
+    """Два проекта с одинаковым именем обязаны получить разные id.
+
+    В ABP таких имён 39, включая три разных `MyCompanyName.MyProjectName.csproj`.
+    Ключ `module:{name}` склеил бы их в один модуль, и часть документации
+    исчезла бы молча.
+    """
+    first = _write(tmp_path / "app/Common/Common.csproj", "<Project />")
+    second = _write(tmp_path / "svc/Common/Common.csproj", "<Project />")
+
+    left = parse_csproj(first, tmp_path)
+    right = parse_csproj(second, tmp_path)
+
+    assert left.name == right.name == "Common"
+    assert left.id != right.id
+    assert left.id == "module:app/Common/Common.csproj"
+
+
+def test_unexpanded_msbuild_variable_is_dropped(tmp_path: Path) -> None:
+    """`$(TargetFrameworks)` — не платформа, а неразвёрнутая подстановка.
+
+    Встретилась в MAUI-проекте ABP. Развернуть её здесь нечем, а в манифесте
+    она неотличима от настоящего TFM.
+    """
+    path = _write(
+        tmp_path / "App/App.csproj",
+        "<Project><PropertyGroup>"
+        "<TargetFrameworks>$(TargetFrameworks);net10.0-ios;net10.0</TargetFrameworks>"
+        "</PropertyGroup></Project>",
+    )
+    assert parse_csproj(path, tmp_path).target_frameworks == ["net10.0", "net10.0-ios"]
+
+
+def test_reference_outside_repo_root_is_kept_as_is(tmp_path: Path) -> None:
+    """Ссылка за пределы корня не разрешается, но и не теряется молча."""
+    root = tmp_path / "repo"
+    path = _write(
+        root / "App/App.csproj",
+        '<Project><ItemGroup><ProjectReference Include="..\\..\\ext\\Ext.csproj" />'
+        "</ItemGroup></Project>",
+    )
+    assert parse_csproj(path, root).project_references == ["../../ext/Ext.csproj"]
+
+
+def test_slnx_projects_at_any_folder_depth(tmp_path: Path) -> None:
+    """`.slnx` — XML-формат решения (VS 17.10+).
+
+    ABP мигрировал на него целиком: 30 файлов `.slnx` и ноль `.sln`, то есть
+    поиск только по `.sln` не нашёл бы там ни одного решения. Проекты лежат
+    либо прямо под `<Solution>`, либо внутри вложенных `<Folder>`.
+    """
+    _write(tmp_path / "src/Core/Core.csproj", "<Project />")
+    _write(tmp_path / "src/Api/Api.csproj", "<Project />")
+    _write(tmp_path / "tools/Tool.csproj", "<Project />")
+    path = _write(
+        tmp_path / "App.slnx",
+        "<Solution>\n"
+        '  <Project Path="tools/Tool.csproj" />\n'
+        '  <Folder Name="/src/">\n'
+        '    <Folder Name="/src/inner/">\n'
+        '      <Project Path="src/Core/Core.csproj" />\n'
+        "    </Folder>\n"
+        '    <Project Path="src\\Api\\Api.csproj" />\n'
+        "  </Folder>\n"
+        "</Solution>\n",
+    )
+    assert parse_sln(path, tmp_path) == [
+        "src/Api/Api.csproj",
+        "src/Core/Core.csproj",
+        "tools/Tool.csproj",
+    ]
+
+
+def test_slnx_with_bom(tmp_path: Path) -> None:
+    """Тот же BOM, что и в .csproj: читаем байтами, иначе ET.fromstring упадёт."""
+    _write(tmp_path / "A/A.csproj", "<Project />")
+    path = tmp_path / "App.slnx"
+    path.write_bytes(b'\xef\xbb\xbf<Solution><Project Path="A/A.csproj" /></Solution>')
+    assert parse_sln(path, tmp_path) == ["A/A.csproj"]
 
 
 def test_sln_skips_solution_folders_and_other_project_types(tmp_path: Path) -> None:

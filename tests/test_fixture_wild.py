@@ -26,11 +26,17 @@ EXPECTED_CS = [
     "src/Wild.Api/GlobalUsings.cs",
     "src/Wild.Api/Legacy/BlockNamespace.cs",
     "src/Wild.Api/Legacy/NoNamespace.cs",
+    "src/Wild.Api/Modules/ConditionalModule.cs",
     "src/Wild.Api/Pages/Login.cshtml.cs",
     "src/Wild.Api/Pages/Register.cshtml.cs",
     "src/Wild.Api/Program.cs",
+    "src/Wild.Api/Services/CrudAppService.cs",
     "tests/Wild.Tests/CatalogListEndpointTests.cs",
 ]
+
+# Единственный файл фикстуры, который **обязан** разбираться с ошибками:
+# он воспроизводит конструкцию, на которой ломается сам tree-sitter.
+EXPECTED_BROKEN = "src/Wild.Api/Modules/ConditionalModule.cs"
 
 
 def _root(solution: Path, relative: str) -> Node:
@@ -72,7 +78,7 @@ def test_two_projects_one_of_them_tests(wild_solution: Path) -> None:
     assert projects == ["src/Wild.Api/Wild.Api.csproj", "tests/Wild.Tests/Wild.Tests.csproj"]
 
 
-@pytest.mark.parametrize("relative", EXPECTED_CS)
+@pytest.mark.parametrize("relative", [p for p in EXPECTED_CS if p != EXPECTED_BROKEN])
 def test_every_file_parses_without_errors(wild_solution: Path, relative: str) -> None:
     tree = _PARSER.parse((wild_solution / relative).read_bytes())
     assert _count_errors(tree.root_node) == 0
@@ -162,6 +168,43 @@ def test_nested_types_share_simple_name(wild_solution: Path) -> None:
             names.append(f"{outer_name}.{inner_name}")
 
     assert names == ["LoginModel.InputModel", "RegisterModel.InputModel"]
+
+
+def test_preprocessor_inside_attribute_arguments(wild_solution: Path) -> None:
+    """Файл, на котором ломается сама грамматика (находка ABP).
+
+    `#if` внутри списка аргументов атрибута рвёт выражение, а вместе с ним и
+    объявление, потому что атрибут — потомок объявления. Класс перестаёт быть
+    `class_declaration` и переразбирается как top-level statement.
+
+    Фиксируем и наличие конструкции, и её последствие: если файл «починят»,
+    тесты T06 и T20 продолжат проходить, ничего не проверяя.
+    """
+    source = (wild_solution / EXPECTED_BROKEN).read_text(encoding="utf-8")
+    attribute = source[source.index("[DependsOn(") : source.index(")]")]
+    assert "#if" in attribute, "фикстура потеряла директиву внутри аргументов атрибута"
+
+    root = _root(wild_solution, EXPECTED_BROKEN)
+    assert _count_errors(root) > 0
+    assert "class_declaration" not in {c.type for c in root.children}
+    assert "global_statement" in {c.type for c in root.children}
+
+
+def test_generic_arity_overloads(wild_solution: Path) -> None:
+    """Три типа с одним именем и FQN, различимые только числом параметров (T10, T15)."""
+    root = _root(wild_solution, "src/Wild.Api/Services/CrudAppService.cs")
+    declarations = [c for c in root.children if c.type == "interface_declaration"]
+
+    names = {
+        next(c.text.decode() for c in d.children if c.type == "identifier") for d in declarations
+    }
+    arities = sorted(
+        len(next(c for c in d.children if c.type == "type_parameter_list").named_children)
+        for d in declarations
+    )
+
+    assert names == {"ICrudAppService"}
+    assert arities == [1, 2, 3]
 
 
 def test_slug_collision_within_one_module(wild_solution: Path) -> None:

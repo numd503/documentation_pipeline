@@ -230,6 +230,73 @@ def test_xml_doc_inner_tags_are_stripped() -> None:
     assert parse_source(source, "N.cs").declarations[0].xml_doc == "See for details."
 
 
+# --------------------------------------------------------------------------------------
+# Препроцессор — находки прогона на ABP, см. docs/findings-abp.md
+# --------------------------------------------------------------------------------------
+
+
+def test_types_inside_preprocessor_are_found() -> None:
+    """`#if` вокруг объявления типа разбору не мешает: обе ветки попадают в дерево."""
+    source = b"""namespace N;
+#if DEBUG
+public class OnlyDebug { }
+#else
+public class OnlyRelease { }
+#endif
+public class Always { }
+"""
+    result = parse_source(source, "N.cs")
+    assert result.parse_errors == 0
+    assert [d.name for d in result.declarations] == ["OnlyDebug", "OnlyRelease", "Always"]
+
+
+def test_preprocessor_inside_attribute_loses_the_declaration(wild_solution: Path) -> None:
+    """Известное ограничение tree-sitter: `#if` внутри списка аргументов атрибута.
+
+    Директива рвёт выражение. Атрибут — потомок объявления, поэтому ломается
+    и само объявление: остаток файла переразбирается как top-level statements,
+    и тип исчезает из вывода целиком. Так в ABP теряется `CmsKitWebUnifiedModule`
+    (8 ошибок, 0 объявлений) — фикстура воспроизводит его один в один.
+
+    Восстановится ли грамматика, зависит от того, что идёт за атрибутом:
+    на упрощённом классе она справляется, на настоящем — нет. Опираться на это
+    нельзя, поэтому единственный надёжный признак беды — `parse_errors > 0`
+    при пустом списке объявлений, и T20 обязан ловить именно эту комбинацию.
+    """
+    result = parse_file(wild_solution / "src/Wild.Api/Modules/ConditionalModule.cs", wild_solution)
+    assert result.parse_errors > 0
+    assert result.declarations == []
+
+
+def test_preprocessor_around_usings_alone_is_harmless() -> None:
+    """Контроль к предыдущему тесту: дело именно в аргументах атрибута."""
+    source = b"""#if EF
+using A.Ef;
+#elif Mongo
+using A.Mongo;
+#endif
+namespace N;
+[DependsOn(typeof(CoreModule))]
+public class AppModule { }
+"""
+    result = parse_source(source, "N.cs")
+    assert result.parse_errors == 0
+    assert [d.name for d in result.declarations] == ["AppModule"]
+
+
+def test_generic_arity_overloads_share_name_and_namespace(wild_solution: Path) -> None:
+    """Три разных типа с одинаковыми именем и FQN, различимые только арностью.
+
+    В ABP таких групп 112. Ключ, построенный по одному FQN, склеил бы их,
+    и суффикс `-{sha256(fqn)[:8]}` не помог бы: FQN у них совпадает.
+    """
+    result = parse_file(wild_solution / "src/Wild.Api/Services/CrudAppService.cs", wild_solution)
+
+    assert {d.name for d in result.declarations} == {"ICrudAppService"}
+    assert {d.namespace for d in result.declarations} == {"Wild.Api.Services"}
+    assert sorted(len(d.type_parameters) for d in result.declarations) == [1, 2, 3]
+
+
 def test_declarations_are_sorted_by_position() -> None:
     source = b"namespace N;\npublic class B { }\npublic class A { }\n"
     assert [d.name for d in parse_source(source, "N.cs").declarations] == ["B", "A"]

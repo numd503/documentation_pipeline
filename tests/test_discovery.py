@@ -100,6 +100,19 @@ def test_discover_project_files(sample_solution: Path) -> None:
     assert result.sln_files == ["SampleSolution.sln"]
 
 
+def test_discover_finds_slnx_alongside_sln(tmp_path: Path) -> None:
+    """`.slnx` — новый формат решения; в ABP их 30, а классических `.sln` ноль.
+
+    Обход только по `.sln` не нашёл бы там ни одного решения.
+    """
+    (tmp_path / "App.sln").write_text("", encoding="utf-8")
+    (tmp_path / "New.slnx").write_text("<Solution />", encoding="utf-8")
+    (tmp_path / "App.sln.DotSettings").write_text("", encoding="utf-8")
+
+    result = discover(tmp_path, EXCLUDE)
+    assert result.sln_files == ["App.sln", "New.slnx"]
+
+
 def test_discover_is_stable_across_calls(sample_solution: Path) -> None:
     assert discover(sample_solution, EXCLUDE) == discover(sample_solution, EXCLUDE)
 

@@ -43,7 +43,13 @@ def _iter_elements(root: ET.Element, name: str) -> list[ET.Element]:
 
 
 def _split_frameworks(text: str) -> list[str]:
-    return [part.strip() for part in text.split(";") if part.strip()]
+    """Список платформ из значения `<TargetFramework(s)>`.
+
+    Подстановки MSBuild отбрасываются: значения вида `$(TargetFrameworks)`
+    здесь не развернуть, а в манифесте они были бы просто мусором,
+    неотличимым от настоящей платформы (в ABP такой один проект — MAUI).
+    """
+    return [part.strip() for part in text.split(";") if part.strip() and "$(" not in part]
 
 
 def _target_frameworks(root: ET.Element) -> list[str]:
@@ -91,6 +97,23 @@ def _includes(root: ET.Element, name: str) -> list[str]:
     return values
 
 
+def _resolve_reference(include: str, csproj_dir: Path, repo_root: Path) -> str:
+    """`Include` из `ProjectReference` -> репо-относительный путь `.csproj`.
+
+    Путь в `Include` задан относительно каталога проекта и с разделителями
+    Windows. Если цель лежит вне корня обхода (или содержит неразвёрнутую
+    подстановку MSBuild), возвращаем значение как есть: в манифесте такому
+    модулю всё равно не быть, но потерять ребро молча хуже, чем сохранить
+    неразрешённое.
+    """
+    normalized = include.replace("\\", "/").strip()
+    try:
+        target = (csproj_dir / normalized).resolve()
+        return target.relative_to(repo_root).as_posix()
+    except (ValueError, OSError):
+        return normalized
+
+
 def parse_csproj(path: Path, repo_root: Path) -> Module:
     """Разобрать файл проекта в `Module`.
 
@@ -99,18 +122,23 @@ def parse_csproj(path: Path, repo_root: Path) -> Module:
     """
     root = _parse_xml(path)
     name = path.stem
+    repo_root = repo_root.resolve()
+    csproj = path.resolve().relative_to(repo_root).as_posix()
 
     frameworks = _target_frameworks(root) or _inherited_frameworks(path, repo_root)
 
     project_references = sorted(
-        {Path(value.replace("\\", "/")).stem for value in _includes(root, "ProjectReference")}
+        {
+            _resolve_reference(value, path.parent.resolve(), repo_root)
+            for value in _includes(root, "ProjectReference")
+        }
     )
     package_references = sorted(set(_includes(root, "PackageReference")))
 
     return Module(
-        id=f"module:{name}",
+        id=f"module:{csproj}",
         name=name,
-        csproj=path.resolve().relative_to(repo_root.resolve()).as_posix(),
+        csproj=csproj,
         target_frameworks=frameworks,
         project_references=project_references,
         package_references=package_references,

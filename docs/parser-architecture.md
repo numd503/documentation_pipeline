@@ -274,19 +274,21 @@ DI-регистраций. Это позволяет документирова�
   "parser": { "tree_sitter": "0.26.0", "grammar_c_sharp": "0.23.5" },
   "partial": null,                     // либо {"scope": ["src/…"], "outside_from_cache": true}
   "modules": [
-    { "id": "module:Sample.Pricing.Api", "name": "Sample.Pricing.Api",
+    { "id": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+      "name": "Sample.Pricing.Api",
       "csproj": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
-      "target_frameworks": ["net8.0"], "project_references": ["Sample.Common"],
+      "target_frameworks": ["net8.0"],
+      "project_references": ["src/Sample.Common/Sample.Common.csproj"],
       "domain": "pricing", "enrolled": true }
   ],
   "nodes": [
     {
-      "id": "type:Sample.Pricing.Api.Controllers.PricingController",
+      "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Controllers.PricingController`0",
       "kind": "controller",
       "template": "controller",
       "title": "PricingController",
       "doc_path": "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md",
-      "parent": "module:Sample.Pricing.Api",
+      "parent": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
       "module": "Sample.Pricing.Api",
       "domain": "pricing",
       "symbol": {
@@ -395,8 +397,12 @@ docpipe schema --out schema/doc-tree.schema.json
 2. **Внешние типы не резолвятся.** `ControllerBase` остаётся строкой. Для правил этого
    достаточно, для глубокого анализа — нет.
 3. **Скоуп-режим слеп к изменениям вне скоупа** (§2.3). Компенсируется полным прогоном в CI.
-4. **Условная компиляция.** `#if` не вычисляется; tree-sitter возвращает все ветки. Это может
-   давать дубли объявлений; они схлопываются при слиянии по FQN.
+4. **Условная компиляция.** `#if` не вычисляется; tree-sitter возвращает все ветки — оба
+   варианта члена попадают в документацию. Хуже другое: директива **внутри выражения**
+   (аргументы атрибута, fluent-цепочка) рвёт разбор, и объявление типа может исчезнуть
+   из вывода целиком. Обойти это в рамках tree-sitter нельзя, поэтому `validate` отдельно
+   проверяет комбинацию «ошибки разбора есть, объявлений нет» — см.
+   [findings-abp.md](findings-abp.md). На ABP такой файл один из 7869 (0,01 %).
 5. **Генераторы исходников** (source generators) не запускаются — их вывод не документируется.
 6. **Апгрейд грамматики может изменить вывод.** Это легитимно и должно быть видно в диффе,
    поэтому версии зафиксированы в `pyproject.toml` и записаны в манифест.

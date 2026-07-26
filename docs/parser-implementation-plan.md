@@ -116,6 +116,36 @@ invocation_expression
 `namespace_declaration` (`namespace N { }`) — контейнер, объявления внутри `declaration_list`.
 Определение охватывающего namespace должно поддерживать оба случая.
 
+**Директивы препроцессора: `#if` — контейнер, `#region` — нет.** Асимметрия неочевидная,
+проверена на ABP (см. [findings-abp.md](findings-abp.md)).
+
+```
+declaration_list
+├── method_declaration One       ← прямой потомок
+├── preproc_if                   ← КОНТЕЙНЕР
+│   ├── method_declaration Two       ← НЕ прямой потомок тела
+│   └── preproc_else
+│       └── method_declaration TwoOld
+├── preproc_region               ← плоский маркер, не контейнер
+├── method_declaration Three     ← остаётся прямым потомком
+└── preproc_endregion
+```
+
+Препроцессор tree-sitter **не выполняет**: обе ветки `#if/#else` присутствуют в дереве
+одновременно, оба варианта члена попадут в вывод. Это осознанное поведение — документируем
+все варианты, а не тот, что собрался бы при конкретном наборе символов компиляции.
+
+**`#if` внутри выражения ломает разбор, и объявление может исчезнуть целиком.** Директива
+внутри списка аргументов атрибута рвёт выражение; атрибут — потомок объявления, поэтому
+ломается и объявление: остаток файла переразбирается как top-level statements, и
+`class_declaration` пропадает из вывода. В ABP так теряется `CmsKitWebUnifiedModule`
+(8 ошибок, 0 объявлений). Восстановится ли грамматика — зависит от того, что идёт дальше
+по файлу; опираться на это нельзя.
+
+Обойти нельзя, это предел tree-sitter. Единственный надёжный признак —
+**`parse_errors > 0` при пустом списке объявлений**; T20 обязан ловить эту комбинацию.
+Фикстура: `WildSolution/src/Wild.Api/Modules/ConditionalModule.cs`.
+
 ---
 
 ## T00 — Каркас проекта
@@ -529,7 +559,7 @@ uv run pytest tests/test_fixture.py -q
 на точные количества в `SampleSolution` (11 файлов, 10 символов, 6 узлов). Расширение
 той фикстуры потребовало бы перенумеровать их все.
 
-**Создать:** дерево `tests/fixtures/WildSolution/` (11 файлов `.cs`, 2 `.csproj`, 1 `.sln`),
+**Создать:** дерево `tests/fixtures/WildSolution/` (13 файлов `.cs`, 2 `.csproj`, 1 `.sln`),
 `tests/test_fixture_wild.py`; добавить фикстуру `wild_solution` в `tests/conftest.py`
 
 ```
@@ -545,8 +575,10 @@ tests/fixtures/WildSolution/
 │   ├── Endpoints/CatalogListEndpoint.cs  generic-интерфейс в базе
 │   ├── Legacy/BlockNamespace.cs          namespace в блочной форме
 │   ├── Legacy/NoNamespace.cs             тип в глобальном namespace
+│   ├── Modules/ConditionalModule.cs      #if в аргументах атрибута — разбор ломается
 │   ├── Pages/Login.cshtml.cs             вложенный InputModel
-│   └── Pages/Register.cshtml.cs          вложенный InputModel (то же имя)
+│   ├── Pages/Register.cshtml.cs          вложенный InputModel (то же имя)
+│   └── Services/CrudAppService.cs        три ICrudAppService с арностями 1, 2, 3
 └── tests/Wild.Tests/
     ├── Wild.Tests.csproj                 тестовый проект: парсится, но не enrolled
     └── CatalogListEndpointTests.cs
@@ -564,10 +596,19 @@ tests/fixtures/WildSolution/
 | Вложенные типы с общим именем | два узла схлопываются в один | T10 |
 | Два `Constants` в одном модуле | коллизия `doc_path` | T15 |
 | Тестовый проект | тесты попадают в документацию | T15 |
+| `#if` в аргументах атрибута | тип исчезает из вывода молча | T06, T20 |
+| Перегрузка по арности дженерика | три типа склеиваются в один узел | T10, T15 |
 
 **Критерии приёмки**
-- ровно 11 файлов `.cs` и 2 `.csproj` по перечисленным путям;
-- **каждый** файл разбирается с `parse_errors == 0` и `has_error is False`;
+- ровно 13 файлов `.cs` и 2 `.csproj` по перечисленным путям;
+- каждый файл, **кроме `Modules/ConditionalModule.cs`**, разбирается
+  с `parse_errors == 0` и `has_error is False`;
+- `ConditionalModule.cs`: `parse_errors > 0`, среди детей корня **нет**
+  `class_declaration`, но есть `global_statement`, а в тексте между `[DependsOn(`
+  и `)]` присутствует `#if`. Проверять обе половины: без первой тест сломается,
+  если файл «починят», без второй — если грамматика научится восстанавливаться;
+- `CrudAppService.cs`: три `interface_declaration` с одним именем `ICrudAppService`
+  и арностями 1, 2, 3;
 - `AuthenticateEndpoint`: сырой текст базы содержит `\n`;
 - `Program.cs`: среди детей корня есть `global_statement`, **нет** `class_declaration`
   и `method_declaration`; в дереве 4 вызова `Add*`;
@@ -826,7 +867,8 @@ uv run pytest tests/test_discovery.py -q
 
 **Спецификация**
 
-**Три ловушки, проверенные на реальных проектах** (eShopOnWeb, 10 `.csproj`):
+**Шесть ловушек, проверенных на реальных проектах** (eShopOnWeb — 10 `.csproj`,
+ABP — 671 `.csproj` и 30 решений):
 
 1. **BOM.** Все 10 файлов сохранены в UTF-8 с BOM (`ef bb bf`). Чтение через
    `read_text(encoding="utf-8")` оставит BOM первым символом, и `ET.fromstring`
@@ -844,23 +886,52 @@ uv run pytest tests/test_discovery.py -q
    и теги выглядят как `{http://…}PropertyGroup`. Сравнивать только по локальному
    имени: `tag.rpartition("}")[2]`.
 
+4. **Имена проектов не уникальны.** В ABP 39 повторяющихся имён, включая три разных
+   `MyCompanyName.MyProjectName.csproj`. Поэтому `id = "module:" + репо-относительный
+   путь к csproj`, а **не** `"module:" + name`: путь уникален по построению и считается
+   локально из одного файла, без глобального прохода по всем модулям.
+
+5. **`ProjectReference` сопоставлять по пути, а не по имени.** По той же причине:
+   `Path(include).stem` при неуникальных именах уводит ребро графа в произвольный
+   из одноимённых модулей. Разрешать `Include` относительно каталога проекта
+   в репо-относительный путь, сравнимый с полем `csproj` другого модуля
+   (на ABP так разрешаются 2383 ссылки из 2383).
+
+6. **Неразвёрнутые подстановки MSBuild.** MAUI-проект ABP объявляет
+   `<TargetFrameworks>$(TargetFrameworks);net10.0-ios;…`, и в манифест попадала бы
+   строка `$(TargetFrameworks)`, неотличимая от настоящей платформы. Значения с `$(`
+   отбрасывать.
+
 Полного вычисления свойств MSBuild не делать: условия, подстановки `$(…)` и цепочки
 `Import` не разворачиваются. Задача — структурные факты, а не воспроизведение сборки.
 
 `csproj.py` — `parse_csproj(path: Path, repo_root: Path) -> Module`:
-- имя модуля = имя файла без `.csproj`;
+- `name` = имя файла без `.csproj`; `id` = `"module:" + csproj` (репо-относительный путь);
 - `target_frameworks`: из `<TargetFramework>` или `<TargetFrameworks>` (сплит по `;`),
-  при отсутствии — унаследованные из props-файлов (см. выше), отсортировать;
-- `project_references`: из `<ProjectReference Include="...">`, взять имя файла без расширения,
-  разделители `\` привести к `/`, отсортировать;
+  при отсутствии — унаследованные из props-файлов (см. выше), отбросить значения
+  с `$(`, отсортировать;
+- `project_references`: из `<ProjectReference Include="...">`, разрешить относительно
+  каталога проекта в репо-относительный путь POSIX, отсортировать. Ссылку за пределы
+  корня обхода оставить как есть — потерять ребро молча хуже, чем сохранить неразрешённое;
 - `package_references`: из `<PackageReference Include="...">`, отсортировать;
 - парсинг через `xml.etree.ElementTree`; игнорировать XML-namespace, если он присутствует
   (сравнивать по локальному имени тега);
 - `domain` и `enrolled` на этом этапе заполняются заглушками (`""`, `True`) — их проставит T15.
 
 `sln.py` — `parse_sln(path: Path, repo_root: Path) -> list[str]`: вернуть репо-относительные
-пути `.csproj` из строк `Project(...) = "...", "путь", "..."`. Разделители `\` → `/`.
-Отсортировать. Файл читать как UTF-8 с `errors="replace"`.
+пути `.csproj`. **Форматов два, выбирать по суффиксу:**
+
+- `.sln` — текстовый, строки `Project(...) = "...", "путь", "..."`, регулярное выражение.
+  Файл читать как UTF-8 с `errors="replace"`.
+- `.slnx` — XML (VS 17.10+), элементы `<Project Path="…"/>`. Читать **байтами** (тот же BOM).
+  Проекты лежат либо прямо под `<Solution>`, либо во вложенных `<Folder>`, поэтому обходить
+  всё дерево (`root.iter()`), а не только детей корня.
+
+> `.slnx` игнорировать нельзя: ABP мигрировал на него целиком — **30 файлов `.slnx`
+> и ноль `.sln`**, поиск только по `.sln` не нашёл бы там ни одного решения.
+> `discovery` собирает оба расширения в `sln_files`.
+
+Разделители `\` → `/`, результат отсортировать.
 
 **Фильтровать по расширению `.csproj`.** Записи `Project(...)` описывают не только
 проекты C#: папки решения (тип `{2150E333-…}`) кладут в поле пути собственное имя
@@ -868,17 +939,23 @@ uv run pytest tests/test_discovery.py -q
 В `eShopOnWeb.sln` из 14 записей `Project(...)` только 10 — проекты C#.
 
 **Критерии приёмки**
-- `Sample.Pricing.Api`: `target_frameworks == ["net8.0", "net9.0"]`,
-  `project_references == ["Sample.Common"]`, `package_references == ["Apache.Ignite"]`.
+- `Sample.Pricing.Api`: `id == "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj"`,
+  `target_frameworks == ["net8.0", "net9.0"]`,
+  `project_references == ["src/Sample.Common/Sample.Common.csproj"]`,
+  `package_references == ["Apache.Ignite"]`.
 - `Sample.Common`: `target_frameworks == ["net8.0"]`, остальные списки пусты.
 - `parse_sln` возвращает ровно 2 пути, оба существуют на диске.
 - На `WildSolution`: `Wild.Api.csproj` разбирается несмотря на BOM;
   `Wild.Tests.csproj` **без собственного** `TargetFramework` даёт `["net8.0"]`
-  из `Directory.Build.props`; `..\..\src\Wild.Api\Wild.Api.csproj` даёт `["Wild.Api"]`;
-  `PackageReference` с вложенными `PrivateAssets` разбирается.
+  из `Directory.Build.props`; `..\..\src\Wild.Api\Wild.Api.csproj` даёт
+  `["src/Wild.Api/Wild.Api.csproj"]`; `PackageReference` с вложенными `PrivateAssets`
+  разбирается.
 - Синтетические случаи: legacy-`.csproj` с `xmlns`; `.sln` с папкой решения
-  и `.dcproj`; ближайший props-файл побеждает дальний; собственный TFM побеждает
-  унаследованный; битый XML падает с `ET.ParseError`, а не даёт пустой модуль.
+  и `.dcproj`; `.slnx` с проектами на разной глубине `<Folder>` и с BOM; ближайший
+  props-файл побеждает дальний; собственный TFM побеждает унаследованный;
+  `$(TargetFrameworks)` отбрасывается; два одноимённых `Common.csproj` в разных
+  каталогах получают **разные** `id`; битый XML падает с `ET.ParseError`, а не даёт
+  пустой модуль.
 
 **Проверка**
 ```bash
@@ -998,8 +1075,18 @@ uv run pytest tests/test_parser_declarations.py -q
 **Изменить:** `docpipe/dotnet/parser.py`, `docpipe/dotnet/queries/members.scm`; создать `tests/test_parser_members.py`
 
 **Спецификация.** Извлекать `method_declaration`, `property_declaration`, `field_declaration`,
-`constructor_declaration`, `event_declaration`, объявленные **непосредственно** в теле типа
-(не в теле вложенного типа).
+`constructor_declaration`, `event_declaration`, принадлежащие **этому** типу — то есть
+не лежащие внутри тела вложенного типа.
+
+> **Не перебирать прямых детей `declaration_list`.** Члены под `#if` прямыми детьми тела
+> **не являются** — они уходят под `preproc_if` / `preproc_else` (см. раздел о грамматике),
+> и такая реализация потеряла бы их молча. Спускаться вглубь, останавливаясь на узлах
+> из `_TYPE_KIND_BY_NODE`: всё, что глубже вложенного типа, принадлежит ему, а не текущему.
+> `#region`, в отличие от `#if`, контейнером не является и обходу не мешает.
+>
+> Обе ветки `#if/#else` дают члены с одинаковым именем — это ожидаемо, дедуплицировать
+> **не нужно**: документируем оба варианта. Сортировка по `(line, name)` разведёт их
+> детерминированно.
 
 - `kind` — по типу узла;
 - `name` — из `name: (identifier)`; для поля — имя первого `variable_declarator`;
@@ -1022,6 +1109,27 @@ uv run pytest tests/test_parser_declarations.py -q
 
 `RiskComputeService` — ровно 3 метода. `PriceDto` (record с primary constructor) — не падает,
 `members` может быть пустым.
+
+Отдельный тест на препроцессор (разбор из строки, фикстуру не трогать):
+
+```csharp
+public class A {
+    public void One() { }
+#if NET8_0_OR_GREATER
+    public void Two() { }
+#else
+    public void TwoOld() { }
+#endif
+    public void Three() { }
+}
+```
+
+Ожидается **четыре** члена: `One`, `Two`, `TwoOld`, `Three`. Реализация, идущая по прямым
+детям тела, вернёт два — `One` и `Three`.
+
+Второй тест — вложенный тип не отдаёт свои члены наружу:
+`class Outer { void OuterM() { } class Inner { void InnerM() { } } }` →
+у `Outer` ровно один член `OuterM`, у `Inner` — один `InnerM`.
 
 **Проверка**
 ```bash
@@ -1506,12 +1614,38 @@ def build_nodes(symbols: dict[str, Symbol], modules: list[Module],
 2. **Enrollment.** `module.enrolled = any(fnmatch(csproj, g) for g in config.enrolled)`.
 3. **Классификация.** Для символов **enrolled** модулей вызвать `classify`. Неклассифицированные
    и символы неenrolled модулей узлов не порождают.
-4. **id** узла: `"type:" + symbol.fqn`. id модуля: `"module:" + module.name`.
-5. **doc_path**: `docs/modules/{module}/{kind_plural}/{slug}.md`, где `kind_plural` —
+4. **id** узла: `"type:" + module.csproj + "#" + symbol.fqn + "`" + арность`.
+   id модуля: `"module:" + module.csproj` (уже так реализовано в T05).
+
+   > **FQN не уникален — проверено на ABP**, см. [findings-abp.md](findings-abp.md).
+   > На 9075 объявлениях: по одному только `fqn` — 255 коллизий, по `module + fqn` — 108,
+   > по `module + fqn + арность` — 3. Две независимые причины:
+   >
+   > - **перегрузка по арности дженерика**: `IObjectMapper`, `IObjectMapper<T>` и
+   >   `IObjectMapper<TSource,TDest>` — три разных типа с одним FQN (таких групп 112,
+   >   рекорд — шесть арностей у одного имени);
+   > - **одинаковые FQN в разных сборках** — законно в C# и встречается в шаблонах.
+   >
+   > Оставшиеся 3 коллизии — файлы, которые никогда не компилируются вместе
+   > (`Platforms/iOS/Program.cs` против `Platforms/MacCatalyst/Program.cs`). Их разводит
+   > только путь: если после ключа `module + fqn + арность` коллизия всё же осталась —
+   > добавить `-{sha256(путь к файлу)[:8]}` и **записать это в `stats`**, потому что
+   > почти всегда это сигнал о неверно заданном scope, а не о норме.
+
+5. **doc_path**: `docs/modules/{module.name}/{kind_plural}/{slug}.md`, где `kind_plural` —
    `kind` + `s` (`controller` → `controllers`, `ignite_service` → `ignite_services`),
    `slug = slugify(symbol.name)`.
-6. **Коллизии.** Сгруппировать узлы по `doc_path`. Если в группе >1 — **всем** участникам
-   добавить суффикс `-{sha256(fqn)[:8]}` перед `.md`.
+6. **Коллизии `doc_path`.** Сгруппировать узлы по `doc_path`. Если в группе >1 — **всем**
+   участникам добавить суффикс `-{sha256(id)[:8]}` перед `.md`.
+
+   > Суффикс считается от **id узла, а не от FQN**. Хэш от FQN не разводит ничего там,
+   > где FQN совпадает: на ABP внутри одного модуля 195 групп типов дают одинаковый slug,
+   > и в 105 из них FQN тоже одинаков — суффикс от FQN дал бы тем же типам тот же файл.
+   > id включает арность и путь, поэтому уникален по построению.
+   >
+   > Имя модуля в пути (`{module.name}`) тоже может повторяться — в ABP 39 таких имён.
+   > Для АС CF это маловероятно, но `validate` (T20) обязан проверять, что `doc_path`
+   > всех узлов различны, и падать, если нет.
 7. **endpoints** — из T12. **dependencies**:
    - параметры конструктора: тип каждого параметра резолвится по индексу; `via="constructor"`,
      `confidence="high"` если резолвнулся, иначе `"low"`;
@@ -1541,7 +1675,11 @@ def build_nodes(symbols: dict[str, Symbol], modules: list[Module],
 - `signature_hash` не меняется, если в исходнике добавить пустую строку перед классом
   (тест делает это на временной копии фикстуры);
 - искусственный тест коллизии: два класса с одинаковым именем в одном модуле → **оба**
-  `doc_path` получают хэш-суффикс.
+  `doc_path` получают хэш-суффикс;
+- на `WildSolution/src/Wild.Api/Services/CrudAppService.cs` (три `ICrudAppService`
+  с арностями 1, 2, 3 — один FQN на всех) получается **три разных id и три разных
+  `doc_path`**. Это прямая проверка того, что ключ учитывает арность: реализация
+  на одном FQN даст здесь один узел вместо трёх.
 
 **Проверка**
 ```bash
@@ -1784,6 +1922,23 @@ total symbols        10
 `docpipe validate MANIFEST.json` — валидация через `Manifest.model_validate_json`.
 Код возврата 0 при успехе, 1 при ошибке, сообщение об ошибке в stderr.
 
+Схемой дело не ограничивается — проверить ещё три инварианта, каждый из которых
+однажды нарушался на реальном коде:
+
+1. **Уникальность `id`** узлов и модулей. Совпадение означает, что ключ построен неверно
+   и часть документации потерялась молча (на ABP `module:{name}` давал 39 дублей).
+2. **Уникальность `doc_path`.** Два узла, пишущие в один файл, — это потеря документа
+   на шаге 2, а не косметика.
+3. **Файлы с `parse_errors > 0`, не давшие ни одного объявления.** Это не «файл без типов»,
+   а сломанный разбор: `#if` внутри аргументов атрибута рвёт объявление, и тип исчезает
+   целиком (см. [findings-abp.md](findings-abp.md)). Единственный внешний признак — именно
+   эта комбинация, поэтому она должна давать **ненулевой код возврата** со списком путей,
+   а не строку в логе. Для этого `scan` обязан класть в сидкар `doc-tree.run.json` список
+   таких файлов.
+
+Пустой список объявлений сам по себе — норма (`Program.cs` на top-level statements,
+`GlobalUsings.cs`), поэтому проверяется именно пара «ошибки есть **и** объявлений нет».
+
 `docpipe stats MANIFEST.json` — та же таблица, но по готовому манифесту (без `unclassified`).
 
 **Критерии приёмки**
@@ -1791,7 +1946,10 @@ total symbols        10
   (`controller 2`, `ignite_service 1`, `provider 1`, `service 1`, `workflow 1`,
   `unclassified 3`, `excluded 1`, `total symbols 10`) и **не создаёт** выходной файл;
 - `--dry-run` на неизменённой фикстуре против существующего манифеста печатает «изменений нет»;
-- `validate` на валидном манифесте → код 0; на файле `{}` → код 1.
+- `validate` на валидном манифесте → код 0; на файле `{}` → код 1;
+- `validate` на манифесте с двумя узлами, у которых совпадает `doc_path`, → код 1;
+- `scan` на `WildSolution` (там лежит `Modules/ConditionalModule.cs`, теряющий объявление)
+  записывает его путь в `doc-tree.run.json`, и `validate` даёт код 1 со списком этих файлов.
 
 **Проверка**
 ```bash
