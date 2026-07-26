@@ -1074,31 +1074,60 @@ uv run pytest tests/test_parser_declarations.py -q
 
 **Изменить:** `docpipe/dotnet/parser.py`, `docpipe/dotnet/queries/members.scm`; создать `tests/test_parser_members.py`
 
-**Спецификация.** Извлекать `method_declaration`, `property_declaration`, `field_declaration`,
-`constructor_declaration`, `event_declaration`, принадлежащие **этому** типу — то есть
-не лежащие внутри тела вложенного типа.
+**Спецификация.** В `members.scm` перечислить **шесть** узлов:
+`method_declaration`, `property_declaration`, `field_declaration`, `constructor_declaration`,
+`event_field_declaration`, `event_declaration`.
+
+> **Событие объявляется двумя разными узлами.** `event_field_declaration` — обычная форма
+> (`public event EventHandler Changed;`), `event_declaration` — форма с `add`/`remove`.
+> Забыть первую легко: в имени узла нет слова, по которому станешь её искать. В ABP
+> обычных событий вдвое больше.
+
+Принадлежность члена типу считать **обходом вверх**: ближайший предок из
+`_TYPE_KIND_BY_NODE` и есть владелец. Группировать по `Node.id` — узлы дерева
+нехэшируемы, а `id` уникален в пределах одного разбора.
 
 > **Не перебирать прямых детей `declaration_list`.** Члены под `#if` прямыми детьми тела
 > **не являются** — они уходят под `preproc_if` / `preproc_else` (см. раздел о грамматике),
-> и такая реализация потеряла бы их молча. Спускаться вглубь, останавливаясь на узлах
-> из `_TYPE_KIND_BY_NODE`: всё, что глубже вложенного типа, принадлежит ему, а не текущему.
-> `#region`, в отличие от `#if`, контейнером не является и обходу не мешает.
+> и такая реализация потеряла бы их молча. Запрос находит их на любой глубине, а обход
+> вверх сам разводит вложенные типы: член вложенного типа найдёт своим владельцем его,
+> а не внешний тип. `#region`, в отличие от `#if`, контейнером не является и не мешает.
 >
 > Обе ветки `#if/#else` дают члены с одинаковым именем — это ожидаемо, дедуплицировать
 > **не нужно**: документируем оба варианта. Сортировка по `(line, name)` разведёт их
 > детерминированно.
 
-- `kind` — по типу узла;
-- `name` — из `name: (identifier)`; для поля — имя первого `variable_declarator`;
-- `signature` — нормализованный текст: от начала объявления до `{`, `=>` или `;`
-  (что встретится раньше), с схлопыванием любых последовательностей пробельных символов
-  в один пробел и обрезкой по краям;
+- `kind` — по типу узла (оба узла события дают `"event"`);
+- `name` — из `name: (identifier)`. У `field_declaration` и `event_field_declaration`
+  поля `name` нет: имена лежат в `variable_declaration` → `variable_declarator`,
+  и их может быть **несколько** (`private int _a = 1, _b = 2;`). Порождать по одному
+  `Member` на каждый declarator; правило «взять первый» теряло бы `_b` молча
+  (на ABP таких полей 0 из 1652, но цена корректности здесь нулевая);
+- `signature` — текст от первого потомка, не являющегося `attribute_list`, до первого
+  потомка из `{block, arrow_expression_clause, accessor_list, ";"}`, с схлопыванием
+  любых последовательностей пробельных символов в один пробел и обрезкой по краям.
+  Резать по узлам, а не поиском символа `{` в тексте: `{` встречается внутри
+  инициализаторов и строковых литералов. Ограничения `where T : class` и
+  `: base(x)` стоят до тела и в сигнатуру **входят**;
 - `modifiers` — отсортированы;
 - `attributes` — тем же кодом, что в T06;
 - `line` / `end_line` — 1-based;
 - `xml_doc` — тем же кодом, что в T06.
 
-Список `members` сортируется по `(line, name)`.
+Список `members` сортируется по `(line, name)`. На разных строках это совпадает
+с порядком объявления; два члена на одной строке выстраиваются по имени.
+
+**Что намеренно не извлекается:** `indexer_declaration`, `operator_declaration`,
+`conversion_operator_declaration`, `destructor_declaration`, `delegate_declaration`.
+В `MemberKind` таких значений нет, а на 3000 файлов ABP их суммарно 20 против 14 000
+обычных членов. Понадобятся — добавляются строкой в `members.scm` и записью в
+`_MEMBER_KIND_BY_NODE`, но сначала нужно расширить `MemberKind` в `model.py`.
+
+**Сигнатура поля включает инициализатор** (`private int _a = 1`): `{` коллекции лежит
+внутри `variable_declaration`, а не отдельным потомком, поэтому обрезка по узлам его
+не отсекает. Обычно это полезно (значение `const` — часть контракта), но хвост тяжёлый:
+на ABP медиана сигнатуры поля 52 символа, p99 — 187, максимум **1283** (поле с ASCII-графикой
+в инициализаторе). Шаг 3 должен быть готов усекать сигнатуру при выводе.
 
 **Критерии приёмки** — `PricingController`:
 - 4 члена: поле `_pricing`, конструктор `PricingController`, методы `GetAsync`, `RecalculateAsync`;
@@ -1120,16 +1149,30 @@ public class A {
 #else
     public void TwoOld() { }
 #endif
+#region Helpers
+    public void Region() { }
+#endregion
     public void Three() { }
 }
 ```
 
-Ожидается **четыре** члена: `One`, `Two`, `TwoOld`, `Three`. Реализация, идущая по прямым
-детям тела, вернёт два — `One` и `Three`.
+Ожидается **пять** членов: `One`, `Two`, `TwoOld`, `Region`, `Three`. Реализация, идущая
+по прямым детям тела, вернёт три — `One`, `Region`, `Three`.
 
 Второй тест — вложенный тип не отдаёт свои члены наружу:
 `class Outer { void OuterM() { } class Inner { void InnerM() { } } }` →
 у `Outer` ровно один член `OuterM`, у `Inner` — один `InnerM`.
+
+Третий — обе формы события: `public event EventHandler Plain;` и
+`public event EventHandler Custom { add { } remove { } }` дают по одному члену
+с `kind == "event"`.
+
+Четвёртый — поле с двумя объявителями: `private int _a = 1, _b = 2;` даёт **два** члена
+с общей сигнатурой.
+
+Пятый — обрезка сигнатуры: тело, стрелка, аксессоры и `;` абстрактного метода
+дают `"public int Block()"`, `"public int Arrow()"`, `"public int Auto"`,
+`"public abstract int Abstract(int a)"`.
 
 **Проверка**
 ```bash

@@ -9,6 +9,7 @@
 """
 
 import re
+from collections import defaultdict
 from functools import cache
 from pathlib import Path
 
@@ -16,7 +17,15 @@ import tree_sitter_c_sharp as tscs
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
 from docpipe.hashing import content_hash
-from docpipe.model import Attribute, FileParseResult, RawDeclaration, SourceSpan, TypeKind
+from docpipe.model import (
+    Attribute,
+    FileParseResult,
+    Member,
+    MemberKind,
+    RawDeclaration,
+    SourceSpan,
+    TypeKind,
+)
 
 _LANGUAGE = Language(tscs.language())
 _PARSER = Parser(_LANGUAGE)
@@ -31,6 +40,22 @@ _TYPE_KIND_BY_NODE: dict[str, TypeKind] = {
     "record_declaration": "record",
     "enum_declaration": "enum",
 }
+
+# Узел члена -> вид. `event_field_declaration` — обычная форма события
+# (`public event EventHandler Changed;`), `event_declaration` — форма с add/remove.
+_MEMBER_KIND_BY_NODE: dict[str, MemberKind] = {
+    "method_declaration": "method",
+    "property_declaration": "property",
+    "field_declaration": "field",
+    "constructor_declaration": "constructor",
+    "event_field_declaration": "event",
+    "event_declaration": "event",
+}
+
+# Узлы, на которых заканчивается сигнатура: тело, стрелка, блок аксессоров
+# или просто `;` у абстрактного члена. Всё, что до них, — часть сигнатуры,
+# включая ограничения `where T : class`.
+_SIGNATURE_TERMINATORS = frozenset({"block", "arrow_expression_clause", "accessor_list", ";"})
 
 _WHITESPACE = re.compile(r"\s+")
 _SPACE_AROUND_DOT = re.compile(r"\s*\.\s*")
@@ -216,6 +241,102 @@ def _base_types(declaration: Node) -> list[str]:
     return [normalize_type_text(_text(child)) for child in base_list.named_children]
 
 
+def _owning_type(member: Node) -> Node | None:
+    """Ближайший предок-объявление типа, то есть тип, которому принадлежит член.
+
+    Обходом вверх, а не перебором детей тела: члены под `#if` прямыми детьми
+    `declaration_list` не являются (см. `queries/members.scm`). Ближайшего
+    предка достаточно — члены вложенного типа принадлежат ему, а не внешнему.
+    """
+    current = member.parent
+    while current is not None:
+        if current.type in _TYPE_KIND_BY_NODE:
+            return current
+        current = current.parent
+    return None
+
+
+def _signature(member: Node) -> str:
+    """Сигнатура: текст объявления до тела, стрелки, аксессоров или `;`.
+
+    Атрибуты отбрасываются, хотя они и являются потомками узла: в сигнатуре
+    они шумят, а для правил классификации есть отдельное поле `attributes`.
+    """
+    parts: list[Node] = []
+    for child in member.children:
+        if child.type == "attribute_list":
+            continue
+        if child.type in _SIGNATURE_TERMINATORS:
+            break
+        parts.append(child)
+
+    if not parts:
+        return ""
+
+    # Срез по байтам относительно самого узла: так не нужно тащить сюда
+    # исходник целиком, а `member.text` — ровно его фрагмент.
+    raw = member.text or b""
+    start = parts[0].start_byte - member.start_byte
+    end = parts[-1].end_byte - member.start_byte
+    return _WHITESPACE.sub(" ", raw[start:end].decode("utf-8", errors="replace")).strip()
+
+
+def _member_names(member: Node) -> list[str]:
+    """Имена, объявленные одним узлом.
+
+    У поля и события-поля имя лежит не в поле `name`, а в `variable_declarator`,
+    и объявителей может быть несколько: `private int _a = 1, _b = 2;`. Возвращаем
+    все — иначе `_b` пропал бы из документации молча. На ABP таких полей 0 из 1652,
+    но цена корректности здесь нулевая.
+    """
+    if member.type in ("field_declaration", "event_field_declaration"):
+        declaration = next(
+            (c for c in member.named_children if c.type == "variable_declaration"), None
+        )
+        if declaration is None:
+            return []
+        return [
+            _text(c.child_by_field_name("name"))
+            for c in declaration.named_children
+            if c.type == "variable_declarator"
+        ]
+
+    name = _text(member.child_by_field_name("name"))
+    return [name] if name else []
+
+
+def _build_members(nodes: list[Node]) -> list[Member]:
+    """Члены одного типа, отсортированные по `(line, name)`.
+
+    Обе ветки `#if/#else` дают члены с одинаковым именем — это ожидаемо
+    и не дедуплицируется: препроцессор не выполняется, документируются
+    оба варианта.
+    """
+    found: list[Member] = []
+    for node in nodes:
+        kind = _MEMBER_KIND_BY_NODE[node.type]
+        signature = _signature(node)
+        modifiers = sorted(_text(c) for c in node.children if c.type == "modifier")
+        attributes = _attributes(node)
+        xml_doc = _xml_doc(node)
+        for name in _member_names(node):
+            found.append(
+                Member(
+                    name=name,
+                    kind=kind,
+                    signature=signature,
+                    modifiers=modifiers,
+                    attributes=attributes,
+                    line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    xml_doc=xml_doc,
+                )
+            )
+
+    found.sort(key=lambda m: (m.line, m.name))
+    return found
+
+
 def _count_errors(node: Node) -> int:
     total = 1 if node.type == "ERROR" or node.is_missing else 0
     stack = list(node.children)
@@ -227,7 +348,7 @@ def _count_errors(node: Node) -> int:
     return total
 
 
-def _build_declaration(declaration: Node, path: str) -> RawDeclaration:
+def _build_declaration(declaration: Node, path: str, members: list[Member]) -> RawDeclaration:
     return RawDeclaration(
         name=_text(declaration.child_by_field_name("name")),
         type_kind=_type_kind(declaration),
@@ -237,7 +358,7 @@ def _build_declaration(declaration: Node, path: str) -> RawDeclaration:
         modifiers=sorted(_text(c) for c in declaration.children if c.type == "modifier"),
         base_types=_base_types(declaration),
         attributes=_attributes(declaration),
-        members=[],
+        members=members,
         span=SourceSpan(
             path=path,
             start=declaration.start_point[0] + 1,
@@ -251,8 +372,20 @@ def parse_source(source: bytes, path: str) -> FileParseResult:
     """Разобрать содержимое файла. `path` используется только как метка."""
     tree = _PARSER.parse(source)
     captures = QueryCursor(_query("declarations.scm")).captures(tree.root_node)
+    member_captures = QueryCursor(_query("members.scm")).captures(tree.root_node)
 
-    declarations = [_build_declaration(node, path) for node in captures.get("declaration", [])]
+    # Члены группируются по id узла-владельца: узлы дерева нехэшируемы,
+    # а `id` уникален в пределах одного разбора.
+    members_by_owner: defaultdict[int, list[Node]] = defaultdict(list)
+    for node in member_captures.get("member", []):
+        owner = _owning_type(node)
+        if owner is not None:
+            members_by_owner[owner.id].append(node)
+
+    declarations = [
+        _build_declaration(node, path, _build_members(members_by_owner.get(node.id, [])))
+        for node in captures.get("declaration", [])
+    ]
     declarations.sort(key=lambda d: (d.span.start, d.span.end, d.name))
 
     return FileParseResult(
