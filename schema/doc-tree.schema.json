@@ -1,0 +1,580 @@
+{
+  "$defs": {
+    "Attribute": {
+      "additionalProperties": false,
+      "description": "Атрибут C# вида `[Route(\"api/v1\", Name = \"x\")]`.\n\n`name` — без суффикса `Attribute`: `[RouteAttribute]` и `[Route]` неразличимы.\nСтроковые значения хранятся без кавычек.",
+      "properties": {
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Args",
+          "type": "array"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "named_args": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Named Args",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Attribute",
+      "type": "object"
+    },
+    "Dependency": {
+      "additionalProperties": false,
+      "description": "Зависимость узла: параметр конструктора, DI-регистрация или наследование.",
+      "properties": {
+        "confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "via": {
+          "enum": [
+            "constructor",
+            "di",
+            "inheritance"
+          ],
+          "title": "Via",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "via",
+        "confidence"
+      ],
+      "title": "Dependency",
+      "type": "object"
+    },
+    "DocNode": {
+      "additionalProperties": false,
+      "description": "Один документ будущей документации.\n\n`matched_rules` содержит **все** совпавшие правила, а не только победившее:\nбез этого классификация превращается в чёрный ящик.\n\n`signature_hash` считается от нормализованных сигнатур и намеренно\n**не включает** номера строк и пути — переформатирование файла не должно\nзаставлять агента на шаге 3 перегенерировать документ.",
+      "properties": {
+        "dependencies": {
+          "items": {
+            "$ref": "#/$defs/Dependency"
+          },
+          "title": "Dependencies",
+          "type": "array"
+        },
+        "doc_path": {
+          "title": "Doc Path",
+          "type": "string"
+        },
+        "domain": {
+          "title": "Domain",
+          "type": "string"
+        },
+        "endpoints": {
+          "items": {
+            "$ref": "#/$defs/Endpoint"
+          },
+          "title": "Endpoints",
+          "type": "array"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "matched_rules": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Matched Rules",
+          "type": "array"
+        },
+        "module": {
+          "title": "Module",
+          "type": "string"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent"
+        },
+        "related": {
+          "items": {
+            "$ref": "#/$defs/Relation"
+          },
+          "title": "Related",
+          "type": "array"
+        },
+        "signature_hash": {
+          "title": "Signature Hash",
+          "type": "string"
+        },
+        "symbol": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Symbol"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "template": {
+          "title": "Template",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "template",
+        "title",
+        "doc_path",
+        "module",
+        "domain",
+        "signature_hash"
+      ],
+      "title": "DocNode",
+      "type": "object"
+    },
+    "Endpoint": {
+      "additionalProperties": false,
+      "description": "HTTP-эндпоинт контроллера со склеенным маршрутом.",
+      "properties": {
+        "http_method": {
+          "title": "Http Method",
+          "type": "string"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "member": {
+          "title": "Member",
+          "type": "string"
+        },
+        "route": {
+          "title": "Route",
+          "type": "string"
+        }
+      },
+      "required": [
+        "http_method",
+        "route",
+        "member",
+        "line"
+      ],
+      "title": "Endpoint",
+      "type": "object"
+    },
+    "Member": {
+      "additionalProperties": false,
+      "description": "Член типа: метод, свойство, поле, конструктор или событие.",
+      "properties": {
+        "attributes": {
+          "items": {
+            "$ref": "#/$defs/Attribute"
+          },
+          "title": "Attributes",
+          "type": "array"
+        },
+        "end_line": {
+          "title": "End Line",
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "method",
+            "property",
+            "field",
+            "constructor",
+            "event"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "modifiers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Modifiers",
+          "type": "array"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "signature": {
+          "title": "Signature",
+          "type": "string"
+        },
+        "xml_doc": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Xml Doc"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "signature",
+        "line",
+        "end_line"
+      ],
+      "title": "Member",
+      "type": "object"
+    },
+    "Module": {
+      "additionalProperties": false,
+      "description": "Проект .NET (`.csproj`).\n\n`enrolled` отвечает на вопрос «входит ли модуль в документацию».\nНеenrolled модули всё равно парсятся — их символы нужны для графа\nнаследования, — но узлов документации не порождают.",
+      "properties": {
+        "csproj": {
+          "title": "Csproj",
+          "type": "string"
+        },
+        "domain": {
+          "title": "Domain",
+          "type": "string"
+        },
+        "enrolled": {
+          "title": "Enrolled",
+          "type": "boolean"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "package_references": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Package References",
+          "type": "array"
+        },
+        "project_references": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Project References",
+          "type": "array"
+        },
+        "target_frameworks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Target Frameworks",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "csproj",
+        "domain",
+        "enrolled"
+      ],
+      "title": "Module",
+      "type": "object"
+    },
+    "ParserVersions": {
+      "additionalProperties": false,
+      "description": "Версии парсера. Апгрейд грамматики может законно изменить вывод —\nпоэтому версии попадают в манифест и видны в диффе.",
+      "properties": {
+        "grammar_c_sharp": {
+          "title": "Grammar C Sharp",
+          "type": "string"
+        },
+        "tree_sitter": {
+          "title": "Tree Sitter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tree_sitter",
+        "grammar_c_sharp"
+      ],
+      "title": "ParserVersions",
+      "type": "object"
+    },
+    "PartialInfo": {
+      "additionalProperties": false,
+      "description": "Пометка о том, что манифест собран скоуп-прогоном и вне scope устарел.",
+      "properties": {
+        "outside_from_cache": {
+          "title": "Outside From Cache",
+          "type": "boolean"
+        },
+        "scope": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Scope",
+          "type": "array"
+        }
+      },
+      "required": [
+        "scope",
+        "outside_from_cache"
+      ],
+      "title": "PartialInfo",
+      "type": "object"
+    },
+    "Relation": {
+      "additionalProperties": false,
+      "description": "Связь между узлами документации.",
+      "properties": {
+        "relation": {
+          "enum": [
+            "implements",
+            "implemented_by",
+            "uses"
+          ],
+          "title": "Relation",
+          "type": "string"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "relation"
+      ],
+      "title": "Relation",
+      "type": "object"
+    },
+    "SourceSpan": {
+      "additionalProperties": false,
+      "description": "Диапазон строк в файле. Пути репо-относительные POSIX, строки 1-based.",
+      "properties": {
+        "end": {
+          "title": "End",
+          "type": "integer"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "start": {
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "start",
+        "end"
+      ],
+      "title": "SourceSpan",
+      "type": "object"
+    },
+    "Symbol": {
+      "additionalProperties": false,
+      "description": "Тип решения целиком: объявления слиты, базовые типы резолвнуты.\n\n`sources` — список, потому что `partial class` живёт в нескольких файлах.\n`base_types` содержит FQN там, где резолв удался, и сырое имя там, где нет\n(внешние типы вроде `ControllerBase` не резолвятся принципиально — правила\nматчатся именно по таким именам).",
+      "properties": {
+        "ambiguous": {
+          "default": false,
+          "title": "Ambiguous",
+          "type": "boolean"
+        },
+        "attributes": {
+          "items": {
+            "$ref": "#/$defs/Attribute"
+          },
+          "title": "Attributes",
+          "type": "array"
+        },
+        "base_type_closure": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Base Type Closure",
+          "type": "array"
+        },
+        "base_types": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Base Types",
+          "type": "array"
+        },
+        "base_types_raw": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Base Types Raw",
+          "type": "array"
+        },
+        "fqn": {
+          "title": "Fqn",
+          "type": "string"
+        },
+        "members": {
+          "items": {
+            "$ref": "#/$defs/Member"
+          },
+          "title": "Members",
+          "type": "array"
+        },
+        "modifiers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Modifiers",
+          "type": "array"
+        },
+        "module": {
+          "title": "Module",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "namespace": {
+          "title": "Namespace",
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/SourceSpan"
+          },
+          "title": "Sources",
+          "type": "array"
+        },
+        "type_kind": {
+          "enum": [
+            "class",
+            "interface",
+            "struct",
+            "record",
+            "record_struct",
+            "enum"
+          ],
+          "title": "Type Kind",
+          "type": "string"
+        },
+        "type_parameters": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Type Parameters",
+          "type": "array"
+        },
+        "xml_doc": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Xml Doc"
+        }
+      },
+      "required": [
+        "fqn",
+        "name",
+        "type_kind",
+        "namespace",
+        "module"
+      ],
+      "title": "Symbol",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Артефакт шага 1. Не содержит ни одного недетерминированного поля.\n\nМетаданные прогона (время, хост, длительность) живут в отдельном\n`RunMeta` — благодаря этому тест на детерминизм сводится к побайтовому\nсравнению файлов без логики исключения полей.",
+  "properties": {
+    "modules": {
+      "items": {
+        "$ref": "#/$defs/Module"
+      },
+      "title": "Modules",
+      "type": "array"
+    },
+    "nodes": {
+      "items": {
+        "$ref": "#/$defs/DocNode"
+      },
+      "title": "Nodes",
+      "type": "array"
+    },
+    "parser": {
+      "$ref": "#/$defs/ParserVersions"
+    },
+    "partial": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PartialInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "ruleset_version": {
+      "title": "Ruleset Version",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "ruleset_version",
+    "parser"
+  ],
+  "title": "Manifest",
+  "type": "object"
+}

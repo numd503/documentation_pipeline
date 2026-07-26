@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Sample.Common\Sample.Common.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Apache.Ignite" Version="2.16.0" />
+  </ItemGroup>
+</Project>

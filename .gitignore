@@ -1,1 +1,15 @@
 examples/
+
+.venv/
+__pycache__/
+*.pyc
+.docpipe/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+artifacts/
+
+# ВНИМАНИЕ: не добавлять сюда obj/ и bin/.
+# В tests/fixtures/SampleSolution/ есть файл под obj/, на котором проверяются
+# правила исключения в discovery. Стандартный .NET-шаблон .gitignore молча
+# выкинет его, и тесты T04/T14 перестанут что-либо проверять.

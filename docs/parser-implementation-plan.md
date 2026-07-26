@@ -151,9 +151,15 @@ dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "types-PyYAML"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.wheel]
+packages = ["docpipe"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# docs/ содержит markdown с компактными псевдо-сигнатурами в python-блоках;
+# ruff format их переформатирует и валит проверку. examples/ — чужие репозитории.
+extend-exclude = ["docs", "examples"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -172,8 +178,21 @@ testpaths = ["tests"]
 `docpipe/cli.py` — приложение `typer` с именем `app` и одной командой-заглушкой `version`,
 печатающей `__version__`.
 
+**Обязательно добавить пустой `@app.callback()`.** Без него typer при единственной
+зарегистрированной команде схлопывает её в корневую, и `docpipe version` падает с
+`Got unexpected extra argument(s) (version)`. Callback переводит приложение в
+многокомандный режим:
+
+```python
+@app.callback()
+def main() -> None:
+    """Построение структуры документации по исходному коду .NET."""
+```
+
 `.gitignore` должен содержать как минимум: `.venv/`, `__pycache__/`, `*.pyc`, `.docpipe/`,
 `.mypy_cache/`, `.ruff_cache/`, `.pytest_cache/`, `artifacts/`.
+Строку `examples/` (если она уже есть) **сохранить** — там лежат чужие репозитории
+для финальной проверки.
 
 **Критерии приёмки**
 - `uv sync` отрабатывает без ошибок.
