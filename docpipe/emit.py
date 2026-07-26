@@ -20,12 +20,13 @@ from docpipe import __version__
 from docpipe.cache import ParseCache
 from docpipe.classify import Ruleset, classify, is_excluded, load_ruleset
 from docpipe.config import DocpipeConfig
-from docpipe.discovery import discover
+from docpipe.discovery import discover, in_scope, normalize_scope
 from docpipe.dotnet.csproj import parse_csproj, resolve_references
 from docpipe.dotnet.endpoints import extract_endpoints
 from docpipe.dotnet.parser import parse_source
 from docpipe.dotnet.resolve import build_symbol_index, compute_closures
 from docpipe.hashing import content_hash, stable_json_dumps
+from docpipe.merge import merge_manifests, node_in_scope
 from docpipe.model import (
     DocNode,
     FileParseResult,
@@ -144,42 +145,94 @@ def parse_files(
 # --------------------------------------------------------------------------------------
 
 
+def _outside_scope_results(
+    cache: ParseCache | None, scope: list[tuple[str, ...]] | None
+) -> tuple[list[FileParseResult], list[str]]:
+    """Разбор файлов вне скоупа — целиком из кэша, без сверки хэша.
+
+    Сверять не с чем: файл не читался, его содержимое неизвестно. Именно
+    поэтому такой манифест помечается `partial` — данные вне скоупа могли
+    устареть.
+
+    Без этого шага индекс символов был бы неполным, и тип из скоупа, который
+    наследуется от базового класса вне скоупа, потерял бы классификацию.
+
+    Отбор идёт **по принадлежности пути скоупу**, а не по списку найденных
+    файлов. Разница видна на удалении: файл внутри скоупа обходом уже не
+    находится, но в кэше ещё лежит, и правило «чего не нашли, то возьмём
+    из кэша» воскресило бы удалённый тип.
+    """
+    if cache is None:
+        return [], []
+
+    restored: list[FileParseResult] = []
+    missing: list[str] = []
+    for path in cache.all_paths():
+        if in_scope(path, scope):
+            continue
+        cached = cache.get_any(path)
+        if cached is None:
+            missing.append(path)
+        else:
+            restored.append(cached)
+    return restored, missing
+
+
 def scan(
     root: Path,
     config: DocpipeConfig | None = None,
     ruleset: Ruleset | None = None,
     cache_dir: Path | None = None,
     jobs: int = 1,
+    scope: list[str] | None = None,
+    previous: Manifest | None = None,
 ) -> tuple[Manifest, RunMeta]:
-    """Полный прогон: исходники -> манифест и метаданные прогона."""
+    """Прогон: исходники -> манифест и метаданные прогона.
+
+    С `scope` обход и разбор ограничены указанными каталогами, символы вне
+    скоупа берутся из кэша, а узлы вне скоупа переносятся из `previous`.
+    """
     started = time.perf_counter()
     config = config or DocpipeConfig()
     ruleset = ruleset or load_ruleset(Path(config.rules))
     versions = parser_versions()
 
-    found = discover(root, DEFAULT_EXCLUDE)
+    found = discover(root, DEFAULT_EXCLUDE, scope)
     modules: list[Module] = resolve_references(
         [parse_csproj(root / relative, root) for relative in found.csproj_files]
     )
 
     cache = ParseCache(cache_dir / "parse.sqlite", versions) if cache_dir else None
+    outside: list[FileParseResult] = []
+    missing: list[str] = []
     try:
         results = parse_files(root, found.cs_files, cache, jobs)
-        if cache is not None:
-            cache.prune(set(found.cs_files))
+        if scope is None:
+            if cache is not None:
+                cache.prune(set(found.cs_files))
+        else:
+            # Чистить кэш в скоуп-режиме нельзя: файлов вне скоупа мы не видели,
+            # и `prune` снёс бы ровно то, ради чего кэш здесь и нужен.
+            outside, missing = _outside_scope_results(cache, normalize_scope(scope))
     finally:
         if cache is not None:
             cache.close()
 
-    file_to_module = map_files_to_modules(found.cs_files, found.csproj_files)
-    index = compute_closures(build_symbol_index(results, file_to_module))
+    # Модули вне скоупа известны только из предыдущего манифеста — обход туда
+    # не заходил. Без них файлы вне скоупа не привязались бы к проектам.
+    known_csproj = sorted(
+        {*found.csproj_files, *(module.csproj for module in (previous.modules if previous else []))}
+    )
+    all_results = sorted(results + outside, key=lambda result: result.path)
+    file_to_module = map_files_to_modules([r.path for r in all_results], known_csproj)
+    index = compute_closures(build_symbol_index(all_results, file_to_module))
 
     configured, nodes = build_nodes(
         index,
         modules,
         ruleset,
         config,
-        [registration for result in results for registration in result.di_registrations],
+        [registration for result in all_results for registration in result.di_registrations],
         {key: extract_endpoints(symbol) for key, symbol in index.items()},
     )
 
@@ -189,6 +242,16 @@ def scan(
         modules=configured,
         nodes=nodes,
     )
+
+    if scope is not None:
+        normalized = normalize_scope(scope)
+        manifest = merge_manifests(
+            previous or Manifest(ruleset_version=ruleset.ruleset_version, parser=versions),
+            manifest.model_copy(
+                update={"nodes": [n for n in nodes if node_in_scope(n, normalized)]}
+            ),
+            scope,
+        )
 
     # Файл с ошибками разбора и без единого объявления — признак того, что тип
     # уничтожен директивой препроцессора внутри выражения. Снаружи это ничем
@@ -202,7 +265,12 @@ def scan(
         host=socket.gethostname(),
         duration_seconds=round(time.perf_counter() - started, 3),
         docpipe_version=__version__,
-        stats=_stats(results, index, nodes, configured, ruleset),
+        stats=_stats(all_results, index, manifest.nodes, configured, ruleset)
+        | (
+            {"restored_from_cache": len(outside), "missing_from_cache": len(missing)}
+            if scope
+            else {}
+        ),
         parse_error_files=broken,
     )
     return manifest, meta

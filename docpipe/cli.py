@@ -68,6 +68,14 @@ def scan(
         bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
     ] = False,
     jobs: Annotated[int, typer.Option("--jobs", help="Число процессов для разбора.")] = 1,
+    scope: Annotated[
+        list[str] | None,
+        typer.Option("--scope", help="Перестроить только эти каталоги. Можно повторять."),
+    ] = None,
+    from_manifest: Annotated[
+        Path | None,
+        typer.Option("--from-manifest", help="Манифест, из которого брать узлы вне скоупа."),
+    ] = None,
 ) -> None:
     """Построить дерево документации по исходникам .NET.
 
@@ -77,19 +85,30 @@ def scan(
     if not root.is_dir():
         raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
 
+    # Скоуп-прогон переносит узлы вне скоупа из предыдущего манифеста. Без него
+    # получился бы не частичный, а урезанный манифест — и молча.
+    if scope and from_manifest is None:
+        typer.echo("--scope требует --from-manifest", err=True)
+        raise typer.Exit(code=2)
+
     # Ошибки конфигурации — это опечатка пользователя, а не сбой программы.
     # Traceback на полстраницы вместо строчки «файл не найден» ровно в тот
     # момент, когда человек первый раз пробует команду руками, — плохой обмен.
     try:
         settings = load_config(config)
         ruleset = load_ruleset(rules or Path(settings.rules))
+        previous = (
+            Manifest.model_validate_json(from_manifest.read_text(encoding="utf-8"))
+            if from_manifest
+            else None
+        )
     except (OSError, ValueError) as exc:
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
     cache_dir = None if no_cache else root / settings.cache_dir
 
-    manifest, meta = run_scan(root, settings, ruleset, cache_dir, jobs)
+    manifest, meta = run_scan(root, settings, ruleset, cache_dir, jobs, scope or None, previous)
     write_manifest(manifest, out)
     write_run_meta(meta, out)
 
@@ -97,6 +116,17 @@ def scan(
         f"Модулей: {len(manifest.modules)}, узлов: {len(manifest.nodes)}. "
         f"Записано: {out} и {run_meta_path(out)}"
     )
+    if manifest.partial is not None:
+        typer.echo(
+            f"Частичный прогон по {', '.join(manifest.partial.scope)}: "
+            f"вне скоупа данные взяты из кэша и предыдущего манифеста."
+        )
+    if meta.stats.get("missing_from_cache"):
+        typer.echo(
+            f"Внимание: {meta.stats['missing_from_cache']} файлов вне скоупа "
+            "отсутствуют в кэше — граф наследования может быть неполным.",
+            err=True,
+        )
     if meta.parse_error_files:
         typer.echo(
             f"Внимание: {len(meta.parse_error_files)} файлов разобраны с ошибками "
