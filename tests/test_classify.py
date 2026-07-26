@@ -390,3 +390,49 @@ def test_rule_order_in_file_does_not_matter(tmp_path: Path) -> None:
 def test_classification_is_deterministic(sample_symbols: dict[str, Symbol], ruleset) -> None:
     symbol = sample_symbols["RiskComputeService"]
     assert classify(symbol, ruleset) == classify(symbol, ruleset)
+
+
+# --------------------------------------------------------------------------------------
+# Тесты не документируются
+# --------------------------------------------------------------------------------------
+
+
+def test_type_named_tests_is_excluded(ruleset) -> None:
+    """`*Tests` встречается на порядок чаще `*Test`: в ABP 777 против 54."""
+    assert is_excluded(_symbol(b"namespace N;\npublic class PricingServiceTests { }\n"), ruleset)
+    assert is_excluded(_symbol(b"namespace N;\npublic class PricingServiceTest { }\n"), ruleset)
+
+
+def test_word_containing_test_is_not_excluded(ruleset) -> None:
+    """Правило по окончанию имени, а не по вхождению: `Contest` — не тест."""
+    assert not is_excluded(_symbol(b"namespace N;\npublic class Contest { }\n"), ruleset)
+    assert not is_excluded(_symbol(b"namespace N;\npublic class TestingHelper { }\n"), ruleset)
+
+
+def test_type_in_test_directory_is_excluded(ruleset) -> None:
+    """Одного правила по имени мало.
+
+    В тестовых проектах полно вспомогательных типов, названных как продуктовые
+    (`AuditTestController`, `AuthorizationTestPermissionDefinitionProvider`),
+    и обычные правила их классифицируют. На ABP таких было 104 узла из 828.
+    """
+    symbol = _symbol(
+        b"namespace N;\npublic class AuditTestController { }\n",
+        path="framework/test/Volo.Abp.Tests/AuditTestController.cs",
+    )
+    assert is_excluded(symbol, ruleset)
+
+
+def test_product_directory_with_test_in_the_name_is_kept(ruleset) -> None:
+    """`**/*Tests/**` не должен цеплять `Contest/` или `Testing/`."""
+    for path in ("src/App/Contest/Winner.cs", "src/Testing/Helper.cs"):
+        symbol = _symbol(b"namespace N;\npublic class WinnerService { }\n", path=path)
+        assert not is_excluded(symbol, ruleset), path
+
+
+def test_test_project_produces_no_nodes(wild_solution: Path) -> None:
+    """Сквозная проверка: тестовый проект фикстуры не даёт ни одного документа."""
+    from tests.conftest import build_tree
+
+    _, nodes = build_tree(wild_solution)
+    assert {node.module for node in nodes} == {"Wild.Api"}
