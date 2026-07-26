@@ -8,6 +8,7 @@ import typer
 from docpipe import __version__
 from docpipe.classify import load_ruleset
 from docpipe.config import load_config
+from docpipe.diff import diff_manifests, format_changes
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.emit import scan as run_scan
 from docpipe.hashing import stable_json_dumps
@@ -132,6 +133,36 @@ def scan(
             f"Внимание: {len(meta.parse_error_files)} файлов разобраны с ошибками "
             "и не дали ни одного типа — см. parse_error_files в сидкаре."
         )
+
+
+@app.command()
+def diff(
+    old: Annotated[Path, typer.Argument(help="Манифест «до».")],
+    new: Annotated[Path, typer.Argument(help="Манифест «после».")],
+    output_format: Annotated[
+        str, typer.Option("--format", help="Формат вывода: text или json.")
+    ] = "text",
+) -> None:
+    """Показать, что изменилось между двумя манифестами.
+
+    Наличие изменений — не ошибка, поэтому код возврата всегда 0: команда
+    предназначена для конвейера, где по её выводу решают, что перегенерировать.
+    """
+    if output_format not in ("text", "json"):
+        raise typer.BadParameter("допустимо text или json", param_hint="--format")
+
+    try:
+        before = Manifest.model_validate_json(old.read_text(encoding="utf-8"))
+        after = Manifest.model_validate_json(new.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Не удалось прочитать манифест: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    changes = diff_manifests(before, after)
+    if output_format == "json":
+        typer.echo(stable_json_dumps([change.model_dump(mode="json") for change in changes]))
+    else:
+        typer.echo(format_changes(changes))
 
 
 if __name__ == "__main__":
