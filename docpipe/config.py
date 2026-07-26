@@ -48,4 +48,8 @@ def load_config(path: Path | None) -> DocpipeConfig:
     if not isinstance(raw, dict):
         raise ValueError(f"Конфигурация должна быть словарём, получено: {type(raw).__name__}")
 
-    return DocpipeConfig.model_validate(raw)
+    # Секция, у которой закомментированы все записи, разбирается YAML как `None`.
+    # Без этого фильтра конфигурация падала бы с «Input should be a valid dictionary»:
+    # закомментировать записи — самое обычное действие при настройке, и оно
+    # не должно выглядеть как поломка.
+    return DocpipeConfig.model_validate({k: v for k, v in raw.items() if v is not None})
