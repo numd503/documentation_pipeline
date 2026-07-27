@@ -2,11 +2,11 @@
 #
 # Установка docpipe внутрь репозитория АС CF.
 #
-#     ./deploy/install.sh /home/work/$USER/cfml/sbt.cms.cashflow
+#     ./deploy/install.sh $WORK/cfml/sbt.cms.cashflow
 #
 # На закрытом контуре, где пакеты приходят из внутреннего зеркала:
 #
-#     ./deploy/install.sh /home/work/$USER/cfml/sbt.cms.cashflow \
+#     ./deploy/install.sh $WORK/cfml/sbt.cms.cashflow \
 #         --index https://зеркало/repository/pypi/simple \
 #         --python /usr/bin/python3.12
 #
@@ -87,20 +87,27 @@ rm -rf "$DEST/docpipe"
 cp -r "$SOURCE/docpipe" "$DEST/docpipe"
 find "$DEST/docpipe" -name '__pycache__' -type d -prune -exec rm -rf {} +
 
-cp "$SOURCE/deploy/pyproject.toml" "$DEST/pyproject.toml"
 cp "$SOURCE/deploy/uv.toml.example" "$DEST/uv.toml.example"
 
 # Лок из поставки ссылается на файлы pypi.org поимённо. Если на месте уже лежит
-# лок, пересобранный против внутреннего зеркала, затирать его нельзя: следующий
+# лок, собранный против внутреннего зеркала, затирать его нельзя: следующий
 # же `uv sync --frozen` пошёл бы в недоступный pypi.org — и обновление
-# инструмента ломало бы рабочую установку. Вместо этого пересобираем лок
-# против того же зеркала: состав зависимостей мог измениться вместе с кодом.
+# инструмента ломало бы рабочую установку.
+#
+# Пересобирать его при этом нужно, только если изменился состав зависимостей.
+# Иначе обновление кода требовало бы связи с зеркалом на ровном месте.
 if [ -f "$DEST/uv.lock" ] && ! grep -q 'registry = "https://pypi.org/simple"' "$DEST/uv.lock"; then
-    echo "  сохранён uv.lock, пересобранный против внутреннего зеркала"
-    RELOCK=1
+    if cmp -s "$SOURCE/deploy/pyproject.toml" "$DEST/pyproject.toml"; then
+        echo "  сохранён uv.lock, собранный против внутреннего зеркала"
+    else
+        echo "  зависимости изменились — лок против внутреннего зеркала будет пересобран"
+        RELOCK=1
+    fi
 else
     cp "$SOURCE/deploy/uv.lock" "$DEST/uv.lock"
 fi
+
+cp "$SOURCE/deploy/pyproject.toml" "$DEST/pyproject.toml"
 cp "$SOURCE/deploy/README.md" "$DEST/README.md"
 cp "$SOURCE/deploy/gitignore" "$DEST/.gitignore"
 
@@ -143,6 +150,10 @@ if [ -n "$INDEX" ]; then
         "$SOURCE/deploy/uv.toml.example" > "$tmp"
     keep_configured "$tmp" "$DEST/uv.toml" "uv.toml (индекс $INDEX)"
     rm -f "$tmp"
+elif [ -f "$SOURCE/deploy/uv.toml" ]; then
+    # Настройки, подобранные внутри контура и сохранённые в клоне (см. OFFLINE.md).
+    # Тогда `--index` при установке уже не нужен — ни здесь, ни на других машинах.
+    keep_configured "$SOURCE/deploy/uv.toml" "$DEST/uv.toml" "uv.toml (из клона)"
 fi
 
 # --- окружение --------------------------------------------------------------

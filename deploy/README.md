@@ -25,8 +25,8 @@ docs/ml/docspipe/
 Это основной сценарий: пакеты приходят из внутреннего зеркала, а не с pypi.org.
 
 ```bash
-cd /home/work/$USER/docspipe/documentation_pipeline
-./deploy/install.sh /home/work/$USER/cfml/sbt.cms.cashflow \
+cd $WORK/docspipe/documentation_pipeline
+./deploy/install.sh $WORK/cfml/sbt.cms.cashflow \
     --index https://зеркало/repository/pypi/simple \
     --python 3.12.13
 ```
@@ -65,10 +65,17 @@ SSL_CERT_FILE=/путь/до/corp-root-ca.pem ./deploy/install.sh <репози�
 Настройка при этом работает. Переименовывать её можно, только зная версию uv на
 машине: неизвестный ключ uv.toml не игнорирует, а падает с ошибкой разбора.
 
+### Если зеркало отдаёт не всё
+
+Часть пакетов может быть недоступна и через зеркало. Тогда окружение подбирается
+один раз руками внутри контура, а результат — `pyproject.toml`, `uv.lock`,
+`uv.toml` — возвращается в клон, и дальше установка идёт уже без подбора.
+Пошагово: [`OFFLINE.md`](OFFLINE.md).
+
 ### Обычная машина с доступом к pypi.org
 
 ```bash
-./deploy/install.sh /home/work/$USER/cfml/sbt.cms.cashflow
+./deploy/install.sh $WORK/cfml/sbt.cms.cashflow
 ```
 
 Лок из поставки используется как есть, ничего пересобирать не нужно.
@@ -86,7 +93,7 @@ SSL_CERT_FILE=/путь/до/corp-root-ca.pem ./deploy/install.sh <репози�
 ## Запуск
 
 ```bash
-cd /home/work/$USER/cfml/sbt.cms.cashflow/docs/ml/docspipe/cashflow-docspipe
+cd $WORK/cfml/sbt.cms.cashflow/docs/ml/docspipe/cashflow-docspipe
 
 ./run.sh stats        # срезы для настройки правил, ничего не пишет
 ./run.sh scan         # построить манифест
@@ -107,7 +114,7 @@ cd /home/work/$USER/cfml/sbt.cms.cashflow/docs/ml/docspipe/cashflow-docspipe
 относительно него:
 
 ```bash
-cd /home/work/$USER/cfml/sbt.cms.cashflow
+cd $WORK/cfml/sbt.cms.cashflow
 BUNDLE=docs/ml/docspipe
 PYTHONPATH=$BUNDLE uv run --no-sync --project $BUNDLE python -m docpipe scan \
     --root . \

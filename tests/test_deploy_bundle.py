@@ -29,16 +29,28 @@ def _project(path: Path) -> dict[str, object]:
 # --------------------------------------------------------------------------------------
 
 
-def test_runtime_dependencies_match_the_repository() -> None:
-    """Зависимости поставки обязаны совпадать с зависимостями разработки.
+def _requirement_names(project: dict[str, object]) -> set[str]:
+    requirements = project["dependencies"]
+    assert isinstance(requirements, list)
+    return {
+        str(r).split(">")[0].split("<")[0].split("=")[0].split("[")[0].strip() for r in requirements
+    }
 
-    Иначе на целевой машине окажется другой набор версий, чем тот, на котором
-    гонялись тесты, — и расхождение будет видно только по разному манифесту.
+
+def test_runtime_dependencies_match_the_repository() -> None:
+    """Состав зависимостей поставки обязан совпадать с составом разработки.
+
+    Сравниваются **имена**, а не ограничения версий. Ограничения расходятся
+    законно: на закрытом контуре набор подбирается под то, что отдаёт внутреннее
+    зеркало, и результат возвращается сюда (см. deploy/OFFLINE.md). А вот забытая
+    при добавлении зависимость — это отказ на целевой машине, и ловить его нужно
+    здесь.
     """
     source = _project(ROOT / "pyproject.toml")
     bundle = _project(DEPLOY / "pyproject.toml")
 
-    for field in ("name", "version", "requires-python", "dependencies"):
+    assert _requirement_names(bundle) == _requirement_names(source)
+    for field in ("name", "version"):
         assert bundle[field] == source[field], f"разошлось поле {field}"
 
 
@@ -124,6 +136,7 @@ def test_bundle_ruleset_keeps_domain_entities_named_like_tests() -> None:
     [
         "install.sh",
         "README.md",
+        "OFFLINE.md",
         "gitignore",
         "pyproject.toml",
         "uv.lock",

@@ -553,6 +553,8 @@ deploy/                   поставка внутрь репозитория �
 ├── install.sh            установка в <репозиторий>/docs/ml/docspipe
 ├── pyproject.toml        runtime-зависимости без dev-группы
 ├── uv.lock               17 пакетов вместо 40
+├── uv.toml.example       зеркало пакетов и сертификаты для закрытого контура
+├── OFFLINE.md            сборка окружения там, где зеркало отдаёт не всё
 └── cashflow-docspipe/    настройка под АС CF: docpipe.yaml, rules.yaml, run.sh
 docs/                     проектная документация (см. ниже)
 schema/                   JSON Schema манифеста, генерируется из моделей

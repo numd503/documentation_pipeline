@@ -12,26 +12,32 @@
 
 ## 0. Установка внутрь репозитория АС CF
 
-Раскладка на рабочей машине:
+Раскладка на рабочей машине. `$WORK` — `/home/work/<логин>`, переменная уже задана
+в целевой системе; дальше по документу используется только она.
 
 ```
-/home/work/$USER/docspipe/documentation_pipeline     клон этого репозитория (разработка)
-/home/work/$USER/cfml/sbt.cms.cashflow               репозиторий АС CF
-└── docs/ml/docspipe/                                поставка: инструмент живёт здесь
-    ├── docpipe/                                     пакет
-    ├── pyproject.toml, uv.lock                      только runtime-зависимости
-    ├── rules/dotnet.yaml                            эталонный набор — для сравнения
-    └── cashflow-docspipe/                           всё, что настроено под АС CF
+$WORK/docspipe/documentation_pipeline    клон этого репозитория (разработка)
+$WORK/cfml/sbt.cms.cashflow              репозиторий АС CF
+└── docs/ml/docspipe/                    поставка: инструмент живёт здесь
+    ├── docpipe/                         пакет
+    ├── pyproject.toml, uv.lock          только runtime-зависимости
+    ├── uv.toml                          зеркало пакетов и сертификаты
+    ├── rules/dotnet.yaml                эталонный набор — для сравнения
+    └── cashflow-docspipe/               всё, что настроено под АС CF
         ├── docpipe.yaml, rules.yaml, run.sh
-        ├── artifacts/                               манифест и сидкар
-        └── .cache/                                  кэш разбора
+        ├── artifacts/                   манифест и сидкар
+        └── .cache/                      кэш разбора
 ```
+
+Если клон лежит не в `$WORK/docspipe/documentation_pipeline`, а прямо в
+`$WORK/docspipe`, поправьте путь в командах ниже — больше от этого ничего
+не зависит: `install.sh` берёт исходники относительно самого себя.
 
 Установка — одной командой из клона:
 
 ```bash
-cd /home/work/$USER/docspipe/documentation_pipeline
-./deploy/install.sh /home/work/$USER/cfml/sbt.cms.cashflow \
+cd $WORK/docspipe/documentation_pipeline
+./deploy/install.sh $WORK/cfml/sbt.cms.cashflow \
     --index https://зеркало/repository/pypi/simple \
     --python 3.12.13
 ```
@@ -76,10 +82,18 @@ uv предпочтёт уже записанные версии, если зе�
 При неудаче установщик печатает эти же три причины с готовыми командами, а
 скопированные файлы остаются на месте: повторный запуск ничего не портит.
 
+**Если зеркало отдаёт не все пакеты** — а это вероятно, — окружение подбирается
+один раз руками внутри контура, а результат (`pyproject.toml`, `uv.lock`, `uv.toml`)
+возвращается в клон, после чего установка на любую машину периметра идёт без
+подбора. Пошаговая инструкция: [`deploy/OFFLINE.md`](deploy/OFFLINE.md). Там же —
+что делать, если пакета нет вовсе (принести колёса и собрать с `offline = true`)
+и какие ограничения версий в `pyproject.toml` можно ослаблять, а какие нет:
+`tree-sitter` ниже 0.25 не заработает, там сменился API запросов.
+
 ### Запуск
 
 ```bash
-cd /home/work/$USER/cfml/sbt.cms.cashflow/docs/ml/docspipe/cashflow-docspipe
+cd $WORK/cfml/sbt.cms.cashflow/docs/ml/docspipe/cashflow-docspipe
 
 ./run.sh stats            # срезы для настройки правил, ничего не пишет
 ./run.sh scan             # построить манифест
@@ -100,7 +114,7 @@ cd /home/work/$USER/cfml/sbt.cms.cashflow/docs/ml/docspipe/cashflow-docspipe
 репозитория АС CF**, потому что пути внутри `docpipe.yaml` заданы относительно него:
 
 ```bash
-cd /home/work/$USER/cfml/sbt.cms.cashflow
+cd $WORK/cfml/sbt.cms.cashflow
 BUNDLE=docs/ml/docspipe
 PYTHONPATH=$BUNDLE uv run --no-sync --project $BUNDLE python -m docpipe scan \
     --root . --config $BUNDLE/cashflow-docspipe/docpipe.yaml --jobs 4

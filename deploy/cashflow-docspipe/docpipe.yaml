@@ -3,7 +3,7 @@
 # Пути внутри файла заданы относительно КОРНЯ РЕПОЗИТОРИЯ АС CF, а не этого
 # каталога. Поэтому вручную команду запускают из корня репозитория:
 #
-#     cd /home/work/$USER/cfml/sbt.cms.cashflow
+#     cd $WORK/cfml/sbt.cms.cashflow
 #     uv run --project docs/ml/docspipe docpipe scan \
 #         --root . --config docs/ml/docspipe/cashflow-docspipe/docpipe.yaml
 #
