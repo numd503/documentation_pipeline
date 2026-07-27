@@ -29,9 +29,24 @@ JOBS="${JOBS:-4}"                                 # 17988 файлов — ра�
 
 [ -d "$CF_ROOT" ] || { echo "Не найден корень репозитория: $CF_ROOT" >&2; exit 1; }
 [ -f "$CONFIG" ] || { echo "Не найден $CONFIG" >&2; exit 1; }
+[ -d "$BUNDLE/.venv" ] || {
+    echo "Окружение не поднято: нет $BUNDLE/.venv" >&2
+    echo "Поднять его — install.sh из репозитория разработки, см. $BUNDLE/README.md" >&2
+    exit 1
+}
 
-# --frozen: ставить ровно то, что в uv.lock, и не ходить в индекс за пересчётом.
-dp() { uv run --frozen --project "$BUNDLE" docpipe "$@"; }
+# Два решения ради закрытого контура, оба обязательны:
+#
+# --no-sync: запуск не ходит в сеть вообще. Иначе `uv run` при каждом вызове
+# сверялся бы с индексом и на машине без доступа к нему падал бы на команде,
+# которая с зависимостями ничего не делает. Окружение поднимает install.sh,
+# и это его работа, а не наша.
+#
+# `python -m docpipe` вместо консольной команды `docpipe`: работает и когда
+# пакет установлен, и когда окружение поднято как --no-install-project (без
+# сборочного бэкенда). PYTHONPATH нужен для второго случая — пакет лежит
+# в дереве, но в site-packages его нет.
+dp() { PYTHONPATH="$BUNDLE" uv run --no-sync --project "$BUNDLE" python -m docpipe "$@"; }
 
 COMMON=(--root "$CF_ROOT" --config "$CONFIG" --rules "$RULES" --out "$OUT")
 

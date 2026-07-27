@@ -127,6 +127,7 @@ def test_bundle_ruleset_keeps_domain_entities_named_like_tests() -> None:
         "gitignore",
         "pyproject.toml",
         "uv.lock",
+        "uv.toml.example",
         "cashflow-docspipe/docpipe.yaml",
         "cashflow-docspipe/rules.yaml",
         "cashflow-docspipe/run.sh",
@@ -140,3 +141,68 @@ def test_installer_inputs_exist(relative: str) -> None:
 
 def test_installer_is_executable() -> None:
     assert DEPLOY.joinpath("install.sh").stat().st_mode & 0o111
+
+
+# --------------------------------------------------------------------------------------
+# Настройки uv для закрытого контура
+# --------------------------------------------------------------------------------------
+
+
+def _uv_settings() -> dict[str, object]:
+    return tomllib.loads((DEPLOY / "uv.toml.example").read_text(encoding="utf-8"))
+
+
+def test_uv_settings_are_top_level_not_index_fields() -> None:
+    """Ключи верхнего уровня обязаны стоять до первой таблицы `[[index]]`.
+
+    TOML относит любой ключ после открытия таблицы к ней. Перенос `native-tls`
+    под `[[index]]` не был бы синтаксической ошибкой — настройка просто
+    перестала бы действовать, а установка падала бы на сертификате.
+    """
+    settings = _uv_settings()
+    assert settings["native-tls"] is True
+    assert settings["python-downloads"] == "never"
+
+
+def test_uv_settings_replace_pypi_rather_than_add_to_it() -> None:
+    """`default = true` — «вместо PyPI», а не «в дополнение к нему».
+
+    Без этого uv на закрытом контуре всё равно ходил бы на pypi.org за тем,
+    чего нет в зеркале, и падал бы на сертификате прокси.
+    """
+    indexes = _uv_settings()["index"]
+    assert isinstance(indexes, list)
+    assert indexes[0]["default"] is True
+
+
+def test_installer_substitutes_the_index_placeholder() -> None:
+    """Заглушка адреса в шаблоне обязана совпадать с той, что ищет `sed`.
+
+    Разъедься они — установщик молча положил бы `uv.toml` с несуществующим
+    хостом, и ошибка выглядела бы как недоступность зеркала.
+    """
+    placeholder = "https://ЗАПОЛНИТЬ/repository/pypi/simple"
+    assert placeholder in (DEPLOY / "uv.toml.example").read_text(encoding="utf-8")
+    assert placeholder in (DEPLOY / "install.sh").read_text(encoding="utf-8")
+
+
+def test_shipped_lock_points_at_pypi() -> None:
+    """Установщик отличает свой лок от пересобранного по этой строке.
+
+    Если формат записи источника в `uv.lock` изменится, обновление инструмента
+    начнёт затирать лок, пересобранный против внутреннего зеркала, — и рабочая
+    установка отправится на недоступный pypi.org.
+    """
+    marker = 'registry = "https://pypi.org/simple"'
+    assert marker in (DEPLOY / "uv.lock").read_text(encoding="utf-8")
+    assert marker in (DEPLOY / "install.sh").read_text(encoding="utf-8")
+
+
+def test_run_script_never_touches_the_network() -> None:
+    """Запуск не должен требовать доступа к индексу пакетов.
+
+    `uv run` без `--no-sync` сверяется с индексом на каждом вызове и на машине
+    без доступа к нему падает на команде, которая с зависимостями ничего
+    не делает.
+    """
+    assert "--no-sync" in (DEPLOY / "cashflow-docspipe" / "run.sh").read_text(encoding="utf-8")
