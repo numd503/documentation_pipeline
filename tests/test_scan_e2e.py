@@ -1,11 +1,14 @@
 """Сквозной прогон: исходники -> манифест и сидкар (T16)."""
 
 import json
+import shutil
 from pathlib import Path
 
+import yaml
 from typer.testing import CliRunner
 
 from docpipe.cli import app
+from docpipe.config import DocpipeConfig
 from docpipe.emit import map_files_to_modules, parse_files, run_meta_path, scan
 from docpipe.model import Manifest, RunMeta
 
@@ -63,6 +66,89 @@ def test_scan_creates_missing_directories(sample_solution: Path, tmp_path: Path)
     )
     assert result.exit_code == 0
     assert out.is_file()
+
+
+# --------------------------------------------------------------------------------------
+# Инструмент внутри сканируемого репозитория
+# --------------------------------------------------------------------------------------
+
+
+def _repo_with_tooling_inside(sample_solution: Path, tmp_path: Path) -> Path:
+    """Копия решения, внутри которой лежит каталог с посторонним .NET-кодом.
+
+    Воспроизводит раскладку АС CF: `docs/ml/docspipe` с самим инструментом
+    (а в нём — фикстуры на C#) внутри сканируемого репозитория.
+
+    Каталог назван `fixtures`, а не `tests/fixtures`, намеренно: сегмент `tests`
+    отсеялся бы правилом `**/tests/**` из `rules/dotnet.yaml`, и узла не было бы
+    даже без исключения. Модулем посторонний проект стал бы всё равно, а его
+    символы всё равно попали бы в индекс — то есть проверка исключения
+    маскировалась бы отсевом на другом уровне.
+    """
+    root = tmp_path / "repo"
+    shutil.copytree(sample_solution, root)
+    alien = root / "docs/ml/docspipe/fixtures/Alien"
+    alien.mkdir(parents=True)
+    (alien / "Alien.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+        "<TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>",
+        encoding="utf-8",
+    )
+    (alien / "AlienService.cs").write_text(
+        "namespace Alien; public class AlienService { }", encoding="utf-8"
+    )
+    return root
+
+
+def test_tooling_directory_pollutes_manifest_without_exclude(
+    sample_solution: Path, tmp_path: Path
+) -> None:
+    """Контрольная проверка: без исключения посторонний код попадает в документацию.
+
+    Без неё тест ниже проходил бы и в том случае, если исключать нечего.
+    """
+    manifest, _ = scan(_repo_with_tooling_inside(sample_solution, tmp_path))
+    assert len(manifest.modules) == 3
+    assert "AlienService" in {node.title for node in manifest.nodes}
+
+
+def test_exclude_keeps_tooling_directory_out_of_the_manifest(
+    sample_solution: Path, tmp_path: Path
+) -> None:
+    root = _repo_with_tooling_inside(sample_solution, tmp_path)
+    manifest, _ = scan(root, DocpipeConfig(exclude=["docs/**"]))
+
+    assert len(manifest.modules) == 2
+    assert "AlienService" not in {node.title for node in manifest.nodes}
+    # Результат обязан совпасть с прогоном по решению без постороннего каталога.
+    assert manifest == scan(sample_solution)[0]
+
+
+def test_out_from_config_is_used_when_flag_is_absent(sample_solution: Path, tmp_path: Path) -> None:
+    """Поле `out` в конфигурации должно работать: иначе манифест уезжает мимо.
+
+    Флаг по-прежнему важнее — но раньше у него было значение по умолчанию,
+    и конфигурация не влияла ни на что, оставаясь при этом на вид применённой.
+    """
+    config = tmp_path / "docpipe.yaml"
+    from_config = tmp_path / "from-config/doc-tree.json"
+    from_flag = tmp_path / "from-flag/doc-tree.json"
+    config.write_text(
+        yaml.safe_dump({"rules": "rules/dotnet.yaml", "out": str(from_config)}), encoding="utf-8"
+    )
+
+    assert (
+        runner.invoke(
+            app,
+            ["scan", "--root", str(sample_solution), "--config", str(config), "--no-cache"],
+        ).exit_code
+        == 0
+    )
+    assert from_config.is_file()
+
+    flags = ["--config", str(config), "--out", str(from_flag), "--no-cache"]
+    runner.invoke(app, ["scan", "--root", str(sample_solution), *flags])
+    assert from_flag.is_file()
 
 
 # --------------------------------------------------------------------------------------

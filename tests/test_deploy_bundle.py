@@ -1,0 +1,142 @@
+"""Поставка в репозиторий АС CF (`deploy/`).
+
+Поставка — второй набор файлов, описывающих то же самое: свой `pyproject.toml`,
+свой лок, своя конфигурация. Разъезжаются такие пары молча, а обнаруживается
+это на чужой машине, где ни тестов, ни быстрой обратной связи нет. Поэтому
+согласованность проверяется здесь.
+"""
+
+import tomllib
+from pathlib import Path
+
+import pytest
+
+from docpipe.classify import load_ruleset
+from docpipe.config import load_config
+
+ROOT = Path(__file__).parent.parent
+DEPLOY = ROOT / "deploy"
+BUNDLE_CONFIG = DEPLOY / "cashflow-docspipe" / "docpipe.yaml"
+BUNDLE_RULES = DEPLOY / "cashflow-docspipe" / "rules.yaml"
+
+
+def _project(path: Path) -> dict[str, object]:
+    return dict(tomllib.loads(path.read_text(encoding="utf-8"))["project"])
+
+
+# --------------------------------------------------------------------------------------
+# Манифест поставки
+# --------------------------------------------------------------------------------------
+
+
+def test_runtime_dependencies_match_the_repository() -> None:
+    """Зависимости поставки обязаны совпадать с зависимостями разработки.
+
+    Иначе на целевой машине окажется другой набор версий, чем тот, на котором
+    гонялись тесты, — и расхождение будет видно только по разному манифесту.
+    """
+    source = _project(ROOT / "pyproject.toml")
+    bundle = _project(DEPLOY / "pyproject.toml")
+
+    for field in ("name", "version", "requires-python", "dependencies"):
+        assert bundle[field] == source[field], f"разошлось поле {field}"
+
+
+def test_bundle_declares_no_development_dependencies() -> None:
+    """Ни ruff, ни mypy, ни pytest на целевой машине не нужны."""
+    bundle = tomllib.loads((DEPLOY / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "dependency-groups" not in bundle
+    assert "tool" in bundle  # hatchling остаётся: пакет всё же собирается
+    assert set(bundle["tool"]) == {"hatch"}
+
+
+@pytest.mark.parametrize("package", ["ruff", "mypy", "pytest", "types-pyyaml"])
+def test_lock_contains_no_development_packages(package: str) -> None:
+    lock = (DEPLOY / "uv.lock").read_text(encoding="utf-8")
+    assert f'name = "{package}"' not in lock
+
+
+def test_lock_covers_every_runtime_dependency() -> None:
+    lock = (DEPLOY / "uv.lock").read_text(encoding="utf-8")
+    for requirement in _project(DEPLOY / "pyproject.toml")["dependencies"]:  # type: ignore[union-attr]
+        name = str(requirement).split(">")[0].split("<")[0].split("=")[0].strip()
+        assert f'name = "{name}"' in lock, f"нет в локе: {name}"
+
+
+# --------------------------------------------------------------------------------------
+# Настройка под АС CF
+# --------------------------------------------------------------------------------------
+
+
+def test_bundle_config_loads() -> None:
+    """Конфигурация поставки обязана загружаться: опечатка в ней — это отказ.
+
+    Проверяется сам файл, а не его копия. Конфигурация, которая не читается,
+    хуже отсутствующей: она выглядит настроенной.
+    """
+    config = load_config(BUNDLE_CONFIG)
+    assert config.enrolled
+    assert config.out.endswith(".json")
+
+
+def test_bundle_config_excludes_the_documentation_tree() -> None:
+    """`docs/**` — каталог, в котором лежит сам инструмент внутри АС CF.
+
+    Шаблон обязан заканчиваться на `/**`: без этого он совпал бы только
+    с самим каталогом, но не с файлами под ним.
+    """
+    assert "docs/**" in load_config(BUNDLE_CONFIG).exclude
+
+
+def test_bundle_paths_point_inside_the_bundle() -> None:
+    """Все пути ведут в каталог инструмента, а не в рабочее дерево продукта."""
+    config = load_config(BUNDLE_CONFIG)
+    for path in (config.rules, config.out, config.cache_dir):
+        assert path.startswith("docs/ml/docspipe/"), path
+
+
+def test_bundle_ruleset_loads() -> None:
+    ruleset = load_ruleset(BUNDLE_RULES)
+    assert ruleset.ruleset_version.startswith("2026-")
+    assert {rule.id for rule in ruleset.rules} >= {"controller.aspnet", "service", "workflow"}
+
+
+def test_bundle_ruleset_keeps_domain_entities_named_like_tests() -> None:
+    """`StressTest`, `BackTest` — предметные сущности финансового моделирования.
+
+    Шаблоны `**/*Test/**` и `**/*Tests/**` из эталонного набора отсекли бы
+    любой каталог с таким именем. В наборе для АС CF они сужены до точки перед
+    Test — то есть до каталогов тестовых проектов по конвенции .NET.
+    """
+    globs = load_ruleset(BUNDLE_RULES).exclude.path_glob
+    assert "**/*Test/**" not in globs
+    assert "**/*Tests/**" not in globs
+    assert "**/*.Tests/**" in globs
+
+
+# --------------------------------------------------------------------------------------
+# Установщик
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "install.sh",
+        "README.md",
+        "gitignore",
+        "pyproject.toml",
+        "uv.lock",
+        "cashflow-docspipe/docpipe.yaml",
+        "cashflow-docspipe/rules.yaml",
+        "cashflow-docspipe/run.sh",
+        "cashflow-docspipe/README.md",
+    ],
+)
+def test_installer_inputs_exist(relative: str) -> None:
+    """Установщик копирует эти файлы по именам: пропажа любого — отказ на месте."""
+    assert (DEPLOY / relative).is_file()
+
+
+def test_installer_is_executable() -> None:
+    assert DEPLOY.joinpath("install.sh").stat().st_mode & 0o111

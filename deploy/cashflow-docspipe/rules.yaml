@@ -1,0 +1,180 @@
+# Правила классификации типов для АС CF.
+#
+# Отличия от эталонного ../rules/dotnet.yaml помечены пометкой «АС CF».
+# Сравнить наборы: diff ../rules/dotnet.yaml rules.yaml
+#
+# Порядок настройки: `./run.sh stats` -> взять самое частое из «Окончания имён»
+# и «Базовые типы» -> дописать одно правило -> повторить. Правило, покрывающее
+# 500 типов, полезнее пяти правил по десять.
+
+version: "1"
+ruleset_version: "2026-07-27.cf.1"
+
+# Что вообще не документируется. Проверяется до правил.
+#
+# Важно: исключённый тип всё равно РАЗБИРАЕТСЯ, его символ остаётся в индексе
+# и участвует в графе наследования. Продуктовый класс, унаследованный от
+# базового класса из тестового проекта, классификацию не потеряет.
+exclude:
+  path_glob:
+    - "**/obj/**"
+    - "**/bin/**"
+    - "**/*.g.cs"
+    - "**/*.Designer.cs"
+    - "**/*.generated.cs"
+    - "**/Migrations/**"
+    # АС CF: шаблоны сужены. В эталоне здесь `**/*Test/**` и `**/*Tests/**` —
+    # они отсекают ЛЮБОЙ каталог, чьё имя оканчивается на Test(s), включая
+    # предметный `StressTest/` или `BackTest/`. Для финансового моделирования
+    # это прямой риск потерять продуктовый код.
+    #
+    # Точка перед Test оставляет только каталоги тестовых ПРОЕКТОВ, названных
+    # по конвенции .NET (`Cf.Pricing.Tests`), и не трогает предметные.
+    #
+    # ПРОВЕРИТЬ на репозитории, что ничего не потеряно и ничего не осталось:
+    #     find . -type d \( -name '*Test' -o -name '*Tests' \) -not -path '*/obj/*' \
+    #       | grep -v '\.Tests\?$'
+    # Всё, что выведет команда, — каталоги, которые НЕ попадут под шаблоны ниже.
+    # Если среди них есть тестовые, допишите их сюда явно.
+    - "**/*.Tests/**"
+    - "**/*.Test/**"
+    - "**/test/**"
+    - "**/tests/**"
+    - "**/TestUtils/**"
+  name_regex:
+    - "^.*Dto$"
+    - "^.*Request$"
+    - "^.*Response$"
+    - "^.*Options$"
+    - "^.*Settings$"
+    # АС CF: правило оставлено. Диагностика показала около тридцати классов
+    # `*Test`/`*Tests`, и все они — настоящие тесты.
+    #
+    # Регулярное выражение заякорено с обеих сторон, поэтому `StressTestRun`
+    # под него НЕ подпадает: «Test» в середине имени безопасен. Опасно было бы
+    # ровно обратное — предметная сущность, названная `StressTest` без суффикса.
+    # Если такая появится, правило придётся убрать и положиться на path_glob.
+    - "^.*Tests?$"
+  type_kind_deny: ["enum"]
+  # Главный рычаг объёма. `true` — документируется только публичная поверхность.
+  # На библиотечном коде это убирает половину типов; на прикладном меньше.
+  # Если внутренняя кухня АС CF тоже нужна в документации — поставить false
+  # и посмотреть на прирост в `./run.sh stats`.
+  require_public: true
+
+rules:
+  - id: controller.aspnet
+    kind: controller
+    template: controller
+    priority: 100
+    when:
+      any:
+        - attribute: ["ApiController"]
+        - base_type: ["ControllerBase", "Controller"]
+        - inherits: ["ControllerBase", "Controller"]
+
+  # --- Ignite / GridGain --------------------------------------------------
+  # ТРЕБУЕТ ПРОВЕРКИ НА РЕПОЗИТОРИИ. Правила написаны по Apache Ignite .NET,
+  # а в АС CF используется GridGain — коммерческая сборка, namespace-ы в ней
+  # могут отличаться. Что выполнить перед первым прогоном:
+  #
+  #     grep -rhoE ': *I(Service|ComputeFunc|ComputeJob|ComputeTask)[<,) ]' \
+  #       --include=*.cs . | sort | uniq -c | sort -rn
+  #     grep -rho 'using [A-Za-z.]*\(Ignite\|GridGain\)[A-Za-z.]*;' --include=*.cs . \
+  #       | sort | uniq -c | sort -rn
+  #
+  # Найденные полные имена дописать в `inherits`. Предикат смотрит на всё
+  # замыкание наследования, поэтому сработает и на классе, который наследует
+  # ваш собственный `CfComputeBase`, а тот уже реализует `IComputeFunc`.
+  - id: ignite.service
+    kind: ignite_service
+    template: ignite-service
+    priority: 95
+    when:
+      all:
+        - type_kind: ["class", "record"]
+        # АС CF: голое `IService` убрано намеренно. Имя слишком общее — в ABP,
+        # где Ignite нет вовсе, оно поймало посторонний тип со своим одноимённым
+        # интерфейсом. Сравниваются и короткое имя, и полное.
+        - inherits: ["Apache.Ignite.Core.Services.IService"]
+
+  - id: ignite.compute
+    kind: ignite_compute
+    template: ignite-compute
+    priority: 94
+    when:
+      all:
+        - type_kind: ["class", "record"]
+        - inherits: ["IComputeFunc", "IComputeJob", "IComputeTask"]
+
+  # --- Предметные шаблоны из постановки ------------------------------------
+  - id: workflow
+    kind: workflow
+    template: workflow
+    priority: 90
+    when:
+      all:
+        - type_kind: ["class", "record"]
+        - any:
+            - name_suffix: ["Workflow"]
+            - inherits: ["IWorkflow"]
+
+  - id: provider
+    kind: provider
+    template: provider
+    priority: 50
+    when:
+      all:
+        - type_kind: ["class", "record"]
+        - any:
+            - name_suffix: ["Provider"]
+            - inherits: ["IProvider"]
+
+  - id: repository
+    kind: repository
+    template: repository
+    priority: 45
+    when:
+      all:
+        - type_kind: ["class", "record"]
+        - name_suffix: ["Repository"]
+
+  - id: service
+    kind: service
+    template: service
+    priority: 40
+    when:
+      all:
+        - type_kind: ["class", "record"]
+        - name_suffix: ["Service"]
+
+  # --- Заготовки под находки `./run.sh stats` ------------------------------
+  # Раскомментировать и поправить, когда станет видно, что в АС CF реально
+  # встречается. Правила по базовому типу должны иметь приоритет ВЫШЕ, чем
+  # правила по суффиксу имени: иначе `PricingCalculationService` уйдёт
+  # в `service` по имени, хотя он расчётная задача кластера.
+  #
+  # Регистрация в DI маркерным интерфейсом — это классификация, а не работа
+  # для di.py: синтаксически там не вызов `AddScoped`, а наследование.
+  # Диагностика нашла в АС CF единственное вхождение `IDependency`,
+  # поэтому правило пока выключено.
+  #
+  # - id: cf.injected-service
+  #   kind: service
+  #   template: service
+  #   priority: 60
+  #   when:
+  #     all:
+  #       - type_kind: ["class"]
+  #       - inherits: ["IDependency"]
+  #
+  # - id: cf.calculation
+  #   kind: calculation
+  #   template: calculation
+  #   priority: 80
+  #   when:
+  #     all:
+  #       - type_kind: ["class", "record"]
+  #       - any:
+  #           - name_suffix: ["Calculator", "Calculation"]
+  #           - inherits: ["ICalculation"]

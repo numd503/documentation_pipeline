@@ -68,9 +68,10 @@ def scan(
     rules: Annotated[
         Path | None, typer.Option("--rules", help="Набор правил классификации.")
     ] = None,
-    out: Annotated[Path, typer.Option("--out", help="Куда записать манифест.")] = Path(
-        "artifacts/doc-tree.json"
-    ),
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Куда записать манифест. Без флага — `out` из конфигурации."),
+    ] = None,
     no_cache: Annotated[
         bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
     ] = False,
@@ -123,6 +124,12 @@ def scan(
 
     cache_dir = None if no_cache else root / settings.cache_dir
 
+    # Поле `out` в конфигурации до этого не читалось: путь всегда брался из флага,
+    # у которого было значение по умолчанию. Конфигурация с прописанным `out`
+    # выглядела применённой, а манифест уезжал в `artifacts/` рядом с текущим
+    # каталогом. Флаг по-прежнему важнее — но только когда он действительно задан.
+    destination = out or Path(settings.out)
+
     result = run_scan(root, settings, ruleset, cache_dir, jobs, scope or None, previous)
     manifest, meta = result.manifest, result.meta
 
@@ -135,19 +142,19 @@ def scan(
 
     if dry_run:
         existing = (
-            Manifest.model_validate_json(out.read_text(encoding="utf-8"))
-            if out.is_file()
+            Manifest.model_validate_json(destination.read_text(encoding="utf-8"))
+            if destination.is_file()
             else Manifest(ruleset_version=manifest.ruleset_version, parser=manifest.parser)
         )
         typer.echo(format_changes(diff_manifests(existing, manifest)))
         return
 
-    write_manifest(manifest, out)
-    write_run_meta(meta, out)
+    write_manifest(manifest, destination)
+    write_run_meta(meta, destination)
 
     typer.echo(
         f"Модулей: {len(manifest.modules)}, узлов: {len(manifest.nodes)}. "
-        f"Записано: {out} и {run_meta_path(out)}"
+        f"Записано: {destination} и {run_meta_path(destination)}"
     )
     if manifest.partial is not None:
         typer.echo(

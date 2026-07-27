@@ -5,6 +5,8 @@
 конфигурации из репозитория действительно работает.
 """
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -160,6 +162,23 @@ def test_exit_codes(manifest: Path, tmp_path: Path) -> None:
         ).exit_code
         == 2
     )
+
+
+def test_module_entry_point_works() -> None:
+    """`python -m docpipe` — запасной путь для окружения без установленного проекта.
+
+    Проверяется реальным запуском подпроцесса: импорт `docpipe.__main__` в этом
+    же процессе не выполнил бы ветку `if __name__ == "__main__"` и не поймал бы
+    опечатку в имени объекта приложения.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "docpipe", "version"],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).parent.parent,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == __version__
 
 
 def test_no_arguments_shows_help() -> None:

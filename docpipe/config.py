@@ -15,16 +15,21 @@ from pydantic import BaseModel, ConfigDict, Field
 class DocpipeConfig(BaseModel):
     """Настройки прогона.
 
-    `enrolled` и scope решают разные задачи, их легко перепутать:
+    `enrolled`, `exclude` и scope решают разные задачи, их легко перепутать:
     scope — «что я сейчас перепарсиваю» (влияет на скорость и размер диффа),
-    enrolled — «что вообще входит в документацию» (влияет на состав манифеста).
-    Неenrolled модули всё равно парсятся: их символы нужны для графа наследования.
+    enrolled — «что вообще входит в документацию» (влияет на состав манифеста),
+    exclude — «куда не заходить вовсе» (файл не читается и символов не даёт).
+    Неenrolled модули всё равно парсятся: их символы нужны для графа наследования,
+    а исключённые — нет, поэтому наследование через них рвётся. Это цена за то,
+    чтобы не читать чужое дерево: каталог с самим инструментом, вендоренные
+    зависимости, выгрузки.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     roots: list[str] = Field(default_factory=lambda: ["."])
     enrolled: list[str] = Field(default_factory=lambda: ["**"])
+    exclude: list[str] = Field(default_factory=list)
     domains: dict[str, str] = Field(default_factory=dict)
     rules: str = "rules/dotnet.yaml"
     out: str = "artifacts/doc-tree.json"

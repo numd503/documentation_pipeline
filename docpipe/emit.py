@@ -42,6 +42,20 @@ from docpipe.tree import build_nodes
 DEFAULT_EXCLUDE = ["**/obj/**", "**/bin/**", "**/*.g.cs"]
 
 
+def exclude_globs(config: DocpipeConfig) -> list[str]:
+    """Шаблоны обхода: встроенные плюс заданные в конфигурации.
+
+    Складываются, а не замещаются. Замещение означало бы, что человек, дописавший
+    `exclude: ["docs/**"]`, молча начинает документировать `obj/` и `bin/` —
+    ошибка, которая выглядит как успех и обнаруживается только по раздутому
+    манифесту.
+
+    Порядок для результата безразличен (проверка — «совпал хотя бы один»),
+    но список всё равно отсортирован: он попадает человеку на глаза в диагностике.
+    """
+    return sorted({*DEFAULT_EXCLUDE, *config.exclude})
+
+
 def parser_versions() -> ParserVersions:
     """Версии грамматики. Попадают в манифест: их апгрейд может законно изменить вывод."""
     return ParserVersions(
@@ -221,7 +235,7 @@ def run(
     ruleset = ruleset or load_ruleset(Path(config.rules))
     versions = parser_versions()
 
-    found = discover(root, DEFAULT_EXCLUDE, scope)
+    found = discover(root, exclude_globs(config), scope)
     modules: list[Module] = resolve_references(
         [parse_csproj(root / relative, root) for relative in found.csproj_files]
     )
