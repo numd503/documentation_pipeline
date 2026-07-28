@@ -136,5 +136,24 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv
 
 ## Git
 
+**В `main` напрямую не пушить.** Любая работа идёт в отдельной ветке и попадает
+в `main` только через pull request. Это касается и правок документации: исключений
+нет, иначе правило держится ровно до первой мелочи.
+
+Порядок:
+
+```bash
+git checkout main && git pull                 # от свежего main, а не от прошлой ветки
+git checkout -b <тип>/<о-чём>                 # docs/manifest-guide, fix/csproj-bom
+# ... работа, коммиты ...
+uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv run pytest -q
+git push -u origin <ветка>                    # затем pull request в main
+```
+
+Префиксы веток: `feat/`, `fix/`, `docs/`, `chore/`.
+
 Коммит на осмысленную группу задач, не на каждую мелкую. В сообщении — что найдено
-и почему решено так, а не перечисление файлов. Ветка `main`, пуш в `origin/main`.
+и почему решено так, а не перечисление файлов.
+
+Полная проверка (ruff, mypy, pytest) обязана проходить **до** отправки ветки:
+ловить это в PR дороже, чем у себя.
