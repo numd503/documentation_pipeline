@@ -1,0 +1,1405 @@
+# План реализации `docpipe materialize` — шаг 2
+
+Исполнительный план для агента-реализатора. Шаг 1 (`docs/parser-implementation-plan.md`)
+закончен и здесь не переделывается; единственная правка манифеста — задача M02.
+
+---
+
+## Как работать с этим планом
+
+1. Задачи выполняются по графу зависимостей (см. ниже). Задача закрыта, только когда
+   **её команда проверки проходит зелёной**.
+2. Перед каждым коммитом: `uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv run pytest -q`.
+3. **Ничего не додумывай.** Нет в спецификации — реализуй минимально необходимое для
+   критериев приёмки. Никаких возможностей «на будущее».
+4. Сообщения об ошибках и docstring — по-русски; имена в коде — по-английски.
+5. При расхождении плана с реальностью — **править план**, а не молча обходить.
+   Каждая найденная ловушка дописывается сюда с объяснением.
+
+---
+
+## Что делает шаг 2
+
+По манифесту создаёт на каждый `doc_path` markdown-файл со служебными полями: ссылка на
+узел, пути до кода, домен, шаблон. Никогда не удаляет написанное. Отвечает на вопрос
+«что делать с этим документом» — **писать**, **проверить** или **не трогать**, с причиной
+и перечнем изменений.
+
+**Чего не делает:** не рендерит ничего (документация просто лежит в репозитории как `.md`),
+не строит индексы и карты «для людей», не вызывает LLM, не пишет текст документации.
+
+```
+исходники .NET ──▶ шаг 1: docpipe scan       ──▶ doc-tree.json
+               ──▶ шаг 2: docpipe materialize ──▶ docs/**/*.md (скелеты + метаданные)
+               ──▶ шаг 3: агент               ──▶ наполненные документы
+```
+
+---
+
+## Ключевые решения
+
+| Решение | Почему так |
+|---|---|
+| Два хэша: `signature_hash` (контракт) + новый `impl_hash` (текст объявлений) | «Изменение в коде» — это не только смена сигнатур. Переписанное тело метода при том же контракте обязано быть видно, иначе описание «как работает» молча устаревает |
+| Состояние документа живёт **в документе** | Второй источник истины (сидкар, БД) рассинхронизируется при копировании и переносе файла, и его не видно в git-диффе |
+| Владение (`ownership.yaml`) считается на шаге 2, в манифест не попадает | Состав команд меняется чаще кода. Попав в `DocNode`, владение сделало бы `doc-tree.json` зависящим от орг-структуры и сломало бы свойство «манифест — чистая функция кода и правил классификации» |
+| Границы авторского текста — HTML-комментарии | Единственный способ положить служебный маркер и подсказку так, чтобы они не мешали читать текст, и единственный надёжный критерий «сюда ещё не писали» |
+| `docpipe/materialize/**` не импортирует `docpipe/dotnet/**` | Когда появится парсер Python или TypeScript, шаг 2 не придётся переписывать. Проверяется тестом обходом AST |
+| Из пакета к .NET привязан только `build.py` | `document.py`, `template.py`, `plan.py` и `apply.py` работают с зонами, шаблонами и файлами — ни то, ни другое от языка и от слоя не зависит. На этом стоит бизнес-слой (`docs/business-implementation-plan.md`): он переиспользует их целиком и пишет собственный `build.py` |
+| Модели шага 2 — в `docpipe/materialize/model.py`, не в `docpipe/model.py` | Последний — контракт манифеста, из которого `docpipe schema` генерирует `schema/doc-tree.schema.json`. Модели шага 2 в схему манифеста не входят |
+
+---
+
+## Формат документа
+
+Файл `docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md` сразу после
+первого прогона (владение не настроено, поэтому `team: null`):
+
+```markdown
+---
+docpipe:
+  schema: materialize/1
+  node_id: type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Controllers.PricingController`0
+  doc_path: docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md
+  title: PricingController
+  fqn: Sample.Pricing.Api.Controllers.PricingController
+  kind: controller
+  template: controller
+  template_ref: templates/controller.md
+  example_ref: templates/examples/controller.md
+  module: Sample.Pricing.Api
+  module_csproj: src/Sample.Pricing.Api/Sample.Pricing.Api.csproj
+  domain: Sample.Pricing.Api
+  team: null
+  signature_hash: sha256:0e29455f07023ae28072c3bef5b59c2725eead683869ad1b48c23170251613b4
+  impl_hash: sha256:77af12c0…
+  ruleset_version: 2026-07-26.1
+  sources:
+  - path: src/Sample.Pricing.Api/Controllers/PricingController.cs
+    start: 8
+    end: 26
+docpipe_state:
+  accepted: null
+  review: null
+---
+
+# PricingController
+
+<!-- docpipe:generated:start -->
+<!-- Блок собран `docpipe materialize` из doc-tree.json и перезаписывается при каждом
+     прогоне. Писать можно только внутри блоков docpipe:section — они не затираются. -->
+
+`Sample.Pricing.Api.Controllers.PricingController` — public sealed class,
+модуль `Sample.Pricing.Api`, домен `Sample.Pricing.Api`, владелец не задан.
+
+### Исходники
+
+- [`src/…/Controllers/PricingController.cs`](../../../../src/Sample.Pricing.Api/Controllers/PricingController.cs) — строки 8–26
+
+### HTTP-эндпоинты
+
+| Метод | Маршрут | Член | Строка |
+| --- | --- | --- | --- |
+| `POST` | `api/v1/Pricing` | `RecalculateAsync` | 24 |
+| `GET` | `api/v1/Pricing/{id:guid}` | `GetAsync` | 18 |
+
+### Зависимости
+
+| Тип | Через | Документ |
+| --- | --- | --- |
+| `Sample.Pricing.Api.Services.IPricingService` | constructor | [PricingService](../services/pricing-service.md) — реализация интерфейса |
+
+### Связи
+
+Нет.
+
+### XML-doc из кода
+
+> Handles pricing requests.
+
+<!-- docpipe:generated:end -->
+
+## Назначение
+
+<!-- docpipe:section:start purpose -->
+<!-- Зачем этот контроллер существует и какую задачу решает потребитель API.
+     2–5 предложений. Сигнатуры не пересказывать — они выше и в исходниках. -->
+<!-- docpipe:section:end purpose -->
+
+## Контракт API
+
+<!-- docpipe:section:start api -->
+<!-- По каждому эндпоинту: что принимает, что возвращает, какие коды ответа значимы,
+     какие ошибки штатны. Таблицу маршрутов не повторять. -->
+<!-- docpipe:section:end api -->
+
+## Поведение и правила
+
+<!-- docpipe:section:start behaviour -->
+<!-- Валидация, авторизация, идемпотентность, побочные эффекты. -->
+<!-- docpipe:section:end behaviour -->
+
+## Взаимодействие
+
+<!-- docpipe:section:start collaboration -->
+<!-- Кого зовёт и зачем. Что будет, если зависимость недоступна. -->
+<!-- docpipe:section:end collaboration -->
+
+## Замечания
+
+<!-- docpipe:section:start notes -->
+<!-- Известные ограничения, легаси, планы. Пусто — нормально. -->
+<!-- docpipe:section:end notes -->
+```
+
+### Зоны и правило записи
+
+| Зона | Кто пишет | Что происходит при `materialize` |
+|---|---|---|
+| ключ `docpipe:` во front matter | инструмент | перезаписывается всегда (проекция манифеста) |
+| ключ `docpipe_state:` | только `docs accept` и автоперенос | сохраняется |
+| прочие ключи front matter | человек | сохраняются, порядок лексикографический |
+| `<!-- docpipe:generated:… -->` | инструмент | пересобирается всегда |
+| `<!-- docpipe:section:… -->` | агент шага 3 | **никогда** не затирается |
+| всё остальное в теле | человек | сохраняется дословно |
+
+Подсказки в секциях — **только** HTML-комментарии. Это не стиль: «секция пуста»
+определяется как «после удаления `<!--…-->` и пробелов ничего не осталось». Подсказка
+обычным текстом сделала бы каждый новый документ «уже написанным», и агент шага 3
+обошёл бы всё дерево впустую. Это самая дорогая ошибка во всём шаге 2.
+
+### Обоснование полей front matter
+
+Правило отбора: поле попадает сюда, только если по нему кто-то **принимает решение** —
+скрипт или агент. Всё, что нужно только глазами, живёт в генерируемом блоке.
+
+| Поле | Зачем |
+|---|---|
+| `schema` | Версия формата **документа**, независимая от версии манифеста. Без неё апгрейд формата неотличим от порчи файла |
+| `node_id` | Единственная надёжная связь с манифестом. Требование постановки |
+| `doc_path` | Самопроверка: документ знает, где должен лежать. Расхождение = файл скопировали или перенесли руками |
+| `title`, `fqn` | `fqn` — ключ, по которому агент ищет тип своими средствами. Дублирует `node_id`, но тот неудобно парсить (в нём `#` и обратная кавычка) |
+| `kind`, `template`, `template_ref`, `example_ref` | Агент выбирает глубину и стиль по виду сущности; `*_ref` — репо-относительные пути к скелету и образцу |
+| `module`, `module_csproj` | Имена проектов не уникальны (в ABP 39 повторов), поэтому фильтры по одному `module` врут |
+| `domain` | Ось группировки, ортогональная модулю. Требование постановки |
+| `team` | Результат ownership. Ключ присутствует всегда: отсутствие владельца должно быть видимым фактом, а не отсутствием строки |
+| `signature_hash`, `impl_hash` | Текущее состояние кода. В паре с принятыми значениями дают решение |
+| `ruleset_version` | Отвечает на «документ устарел из-за смены правил, а не кода» |
+| `sources[]` | Требование постановки. Мэппинги `path/start/end`, а не строка `path:start-end`: любой парсер такого формата — источник багов. Список, потому что `partial`-класс живёт в нескольких файлах |
+
+**Времени во front matter нет.** Оно сделало бы `accept` неидемпотентным — два прогона
+подряд меняли бы файл. История правок точнее хранится в git.
+
+**`endpoints`, `dependencies`, `related`, `matched_rules` во front matter нет.** Они идут
+в генерируемый блок читаемым текстом; в машинном виде они уже лежат в манифесте, доступном
+по `node_id`.
+
+### Состояние после приёмки
+
+```yaml
+docpipe_state:
+  accepted:
+    signature_hash: sha256:0e29455f…
+    impl_hash: sha256:77af12c0…
+    kind: controller
+    members: [GetAsync, PricingController, RecalculateAsync]
+  review: null
+```
+
+`kind` и `members` (имена публичных членов, отсортированы) — единственное, что хранится
+сверх двух хэшей. Они нужны, чтобы `docs status` мог сказать, **что именно** изменилось,
+а не только «изменилось», не требуя предыдущего манифеста.
+
+При переносе документа туда пишется `review: {reason: relocated, from: <прежний путь>}`.
+Снимается приёмкой.
+
+---
+
+## Решение для агента: `write` / `review` / `skip`
+
+Вычисляется по порядку, первое сработавшее выигрывает:
+
+| Условие | Решение | Причина в отчёте |
+|---|---|---|
+| есть пустые секции | `write` | `документ не наполнен` / `новые секции шаблона: api` |
+| `signature_hash` ≠ принятого | `write` | `контракт изменился: добавлены RecalculateAsync; удалены Foo` |
+| приёмки не было, а текст есть | `review` | `текст не сверялся с кодом` |
+| `review.reason` заполнен | `review` | `документ перенесён из <путь>` |
+| принятый `kind` ≠ текущего | `review` | `вид сущности: service → controller` |
+| `impl_hash` ≠ принятого | `review` | `реализация изменилась, контракт тот же` |
+| иначе | `skip` | — |
+
+Статусы для счётчиков: `missing`, `empty`, `undeclared`, `stale`, `drifted`, `relocated`,
+`current`, `broken`, `orphan`.
+
+### Две разные «порчи», и лечатся они противоположно
+
+- **Порча проекции** — YAML разбирается, маркеры парные, но внутри ключа `docpipe:` мусор:
+  не тот хэш, лишние ключи, поправленный руками `doc_path`. Эта зона восстанавливается
+  из манифеста целиком, восстанавливать из неё нечего → **перезаписывается молча**.
+- **Порча структуры** — YAML не разбирается; front matter не закрыт; маркеры непарные,
+  вложенные или дублируются; `docpipe_state` не проходит валидацию. Здесь **невозможно
+  установить границы авторского текста и прочитать принятые хэши**, а единственный
+  экземпляр этих хэшей живёт в этом файле → статус `broken`, **файл не тронут**, код 1.
+
+Формулировка: *источником истины является `doc-tree.json`, но состояние существует только
+в документе; поэтому всё, что мешает надёжно прочитать состояние и границы секций, —
+это отказ, а не самолечение.*
+
+---
+
+## Автоперенос
+
+Переезд — это когда изменился **код** и пересчитался `doc_path`, а файл с текстом остался
+на старом месте. Файл никто не переносил.
+
+`doc_path` = `docs/modules/{имя csproj}/{вид}s/{slug имени типа}.md`, а
+`node_id` = `type:{путь к csproj}#{FQN}` + арность. Обе строки меняются от пересекающихся,
+но не совпадающих причин:
+
+| Что случилось в коде | `doc_path` | `node_id` |
+|---|---|---|
+| правило переклассифицировало тип (`service` → `controller`) | меняется | **тот же** |
+| появился одноимённый тип → всем участникам добавлен хэш-суффикс | меняется | тот же |
+| тип переименован | меняется | меняется (FQN) |
+| тип переехал в другой namespace | **не меняется** | меняется (FQN) |
+| переименован `.csproj` или тип перенесён в другой проект | меняется | меняется (csproj) |
+
+`docpipe diff` здесь не помощник: он сопоставляет узлы по `id` (`diff.py:53-66`), поэтому
+переименование типа даёт ему `removed` + `added`, а не `moved`.
+
+| Уверенность | Признак | Действие |
+|---|---|---|
+| `exact` | `node_id` совпал | перенос |
+| `high` | `node_id` разный, но пересеклись `sources[].path` **или** совпал `impl_hash`, и пара единственная в обе стороны | перенос |
+| `probable` | кандидатов несколько | отчёт; перенос командой `docs adopt --from … --to …` |
+| нет | признаков нет | остаётся `orphan` |
+
+Требование «пара 1:1» снимает главный риск — два типа, обменявшихся именами.
+
+Не покрывается ничем: одновременное переименование и типа, и файла `.cs`. Такой документ
+остаётся сиротой, о нём сообщается, переносится он вручную.
+
+Перенос — `Path.replace` (атомарный rename), затем пересборка документа по новому пути.
+Именно в таком порядке: обратный оставляет окно, в котором падение процесса даёт две копии
+или ни одной.
+
+Ссылки на переехавший документ **из других документов** чинятся сами: генерируемые блоки
+пересобираются в том же прогоне. Ссылки, поставленные агентом внутри своих секций,
+починить автоматически нельзя — `docs status` проверяет относительные ссылки в авторских
+секциях и сообщает о битых.
+
+---
+
+## Владение (`ownership.yaml`)
+
+Синтаксис — тот же, что у `rules/dotnet.yaml`: `id`, `priority`, дерево `any`/`all`.
+Побеждает наибольший `priority`; при равенстве — лексикографически меньший `id`, потому
+что порядок строк в файле источником решения быть не может.
+
+Правила **только положительные**: более специфичное выражается более высоким приоритетом,
+а не исключением из общего. Отрицаний нет.
+
+```yaml
+version: "1"
+ownership_version: "2026-07-28.1"
+
+teams:
+  - id: pricing
+    title: Ценообразование
+  - id: risk
+    title: Рыночные риски
+  - id: platform
+    title: Платформа
+
+rules:
+  # 10 — проект целиком
+  - id: pricing.modules
+    team: pricing
+    priority: 10
+    when:
+      module_glob: ["src/Cf.Pricing.*/**", "src/Cf.Curves.*/**"]
+
+  - id: platform.modules
+    team: platform
+    priority: 10
+    when:
+      module_glob: ["src/Cf.Shared/**", "src/Cf.Infrastructure.*/**"]
+
+  # 50 — шэренный проект режется по каталогам с КОДОМ. Ради этого всё и заводится.
+  - id: pricing.shared-folders
+    team: pricing
+    priority: 50
+    when:
+      path_glob: ["src/Cf.Shared/Pricing/**", "src/Cf.Shared/Curves/**"]
+
+  - id: risk.shared-folders
+    team: risk
+    priority: 50
+    when:
+      path_glob: ["src/Cf.Shared/Risk/**"]
+
+  # 80 — namespace внутри чужого каталога
+  - id: platform.shared-serialization
+    team: platform
+    priority: 80
+    when:
+      all:
+        - path_glob: ["src/Cf.Shared/**"]
+        - namespace_prefix: ["Cf.Shared.Pricing.Serialization"]
+
+  # 100 — точечная передача одного типа
+  - id: risk.stress-engine
+    team: risk
+    priority: 100
+    when:
+      fqn_prefix: ["Cf.Pricing.Engine.StressTestRunner"]
+```
+
+Слои с шагом приоритета (10 — проект, 50 — каталог, 80 — namespace, 100 — точечно) —
+единственная рекомендация по сопровождению. Промежутки оставлены намеренно, чтобы вставка
+нового уровня не требовала перенумерации.
+
+**Предикаты над `DocNode`** — восемь, намеренно мало (та же причина, что в `classify.py`:
+большой набор означает, что настройщик каждый раз выбирает из десяти способов написать
+одно и то же):
+
+| Предикат | По какому полю | Зачем |
+|---|---|---|
+| `path_glob` | `symbol.sources[].path`, любой источник | **Главный инструмент.** Единственный способ разделить шэренный `.csproj` |
+| `module` | `node.module` (имя) | Короткая запись типового случая |
+| `module_glob` | csproj из `node.parent` | По пути, а не по имени: имена проектов не уникальны |
+| `domain` | `node.domain` | Готовая ось группировки из шага 1 |
+| `kind` | `node.kind` | «Все контроллеры домена — наши» |
+| `namespace_prefix` | `symbol.namespace`, `startswith` | Дешевле и понятнее регулярки; закрывает большинство случаев |
+| `namespace_regex` | `symbol.namespace`, `re.fullmatch` | Для остального; компилируется при загрузке |
+| `fqn_prefix` | `symbol.fqn`, `startswith` | Точечная передача типа или ветки |
+
+`--team X` сужает множество того, что **пишется**. Множество, с которым сравнивают, не
+сужается никогда — иначе прогон одной команды объявил бы сиротами документацию остальных.
+
+---
+
+## CLI
+
+Коды возврата по конвенции проекта: **0** — успех, **1** — проверка не прошла или отказ,
+**2** — ошибка пользователя.
+
+```
+docpipe materialize MANIFEST
+    --root PATH        корень репозитория [.]
+    --config FILE      docpipe.yaml
+    --templates DIR    каталог шаблонов [templates]
+    --ownership FILE   правила владения
+    --team NAME        только узлы этой команды; можно повторять
+    --dry-run          показать план, не писать
+    --force            перезаписать broken-документы (копия рядом в *.md.broken)
+    --format text|json
+
+docpipe docs status MANIFEST [PATH...]      # без путей — всё дерево, с путями — только они
+    --root/--config/--ownership/--team
+    --action write|review|skip   показать только эти решения; можно повторять
+    --fail-on STATUS             код 1 при встрече статуса; можно повторять
+    --format text|json
+
+docpipe docs accept MANIFEST [PATH...]
+    --node NODE_ID  --team NAME  --all  --force  --dry-run
+
+docpipe docs adopt MANIFEST --from PATH --to PATH [--dry-run]
+
+docpipe docs owners MANIFEST [--explain NODE] [--lint] [--format text|json]
+```
+
+`docs` — под-typer (`app.add_typer(docs_app, name="docs")`); существующий `@app.callback()`
+этому не мешает. Позиционные `PATH...` у `status` и `accept` закрывают требование
+«валидация конкретного документа и группы документов»: принимаются и файлы, и каталоги.
+
+`docs status --format json` — вход агента шага 3, через `hashing.stable_json_dumps`:
+
+```json
+{
+  "counts": {"empty": 4, "stale": 1, "current": 1},
+  "documents": [
+    {
+      "action": "write",
+      "reason": "контракт изменился",
+      "changes": {"members_added": ["RecalculateAsync"], "members_removed": [],
+                  "kind_changed": null, "relocated_from": null},
+      "doc_path": "docs/modules/…/pricing-controller.md",
+      "node_id": "type:src/…#…PricingController`0",
+      "status": "stale",
+      "kind": "controller",
+      "template_ref": "templates/controller.md",
+      "example_ref": "templates/examples/controller.md",
+      "team": "pricing",
+      "empty_sections": ["notes"],
+      "sources": [{"path": "src/…/PricingController.cs", "start": 8, "end": 26}],
+      "broken_links": []
+    }
+  ],
+  "manifest_partial": false,
+  "total": 6
+}
+```
+
+`documents` отсортирован по `doc_path`. Предупреждение про частичный прогон печатается,
+когда `manifest.partial is not None`: статусы, вычисленные по частичному манифесту, вне
+скоупа недостоверны.
+
+---
+
+## Раскладка
+
+```
+docpipe/
+├── ruleset.py                 НОВЫЙ: движок правил, вынесен из classify.py
+└── materialize/
+    ├── __init__.py
+    ├── model.py               pydantic-модели шага 2
+    ├── document.py            разбор и сборка документа (обратимо)
+    ├── template.py            загрузка templates/*.md, подстановка {{…}}
+    ├── build.py               сборка front matter и генерируемого блока, кросс-ссылки
+    ├── ownership.py           правила владения
+    ├── plan.py                план, статусы, решения, сопоставление переносов
+    └── apply.py               запись, accept, adopt
+templates/
+    README.md
+    controller.md service.md provider.md workflow.md
+    ignite-service.md ignite-compute.md repository.md
+    examples/controller.md examples/service.md examples/provider.md examples/workflow.md
+ownership.example.yaml
+```
+
+Новые ключи `DocpipeConfig` (модель с `extra="forbid"`, поэтому добавить обязательно):
+`templates`, `ownership`, `docs_root`, `docs_scan_exclude`. Все со значениями по умолчанию —
+существующие конфигурации продолжают работать.
+
+---
+
+## Граф задач
+
+```
+M01 ─┬─► M06 ─┐
+M02 ─┤        │
+M03 ─┼─► M05 ─┼─► M07 ─► M08 ─► M09 ─► M10 ─► M11
+M04 ─┘        │
+```
+
+| # | Задача | Зависит от |
+|---|---|---|
+| M01 | `docpipe/ruleset.py`: вынос движка правил из `classify.py` | — |
+| M02 | `impl_hash` в шаге 1 | — |
+| M03 | `materialize/document.py`: обратимый разбор документа | — |
+| M04 | `templates/**` + 4 образца + `materialize/template.py` | — |
+| M05 | `materialize/build.py`: front matter, генерируемый блок, кросс-ссылки | M03, M04 |
+| M06 | `materialize/ownership.py` + `ownership.example.yaml` | M01 |
+| M07 | `materialize/plan.py`: статусы, решения, сопоставление переносов | M05, M06 |
+| M08 | `materialize/apply.py` + команда `docpipe materialize` | M07 |
+| M09 | `docpipe docs status` | M08 |
+| M10 | `docs accept`, `docs adopt`, `docs owners` | M09 |
+| M11 | `docs/materialize.md`, README, правки документации шага 1 | M10 |
+
+---
+
+## M01 — `ruleset.py`: общий движок правил
+
+**Цель:** один синтаксис условий и одна диагностика для `rules/dotnet.yaml` и `ownership.yaml`.
+
+**Создать:** `docpipe/ruleset.py`, `tests/test_ruleset_engine.py`
+**Изменить:** `docpipe/classify.py`
+
+**Зачем.** Настройщик правил классификации и настройщик границ команд — часто один человек.
+Два движка означают два набора сообщений об ошибках, два поведения при опечатке и
+неизбежный дрейф: «в `rules` `any` можно вкладывать, а в `ownership` почему-то нет».
+
+Дублирование ~60 строк дешевле на день работы и дороже на каждой последующей правке.
+Решающий довод в пользу выноса — **диагностика**: `classify._validate_condition:166-200` это
+37 строк выверенных сообщений («узел условия должен быть словарём с одним ключом»,
+«неизвестный предикат `X`; известны: …»), которые превращают опечатку в понятную ошибку
+вместо молча не срабатывающего правила. Написать их заново так же аккуратно не выйдет.
+
+**Спецификация**
+
+```python
+Predicate = Callable[[Any, list[str]], bool]
+
+@dataclass(frozen=True)
+class PredicateTable:
+    predicates: Mapping[str, Predicate]
+    regex_keys: frozenset[str] = frozenset()   # какие значения компилировать как regex
+
+COMBINATORS: Final[frozenset[str]] = frozenset({"any", "all"})
+
+def validate_condition(node: Any, where: str, table: PredicateTable) -> None: ...
+def evaluate(node: dict[str, Any], subject: Any, table: PredicateTable) -> bool: ...
+def pick_winner[R](matched: list[R]) -> R: ...          # min(key=(-priority, id))
+def load_rule_items(raw, path, required: set[str]) -> list[dict]: ...   # id, поля, повторы
+```
+
+`classify.py` после правки: собственная `PredicateTable` над `Symbol`, собственные
+`Rule`/`Ruleset`/`Classification`, собственный `load_ruleset`; общие — валидация условий,
+вычисление и выбор победителя.
+
+> **Ловушка. Рефакторинг обязан быть поведенчески пустым.** Единственный надёжный критерий:
+> `tests/test_classify.py` не меняется **ни на строку**, `tests/golden/doc-tree.json`
+> совпадает байт в байт. Если «заодно» поправить формулировку сообщения — тест упадёт,
+> и это правильно.
+
+**Критерии приёмки**
+- `git diff --stat tests/test_classify.py` пуст, все тесты классификации зелёные;
+- `test_matches_golden_manifest` проходит без обновления золотого файла;
+- в `tests/test_ruleset_engine.py` на искусственной таблице из двух предикатов проверены:
+  неизвестный ключ, `any` с пустым списком, значение не список строк, битая регулярка;
+- `pick_winner` при равном приоритете возвращает лексикографически меньший `id`.
+
+**Проверка**
+```bash
+uv run pytest tests/test_ruleset_engine.py tests/test_classify.py tests/test_scan_e2e.py -q
+```
+
+---
+
+## M02 — `impl_hash` в шаге 1
+
+**Цель:** отличать «переписано тело» от «изменён контракт».
+
+**Изменить:** `docpipe/model.py`, `docpipe/dotnet/parser.py`, `docpipe/dotnet/resolve.py`,
+`docpipe/tree.py`, `docpipe/cache.py`, `tests/golden/doc-tree.json`,
+`schema/doc-tree.schema.json`, `docs/manifest.md`
+
+**Зачем.** `signature_hash` намеренно нечувствителен к телу метода — это экономит шагу 3
+тысячи документов. Но описание «как работает» зависит именно от тела, и без второго сигнала
+оно устаревает молча. Два хэша дают два уровня приоритета: `write` по контракту,
+`review` по реализации.
+
+**Спецификация**
+
+1. `parser.py`: при разборе объявления взять текст узла (`node.text`), нормализовать
+   пробелы (`re.sub(r"\s+", " ", text).strip()`), положить `content_hash` в новое поле
+   `RawDeclaration.decl_hash`.
+2. `resolve.py`: при слиянии `partial` — `Symbol.impl_hash = stable_hash(sorted(хэши
+   объявлений))`. Сортировка обязательна: один тип собирается из нескольких файлов, и
+   порядок их обхода источником порядка быть не может.
+3. `tree.py`: `DocNode.impl_hash` из символа.
+4. `SCHEMA_VERSION` `"1.0"` → `"1.1"`; `cache.CACHE_VERSION` +1 (изменился
+   `FileParseResult`, старый кэш обязан инвалидироваться);
+5. Пересчитать `tests/golden/doc-tree.json`, регенерировать `schema/doc-tree.schema.json`
+   командой `docpipe schema`, дописать поле в `docs/manifest.md`.
+
+> **Ловушка. Нормализация пробелов обязательна.** Без неё прогон `dotnet format` по
+> репозиторию изменит `impl_hash` у всех типов сразу, и всё дерево документации станет
+> `drifted`. Это та же логика, по которой `signature_hash` не включает номера строк.
+
+> **Граница, которую надо записать.** `SourceSpan` не включает XML-doc: комментарий — это
+> предшествующий сосед, а не потомок объявления. Поэтому правка XML-doc не меняет
+> `impl_hash`. Это приемлемо; менять устройство span ради этого не нужно.
+
+**Критерии приёмки**
+- у всех 6 узлов золотого манифеста заполнен `impl_hash`;
+- переформатирование файла фикстуры (лишние пробелы, переносы строк внутри объявления)
+  **не** меняет `impl_hash`; изменение тела метода — меняет;
+- `signature_hash` при изменении тела **не** меняется (проверяется вместе, иначе смысл
+  двух хэшей теряется);
+- `partial`-класс: перестановка файлов в обходе не меняет `impl_hash`;
+- прогон на старом кэше не отдаёт записи без `decl_hash` (кэш инвалидировался);
+- `test_matches_golden_manifest` зелёный после обновления эталона.
+
+**Проверка**
+```bash
+uv run pytest tests/test_resolve_fqn.py tests/test_tree.py tests/test_cache.py tests/test_scan_e2e.py tests/test_determinism.py -q
+```
+
+---
+
+## M03 — `document.py`: обратимый разбор документа
+
+**Цель:** разобрать `.md` на front matter и сегменты так, чтобы сборка возвращала исходные байты.
+
+**Создать:** `docpipe/materialize/{__init__,model,document}.py`, `tests/test_materialize_document.py`
+
+**Зачем.** Обратимость — фундамент идемпотентности и сохранности авторского текста.
+Всё остальное в шаге 2 стоит на этом инварианте.
+
+**Спецификация**
+
+```python
+MANAGED_START = "<!-- docpipe:generated:start -->"
+MANAGED_END   = "<!-- docpipe:generated:end -->"
+SECTION_START = re.compile(r"^<!--\s*docpipe:section:start\s+([a-z][a-z0-9_]*)\s*-->\s*$", re.M)
+SECTION_END   = re.compile(r"^<!--\s*docpipe:section:end\s+([a-z][a-z0-9_]*)\s*-->\s*$", re.M)
+
+class DocumentError(ValueError): ...           # порча структуры, с номером строки
+
+def parse_document(text: str) -> ParsedDocument: ...
+def assemble(doc: ParsedDocument) -> str: ...
+def is_section_empty(body: str) -> bool: ...   # убрать <!--…--> с DOTALL, затем .strip()
+def read_document(path: Path) -> tuple[str, ParsedDocument]: ...  # utf-8-sig, нормализация \r\n
+```
+
+Сегмент тела — один из трёх видов: `literal` (всё вне маркеров, сохраняется дословно),
+`generated` (пересобирается), `section` (сохраняется дословно). Сегмент хранит **и** тело,
+**и** полный исходный текст с маркерами.
+
+**Инвариант, проверяемый на каждом валидном документе:
+`assemble(parse_document(t)) == t`, байт в байт.**
+
+Условия отказа (`DocumentError` с номером строки): открывающий `---` без закрывающего;
+YAML не разбирается или разобрался не в словарь; `docpipe_state` не проходит валидацию;
+`generated:end` без `generated:start` и наоборот; больше одного генерируемого блока;
+`section:start X` без `section:end X`; вложенные секции; повтор имени секции; генерируемый
+блок внутри секции или наоборот.
+
+Документ **без** front matter или **без** `docpipe.node_id` — не ошибка: он просто не
+является документом docpipe.
+
+> **Ловушка. `read_text(encoding="utf-8")` не снимает BOM.** Документ, сохранённый
+> Блокнотом, начинается с `﻿`, `---` оказывается не в позиции 0, front matter не
+> находится, документ считается чужим — и при следующем прогоне превращается в сироту,
+> а рядом появляется новый пустой. Читать `encoding="utf-8-sig"`.
+
+> **Ловушка. Не восстанавливать маркеры при сборке.** Соблазн хранить только тело
+> нормализует пробелы внутри маркера (`<!--docpipe:section:start purpose-->` → канонический
+> вид), и обратимость теряется на первом же документе, который правили руками.
+
+> **Ловушка. Маркер внутри блока кода.** Секция может содержать ```-блок, где написан
+> текст, похожий на маркер (например, документация про сам docpipe). Разбор идёт построчно
+> и о markdown-блоках кода не знает. Осознанное ограничение: маркеры распознаются только в
+> строках, состоящих **из одного маркера целиком** (якоря `^…$` с `re.M`). Записать это
+> в `templates/README.md` вместе с обходным путём — отступ в четыре пробела.
+
+**Критерии приёмки**
+- `assemble(parse_document(t)) == t` для ≥ 12 документов: с front matter и без, CRLF, без
+  завершающего перевода строки, с тремя завершающими, с BOM, с юникодом, с чужими ключами
+  front matter, с секцией, содержащей ```-блок с текстом, похожим на маркер;
+- каждое условие отказа даёт `DocumentError` с номером строки;
+- `is_section_empty` истинно для `""`, одного комментария, трёх комментариев с пустыми
+  строками; ложно для комментария плюс одного слова.
+
+**Проверка**
+```bash
+uv run pytest tests/test_materialize_document.py -q
+```
+
+---
+
+## M04 — шаблоны и образцы
+
+**Цель:** семь скелетов, четыре образца и их загрузка с подстановкой.
+
+**Создать:** `templates/README.md`, семь скелетов, четыре образца,
+`docpipe/materialize/template.py`, `tests/test_materialize_template.py`
+
+**Спецификация**
+
+Скелеты — ровно по значениям `template` из `rules/dotnet.yaml`:
+
+| Шаблон | Секции |
+|---|---|
+| `controller` | purpose, api, behaviour, collaboration, notes |
+| `service` | purpose, responsibilities, behaviour, collaboration, notes |
+| `provider` | purpose, data_source, contract, failure_modes, notes |
+| `workflow` | purpose, steps, triggers, compensation, notes |
+| `ignite-service` | purpose, deployment, cluster_contract, failure_modes, notes |
+| `ignite-compute` | purpose, job_contract, data_affinity, failure_modes, notes |
+| `repository` | purpose, storage, contract, transactions, notes |
+
+`notes` есть везде: гарантирует, что при любой реклассификации остаётся хотя бы одна
+секция-приёмник.
+
+Образцы — `templates/examples/{controller,service,provider,workflow}.md`: полностью
+заполненные документы на типах из `tests/fixtures/SampleSolution`. Для Ignite образцов
+пока нет: специфика на АС CF не проверена (`CASHFLOW.md` §3.2), и придуманный образец
+будет врать.
+
+```python
+SUBSTITUTION = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
+ALLOWED_KEYS: Final[frozenset[str]] = frozenset({
+    "title", "fqn", "kind", "module", "domain", "team", "doc_path", "node_id"})
+
+def load_templates(directory: Path) -> dict[str, Template]: ...
+def substitute(text: str, values: Mapping[str, str]) -> str: ...
+```
+
+Проверки при загрузке (все — код 2): нет ровно одного генерируемого блока; повтор имени
+секции; имя секции не по `[a-z][a-z0-9_]*`; ключ подстановки вне белого списка; в шаблоне
+есть front matter (его быть не должно — front matter генерируется целиком).
+
+> **Ловушка. Генерируемый блок в шаблоне пуст.** Шаблон объявляет только его **место**.
+> Текст, положенный туда, затрётся при первом же прогоне, и человек решит, что инструмент
+> сломан.
+
+> **Ловушка. Подсказки — только HTML-комментарии.** Иначе каждый новый документ получит
+> решение `review` вместо `write`, и агент шага 3 обойдёт всё дерево, считая его
+> написанным. Проверяется тестом: `is_section_empty` истинно для тела каждой секции
+> каждого скелета.
+
+> **Ловушка. Не `str.format` и не `string.Template`.** Одинарные `{}` встречаются в
+> маршрутах (`api/v1/Pricing/{id:guid}`) и в примерах JSON внутри подсказок. `str.format`
+> упадёт или испортит их.
+
+> **Ловушка. Никакой преамбулы в начале шаблона.** Всё, что вне маркеров, копируется в
+> документ дословно. Инструкция «как пользоваться шаблонами» живёт в `templates/README.md`.
+
+> **Ловушка. Читать шаблоны с явным `encoding="utf-8"`.** Подсказки на русском; на Windows
+> дефолтная кодировка не UTF-8, и файл прочитается мусором.
+
+**Критерии приёмки**
+- загружаются ровно 7 скелетов; множество их имён совпадает со множеством значений
+  `template` в `rules/dotnet.yaml` (тест читает YAML и сравнивает — так набор правил и
+  комплект шаблонов не разъедутся);
+- у каждого ровно один генерируемый блок, и он пуст;
+- в каждом есть секция `notes`;
+- `is_section_empty` истинно для тела каждой секции каждого скелета;
+- шаблон с `{{ unknown }}` → ошибка загрузки с именем ключа и списком допустимых;
+- `substitute` не трогает `{id:guid}` и `{"a": 1}`;
+- четыре образца разбираются `parse_document` без ошибок, и ни одна их секция не пуста.
+
+**Проверка**
+```bash
+uv run pytest tests/test_materialize_template.py -q
+```
+
+---
+
+## M05 — `build.py`: front matter, генерируемый блок, кросс-ссылки
+
+**Цель:** `DocNode` → текст front matter и текст генерируемого блока.
+
+**Создать:** `docpipe/materialize/build.py`, `tests/test_materialize_build.py`,
+`tests/test_materialize_links.py`
+
+**Спецификация**
+
+```python
+def build_front_matter(node, manifest, template, team, refs) -> DocpipeFrontMatter: ...
+def dump_front_matter(docpipe, state, preserved: dict[str, Any]) -> str: ...
+def build_generated_block(node, context: BuildContext) -> str: ...
+```
+
+`dump_front_matter` собирает словарь: `docpipe` первым (порядок = порядок полей
+pydantic-модели), `docpipe_state` вторым, остальные ключи — отсортированными. Дамп — один
+вызов `yaml.safe_dump(mapping, sort_keys=False, allow_unicode=True,
+default_flow_style=False, width=10**9)`, обрамление `---\n{yaml}---\n\n`.
+
+Порядок разделов генерируемого блока фиксирован: шапка → Исходники → HTTP-эндпоинты →
+Зависимости → Связи → XML-doc. Раздел без данных печатается со словом «Нет.», а не
+пропускается: пропуск означал бы, что появление первой зависимости меняет и структурные
+строки документа.
+
+**Кросс-ссылки.** `dependencies[].target` и `related[].target` — это FQN, а `node_id` —
+модуль + FQN + арность. FQN не уникален (на ABP 255 коллизий на 9075 объявлений).
+Индексы `by_fqn` и `implementors` строятся по манифесту один раз.
+
+```
+1. candidates = by_fqn.get(target, [])
+2. Если кандидатов больше одного — сужать по порядку, останавливаясь на первом непустом:
+   2.1 узлы того же модуля, что и текущий;
+   2.2 узлы модулей из его project_references (один шаг);
+   2.3 все кандидаты.
+3. Если кандидатов ноль — искать среди реализаций интерфейса (implementors);
+   помечать «реализация интерфейса».
+4. Результат: 0 → текст без ссылки, пометка «вне дерева»;
+              1 → относительная ссылка на doc_path;
+             >1 → ссылки на все, отсортированные по doc_path, каждая подписана модулем.
+```
+
+Шаг 3 обязателен: в наборе правил по умолчанию интерфейсы не документируются
+(`type_kind: ["class", "record"]`), а зависимости почти всегда указывают на интерфейс.
+Без него таблица зависимостей у каждого сервиса состояла бы из строк «вне дерева».
+
+Показывать всех при неоднозначности, а не выбирать одного: выбор — это ложь в документации,
+которая обнаружится нескоро.
+
+> **Ловушка. `width=10**9` обязателен.** Проверено на PyYAML 6.0.3: значение **с пробелами**
+> длиннее 80 символов (название команды, сигнатура) разрывается на две строки с отступом.
+> Значение читается верно, но текст файла становится зависимым от версии PyYAML.
+
+> **Ловушка. `allow_unicode=True` в каждом вызове.** Иначе кириллица в `domain`, `team`,
+> `title` превратится в `К…`. Это аналог `ensure_ascii=False` в `hashing.py`.
+
+> **Ловушка. Никакой ручной сборки YAML f-строками.** `node_id` содержит обратную кавычку
+> и `#`. Проверено: PyYAML выводит его без кавычек и читает обратно верно, а `'1.0'` и
+> `on` квотирует сам. Правило «когда квотировать» знает дампер, а не человек.
+
+> **Ловушка. `sort_keys=False` только для зоны `docpipe:`.** У сохранённых чужих ключей
+> порядок — тот, в котором их вернул `yaml.safe_load`, то есть тот, что человек мог
+> поменять руками. Их обязательно сортировать, иначе перестановка двух строк во front
+> matter вызывает перезапись документа.
+
+> **Ловушка. `posixpath.relpath`, не `os.path.relpath`.** На Windows последний даёт
+> `..\services\…`, и дерево, собранное на Windows, разойдётся с собранным в CI.
+> Проверяется отсутствием символа `\` в собранном тексте.
+
+> **Ловушка. Экранирование в markdown-таблицах.** `|` в значении режет ячейку: значения
+> оборачиваются в обратные кавычки, `|` экранируется. `xml_doc` с переводами строк идёт
+> цитатой (`> ` на каждой строке), а не в ячейку.
+
+> **Ловушка. Ссылка узла на самого себя.** Тип, зависящий от себя через DI-регистрацию,
+> дал бы ссылку на собственный файл. Цель, совпадающая с текущим узлом по `id`, отбрасывается.
+
+> **Ловушка. `dependencies[].target` бывает не FQN.** При `confidence: "low"` там лежит
+> сырое имя типа из сигнатуры (`CancellationToken`, `IOptions`). Оно не резолвится никогда,
+> и это норма — такие строки идут без ссылки. Проверять `confidence` не нужно.
+
+**Критерии приёмки**
+- на узле `PricingController` из `tests/golden/doc-tree.json` front matter совпадает
+  с эталоном из раздела «Формат документа» байт в байт;
+- на узле `PricingService` (partial) в `sources` два элемента, в порядке манифеста;
+- два вызова `build_generated_block` на одном узле дают одинаковую строку;
+- узел с `domain: "Ценообразование"` даёт `domain: Ценообразование`, а не `Ц…`;
+- искусственный узел с `|` в сигнатуре и `\n` в `xml_doc` даёт валидную таблицу;
+- `dump_front_matter` с сохранёнными ключами `zeta`, `alpha` выводит их в порядке
+  `alpha`, `zeta` после `docpipe_state`;
+- у `PricingController` зависимость `IPricingService` даёт ссылку `../services/pricing-service.md`
+  с пометкой «реализация интерфейса»;
+- искусственный манифест с двумя узлами одного FQN в разных модулях: из узла модуля A
+  ссылка ведёт на кандидата из A; при его отсутствии рендерятся обе, отсортированные по `doc_path`;
+- ни одна собранная ссылка не содержит `\`;
+- перевёрнутый порядок узлов в манифесте даёт тот же результат.
+
+**Проверка**
+```bash
+uv run pytest tests/test_materialize_build.py tests/test_materialize_links.py -q
+```
+
+---
+
+## M06 — `ownership.py`
+
+**Цель:** `DocNode` → команда-владелец, плюс диагностика набора правил.
+
+**Создать:** `docpipe/materialize/ownership.py`, `ownership.example.yaml`, `tests/test_ownership.py`
+
+**Спецификация** — раздел «Владение» целиком. Восемь предикатов, `PredicateTable` из M01.
+
+```python
+def load_ownership(path: Path) -> Ownership: ...
+def owner_of(node: DocNode, ownership: Ownership) -> OwnerDecision: ...  # team, matched, winner, tie
+def lint(nodes: list[DocNode], ownership: Ownership) -> tuple[list[str], list[str]]: ...
+```
+
+Проверки при загрузке (код 2, ничего не выполняется): повтор `id` правила; неизвестный
+предикат (с перечислением известных); неверная регулярка; `team` правила отсутствует
+в списке `teams`; повтор `id` команды.
+
+`--lint` (код 1 при находках):
+1. **мёртвые правила** — не совпали ни с одним узлом. Самый частый дефект сопровождения:
+   каталог переименовали, правило осталось;
+2. **узлы без владельца** — счётчик плюс срезы по модулям и по первому сегменту пути
+   внутри модуля (формат `stats.format_breakdown`). Именно срезы показывают, что дописать;
+3. **команды без узлов**;
+4. **ничьи по приоритету** — два и более правил с одинаковым максимальным `priority`.
+   Формально детерминированно, но почти всегда означает забытый `priority`, и человек
+   узнаёт об этом, только когда документ уезжает не в ту команду.
+
+`--explain <node_id | doc_path>` печатает узел, его модуль, namespace, источники, все
+совпавшие правила по убыванию приоритета с пометкой победителя и итоговую команду.
+
+> **Ловушка. `path_glob` идёт через `discovery.matches_glob`, а не `fnmatch`.** Тот же
+> дефект, что описан в `CLAUDE.md`: `**/Pricing/**` не поймает `Pricing/CurveStore.cs`
+> в корне модуля.
+
+> **Ловушка. `path_glob` истинен, если совпал ХОТЯ БЫ ОДИН источник.** У `partial`-класса
+> файлы могут лежать в каталогах разных команд. Правило «любой источник» предсказуемо;
+> альтернатива «все источники» приводит к тому, что partial-класс не принадлежит никому,
+> и это выглядит как дефект инструмента. Такие узлы дополнительно попадают
+> в предупреждения `--lint`.
+
+> **Ловушка. Владение считается по `DocNode`, а не по модулю.** Соблазн «команда = модуль»
+> разбивается о шэренный `.csproj` — ровно ту ситуацию, ради которой ownership и заводится.
+
+**Критерии приёмки**
+- на искусственном манифесте из примера: тип из `src/Cf.Shared/Pricing/**` → `pricing`,
+  из `src/Cf.Shared/Risk/**` → `risk`, из `src/Cf.Shared/Common/**` → `platform`;
+- тип в `Cf.Shared.Pricing.Serialization` внутри `src/Cf.Shared/Pricing/**` → `platform`
+  (приоритет 80 бьёт 50);
+- `Cf.Pricing.Engine.StressTestRunner` → `risk` (приоритет 100);
+- перестановка правил в YAML не меняет ни одного владельца;
+- два правила с равным приоритетом → победа лексикографически меньшего `id` **и**
+  попадание узла в предупреждения о ничьих;
+- `--lint` находит мёртвое правило, узлы без владельца и команду без узлов;
+- `team`, не объявленная в `teams` → ошибка загрузки, код 2;
+- неизвестный предикат даёт то же сообщение, что и в `classify` (общий движок).
+
+**Проверка**
+```bash
+uv run pytest tests/test_ownership.py -q
+```
+
+---
+
+## M07 — `plan.py`: план, статусы, решения
+
+**Цель:** чистая функция «манифест + срез файловой системы → план действий и решения».
+Ни одной записи на диск.
+
+**Создать:** `docpipe/materialize/plan.py`, `tests/test_materialize_plan.py`
+
+**Спецификация**
+
+```python
+def scan_docs(root: Path, docs_root: str, exclude: list[str]) -> list[ExistingDoc]: ...
+def build_plan(manifest, existing, templates, ownership, options) -> MaterializePlan: ...
+def decide(node: DocNode | None, doc: ExistingDoc | None) -> Decision: ...  # action, status, reason, changes
+```
+
+Слияние для существующего документа, по шагам:
+
+```
+1. Прочитать байты, декодировать utf-8-sig, нормализовать переводы строк ДЛЯ СРАВНЕНИЯ
+   (не для записи).
+2. Разобрать. Сбой разбора → action=refuse, статус broken, файл не тронут.
+3. Из front matter взять всё, кроме ключа `docpipe:`.       ← сохраняемая часть
+4. Собрать новый `docpipe:` из узла и владения.             ← проекция
+5. Пересобрать генерируемый блок.
+6. Секции из файла оставить дословно, на своих местах.
+7. Секции шаблона, которых в файле нет, дописать в конец документа вместе с их chrome.
+8. Секции файла, которых нет в шаблоне, не трогать; сообщить как осиротевшие.
+9. Собрать текст, сравнить с прочитанным (нормализованным).
+   Равны → action=unchanged, НЕ ПИСАТЬ.  Разные → action=update.
+```
+
+Дописывание новых секций **в конец**, а не по порядку шаблона: вставка требует угадать
+позицию относительно chrome, который человек мог переписать или удалить. Угадывание
+неизбежно ошибается, а цена ошибки — перемешанный документ. Кому важен порядок,
+переставит блок руками один раз, и дальше порядок сохраняется дословно.
+
+Осиротевшие секции **не удаляются и не переставляются** — только сообщаются. Про них в
+генерируемый блок добавляется строка «Секции не из текущего шаблона (`service` →
+`controller`): `responsibilities`»; она в генерируемом блоке, поэтому исчезнет сама, как
+только секцию уберут.
+
+`scan_docs`: обход `root/docs_root`, отсев каталогов по `exclude`, только `*.md`, **быстрый
+отсев по первым четырём байтам** (`---\n` / `---\r`) до чтения файла целиком, затем разбор.
+Документом шага 2 считается только файл, у которого во front matter есть `docpipe.node_id`
+**и** `docpipe.schema` начинается с `materialize/`.
+
+Встроенный список, складывается с конфигурацией по образцу `emit.exclude_globs`:
+`DEFAULT_DOCS_SCAN_EXCLUDE = ["**/.venv/**", "**/site-packages/**", "**/node_modules/**", "**/.git/**"]`.
+
+Блокирующие ошибки (`plan.errors` непуст → **не применять ничего**): два узла с одним
+`doc_path`; два `doc_path`, различающихся только регистром; два существующих файла с одним
+`node_id`; узел ссылается на несуществующий шаблон.
+
+**Сопоставление переносов** — раздел «Автоперенос». Индекс `node_id → фактический путь`
+строится один раз при обходе.
+
+> **Ловушка. Статус описывает содержимое, действие — что сделать с файлом.** Их путают.
+> Документ со статусом `current` всё равно получает `update`, если сменился владелец или
+> домен: это поля проекции.
+
+> **Ловушка. Сироты ищутся по ПОЛНОМУ множеству узлов, даже при `--team`.** Иначе
+> `--team pricing` объявит сиротами документацию всех остальных команд. Правило:
+> *фильтр сужает множество того, что пишется; множество того, с чем сравнивают, — никогда.*
+> У сироты узла нет, поэтому её команда берётся из `docpipe.team` в её собственном front
+> matter; если прочитать не удалось — она показывается отдельной строкой «сироты без
+> известной команды», а не приписывается текущей.
+
+> **Ловушка. `docs/**` на АС CF содержит сам инструмент вместе с `.venv`.** Обход без
+> исключений зайдёт в `docs/ml/docspipe/.venv/lib/python3.12/site-packages/**`, где тысячи
+> `.md`. Три независимых защиты, и нужны все три: встроенный `DEFAULT_DOCS_SCAN_EXCLUDE`;
+> `docs_scan_exclude: ["docs/ml/**"]` в конфигурации поставки; и главное — документом
+> считается **только** файл с `docpipe.node_id` и `docpipe.schema` вида `materialize/*`,
+> поэтому чужой `README.md` не станет сиротой, даже если его прочитают. Третья защита
+> главная: первые две можно забыть настроить.
+
+> **Ловушка. Проверять `schema`, а не только наличие `node_id`.** Бизнес-документы
+> (`docs/business-implementation-plan.md`) лежат в том же дереве, имеют тот же формат зон
+> и тот же ключ `docpipe:` во front matter. Отбор по одному лишь наличию ключа объявит
+> **весь бизнес-каталог сиротами технического дерева** — с точки зрения шага 2 это файлы
+> с неизвестными узлами. Ошибка тем опаснее, что проявится не сразу, а когда каталог
+> заведут, и выглядеть будет как поломка шага 2.
+
+> **Ловушка. Не читать файлы целиком при обходе.** Проверка первых четырёх байт — не
+> микрооптимизация: в `.venv` встречаются `.md` на мегабайты.
+
+> **Ловушка. Регистр путей.** На macOS и Windows файловая система регистронезависима,
+> а имя модуля в `doc_path` не слагифицируется (`docs/modules/{module.name}/`). Два проекта
+> `Cf.Pricing` и `CF.Pricing` дадут один каталог. `docpipe validate` этого не ловит —
+> он сравнивает точные строки.
+
+> **Ловушка. Совпадение `doc_path` двух узлов проверяется повторно.** `docpipe validate`
+> это ловит, но манифест мог быть собран старой версией или отредактирован. Без проверки
+> второй узел молча затрёт первый, и потеряется не пустой скелет, а написанный документ.
+
+**Критерии приёмки**
+- на золотом манифесте и пустом дереве: 6 действий `create`, все статусы `missing`, ошибок нет;
+- после применения повторный `build_plan` даёт 6 действий `unchanged`;
+- документ с текстом и без принятого состояния → `undeclared`/`review`; после приёмки →
+  `current`/`skip`; после подмены `signature_hash` → `stale`/`write`; после подмены только
+  `impl_hash` → `drifted`/`review`;
+- документ с непарным маркером → `broken`/`refuse`, `plan.errors` пуст (это отказ по
+  одному файлу, а не блокирующая ошибка);
+- лишний `.md` с чужим `node_id` → `orphan`; такой же файл **без** `docpipe` во front
+  matter в плане не появляется вовсе;
+- файл с `docpipe.schema: business/1` в плане не появляется вовсе, даже если у него есть
+  ключ `docpipe:` и он лежит под `docs_root`;
+- переклассификация узла → `relocated` с уверенностью `exact`;
+- переименование типа при том же файле `.cs` → `relocated` с уверенностью `high`;
+- два кандидата на перенос → `probable`, переноса нет;
+- манифест с `docs/m/A/services/x.md` и `docs/m/A/Services/x.md` → блокирующая ошибка про регистр;
+- при `--team pricing` документы команды `risk` не получают действий и **не** становятся сиротами.
+
+**Проверка**
+```bash
+uv run pytest tests/test_materialize_plan.py -q
+```
+
+---
+
+## M08 — `apply.py` и команда `docpipe materialize`
+
+**Цель:** применить план на диск.
+
+**Создать:** `docpipe/materialize/apply.py`, `tests/test_materialize_cli.py`,
+`tests/test_relocation.py`, `tests/golden/docs/**`
+**Изменить:** `docpipe/cli.py`, `docpipe/config.py`, `docpipe.example.yaml`
+
+**Спецификация**
+
+Две фазы строго: **план → проверка → запись**. При непустых `plan.errors` не записывается
+ничего — это требование «структура сначала валидируется».
+
+```python
+def write_atomic(path: Path, content: str) -> None:
+    """Запись через временный файл в том же каталоге и `os.replace`."""
+```
+
+Временный файл — `.{имя}.md.tmp`: точка в начале и суффикс не `.md`, поэтому обход сирот
+не подберёт его, если процесс умер. Каталоги — `mkdir(parents=True, exist_ok=True)`.
+Открытие на запись — `open(path, "w", encoding="utf-8", newline="\n")`.
+
+Автоперенос выполняется здесь же, до записи остальных документов: `Path.replace`, затем
+пересборка по новому пути, затем `docpipe_state.review = {reason: relocated, from: …}`.
+
+`--force` для `broken`: исходное содержимое копируется в `<имя>.md.broken` рядом (суффикс
+не `.md` — сиротой не станет), затем документ пересоздаётся из шаблона. Копия не удаляется
+никогда, о ней сообщается.
+
+> **Ловушка. Сравнение «писать или нет» — по нормализованному тексту, а не по байтам.**
+> `read_text` схлопывает `\r\n` в `\n`, сборка даёт `\n`. Сравнение `read_bytes()` с
+> `content.encode()` на репозитории, выкаченном с `core.autocrlf=true`, пометит **каждый**
+> документ изменённым при каждом прогоне — вечная перезапись всего дерева.
+
+> **Ловушка. Идемпотентность формулируется как сходимость, а не как совпадение.** Первый
+> прогон поверх документа, front matter которого правили руками (другие кавычки,
+> комментарии, якоря YAML), может его нормализовать — это одна разовая правка. Тест:
+> `materialize; snapshot; materialize; assert snapshot == snapshot2`, а не сравнение
+> с исходным файлом. Комментарии внутри front matter прогон не переживают: PyYAML их
+> не сохраняет. Записать это в `templates/README.md`.
+
+> **Ловушка. Частичный сбой не прерывает прогон.** `PermissionError` на файле только для
+> чтения, `OSError` на переполненном диске — собираются в список, остальные документы
+> пишутся, в конце сообщение и код 1. Прерывание на первой ошибке оставляет дерево
+> наполовину обновлённым, и об этом никто не знает.
+
+> **Ловушка. Действие «без изменений» не открывает файл на запись вообще** — `mtime`
+> не трогается. Иначе прогон даёт тысячи строк в `git status` при включённом фильтре
+> переводов строк.
+
+> **Ловушка. Каталоги никогда не удаляются**, в том числе оставшиеся пустыми после
+> исчезновения типа. Git их всё равно не отслеживает.
+
+> **Ловушка. `Path.replace` через границу файловых систем бросает `OSError`.** В докерных
+> сборках `docs/` бывает томом. Ловить и падать с понятным сообщением; фолбэк на
+> copy+unlink не делать — он возвращает то самое окно, ради закрытия которого выбран rename.
+
+**Критерии приёмки**
+- `docpipe materialize tests/golden/doc-tree.json --root <tmp>` создаёт ровно 6 файлов,
+  код 0; дерево совпадает **байт в байт** с `tests/golden/docs/**`;
+- повторный прогон: 6 × `unchanged`, ни один `st_mtime_ns` не изменился;
+- в секцию `purpose` дописан текст; после прогона текст на месте, генерируемый блок пересобран;
+- испорченный маркер → код 1, файл не изменён (сравнение байтов), в выводе имя и причина;
+- он же с `--force` → перезаписан, рядом `.md.broken` с исходным содержимым;
+- файл, снятый с записи (`chmod 0444`), даёт код 1, но остальные пять записаны;
+- `--dry-run` не создаёт ни одного файла и печатает тот же план;
+- `--team` с неизвестным именем → код 2 со списком известных команд;
+- перенос: авторский текст сохранён, старого файла нет, новый имеет корректный front matter
+  и `review.reason == "relocated"`;
+- **граница пакета**: `docpipe.materialize` и его подмодули не импортируют ничего из
+  `docpipe.dotnet` (проверяется обходом AST файлов пакета, а не импортом).
+
+**Проверка**
+```bash
+uv run pytest tests/test_materialize_cli.py tests/test_relocation.py -q
+```
+
+---
+
+## M09 — `docpipe docs status`
+
+**Цель:** ответ на вопрос агента шага 3 «что делать с этим документом».
+
+**Создать:** `tests/test_docs_status.py`
+**Изменить:** `docpipe/cli.py`, `docpipe/materialize/plan.py`
+
+**Спецификация** — раздел «CLI»: позиционные пути, `--action`, `--fail-on`, `--team`,
+два формата, фиксированный порядок статусов в текстовом выводе
+(`broken, missing, stale, drifted, undeclared, empty, relocated, orphan, current`),
+предупреждение про частичный манифест.
+
+`current` в подробном списке не печатается, только в счётчике: иначе на АС CF вывод — тысячи строк.
+
+Проверка ссылок: для каждой относительной ссылки `](…)` **внутри авторских секций**
+проверить, что цель существует относительно каталога документа; несуществующие — в
+`broken_links`.
+
+> **Ловушка. `--fail-on` со значением, которого нет в перечне статусов, — ошибка (код 2),
+> а не пустой фильтр.** Опечатка `--fail-on statle` в CI дала бы вечно зелёную проверку.
+
+> **Ловушка. `docs status` не пишет на диск ничего.** Соблазн «заодно починить front
+> matter» превращает информационную команду в изменяющую, и её перестают гонять в CI.
+
+**Критерии приёмки**
+- на золотом дереве сразу после `materialize`: 6 × `empty`, все решения `write`, код 0;
+- `--fail-on empty` → код 1;
+- `--format json` проходит `json.loads`, `documents` отсортирован по `doc_path`;
+- вывод `--format json` двух вызовов совпадает байт в байт;
+- `docs status MANIFEST docs/modules/Sample.Common` возвращает только документы под каталогом;
+- манифест с `partial` даёт предупреждение в тексте и `"manifest_partial": true` в JSON;
+- документ с текстом в одной секции и пустыми остальными → решение `write`,
+  `empty_sections` перечисляет остальные;
+- ссылка на несуществующий файл внутри авторской секции попадает в `broken_links`.
+
+**Проверка**
+```bash
+uv run pytest tests/test_docs_status.py -q
+```
+
+---
+
+## M10 — `docs accept`, `docs adopt`, `docs owners`
+
+**Цель:** замкнуть цикл: зафиксировать соответствие документа коду.
+
+**Создать:** `tests/test_docs_accept.py`
+**Изменить:** `docpipe/materialize/apply.py`, `docpipe/cli.py`
+
+**Спецификация**
+
+`accept`: для каждой цели записать `docpipe_state.accepted` = текущие `signature_hash`,
+`impl_hash`, `kind` и отсортированный список имён публичных членов; очистить
+`docpipe_state.review`. Front matter и генерируемый блок при этом **пересобираются** —
+иначе `accept` оставил бы документ несогласованным с манифестом. Отказ (код 1) при статусе
+`empty` без `--force`, при `broken`, при отсутствии узла для документа.
+
+`adopt`: ручной перенос для случаев уверенности `probable` — `--from` и `--to` задаются
+явно. Отказ при дубле `node_id` и при занятой цели.
+
+`owners`: `--explain` и `--lint` из M06.
+
+> **Ловушка. `accept` берёт хэши из манифеста, а не из front matter документа.** Front
+> matter — зеркало и мог отстать (документ не материализовали после последнего `scan`).
+> Взяв значение оттуда, `accept` зафиксировал бы устаревший хэш, и документ навсегда
+> остался бы `current`, будучи `stale`.
+
+> **Ловушка. Агент шага 3 не пишет во front matter руками.** `accept` — единственный
+> писатель принятого состояния. Это соглашение, а не механизм: зона состояния сохраняется
+> при прогонах, поэтому ручная правка переживёт `materialize`. Механизмом было бы вынесение
+> состояния в сидкар, но тогда документ перестал бы быть самодостаточным. Запрет
+> записывается в `templates/README.md` и в напоминание внутри генерируемого блока.
+
+**Критерии приёмки**
+- `accept` на документе с текстом ставит принятое состояние; решение становится `skip`;
+- `accept` дважды подряд не меняет файл ни на байт (времени в состоянии нет → идемпотентно);
+- `accept` на пустом документе → код 1, файл не тронут; с `--force` → принят;
+- после подмены `signature_hash` в манифесте решение → `write`, причина перечисляет
+  добавленные и удалённые члены; повторный `accept` его снимает;
+- после подмены только `impl_hash` решение → `review` с причиной «реализация изменилась»;
+- `adopt --from … --to …` переносит документ, авторский текст сохранён;
+- два файла с одним `node_id` → `adopt` отказывает с кодом 1 и не трогает ни один.
+
+**Проверка**
+```bash
+uv run pytest tests/test_docs_accept.py -q
+```
+
+---
+
+## M11 — документация
+
+**Цель:** привести документы репозитория в соответствие с реальностью.
+
+**Создать:** `docs/materialize.md` — формат документа, зоны, статусы и решения, цикл работы
+агента шага 3. По образцу `docs/manifest.md`: «что лежит в файле», без обоснований.
+
+**Изменить:**
+- `README.md` — раздел «Состояние» (шаг 2 больше не «не в плане»), таблица «Документация»,
+  описание новых команд;
+- `CLAUDE.md` — таблица документов процесса, правила шага 2;
+- `docs/parser-implementation-plan.md`, раздел «Что НЕ входит в этот план» — сослаться
+  на этот план;
+- `docs/parser-architecture.md` §2.5 — там обещаны генерируемые индексы `docs/_views/**`;
+  записать, что они вне объёма шага 2 (решение владельца: документация просто лежит
+  в репозитории, представления «для людей» не делаются);
+- `docs/manifest.md`, раздел «Как это используется дальше» — убрать упоминание рендера
+  индексов, описать шаг 2 точно;
+- `docs/business-implementation-plan.md` — сверить формат зон и статусов: бизнес-слой
+  переиспользует `document.py`, `template.py`, `plan.py` и `apply.py`, и расхождение
+  форматов обнаружится там, а не здесь.
+
+**Критерии приёмки**
+- ни один документ не обещает `docs/_views/**` как часть шага 2;
+- `README.md` описывает `materialize`, `docs status`, `docs accept`;
+- команды из `docs/materialize.md` проверены запуском.
+
+**Проверка**
+```bash
+uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv run pytest -q
+```
+
+---
+
+## Тесты
+
+Вход везде — `tests/golden/doc-tree.json`. **Парсить .NET для тестов шага 2 не нужно**:
+манифест читается как файл, поэтому тесты не зависят ни от tree-sitter, ни от фикстур C#,
+и `tests/fixtures/SampleSolution/` не трогается.
+
+Новый эталон — **`tests/golden/docs/**`**: дерево из 6 документов, материализованное из
+золотого манифеста, сравнивается байт в байт. Он же — живая документация формата.
+
+| Файл | Что проверяет |
+|---|---|
+| `test_ruleset_engine.py` | Комбинаторы, диагностика опечаток, выбор победителя |
+| `test_materialize_document.py` | Обратимость на 12+ документах; условия отказа; `is_section_empty` |
+| `test_materialize_template.py` | 7 скелетов ↔ значения `template` в правилах; пустой генерируемый блок; подсказки только в комментариях |
+| `test_materialize_build.py` | Front matter байт в байт; юникод; экранирование; детерминизм |
+| `test_materialize_links.py` | Резолв FQN, ссылка на реализацию, неоднозначность, отсутствие `\` |
+| `test_ownership.py` | Приоритеты, ничьи, независимость от порядка строк, lint, explain |
+| `test_materialize_plan.py` | Все статусы и решения; блокирующие ошибки; сироты; `--team` |
+| `test_materialize_cli.py` | Золотое дерево; идемпотентность и `mtime`; сохранность; отказ; `--force`; read-only; граница пакета |
+| `test_relocation.py` | Четыре уровня уверенности; сохранность текста при переносе; отказ при неоднозначности |
+| `test_docs_status.py` | Форматы, фильтры, `--fail-on`, битые ссылки, `partial` |
+| `test_docs_accept.py` | Фиксация состояния, идемпотентность, дельта членов |
+
+Обязательные по названию:
+
+```python
+def test_second_run_changes_nothing(...):
+    """Повторный materialize не меняет ни байта и не трогает mtime.
+
+    Снимается st_mtime_ns каждого файла до и после. Запись одинакового содержимого —
+    это всё равно тысячи строк в git status при включённом фильтре переводов строк.
+    """
+
+def test_authored_text_survives_everything(...):
+    """Текст агента переживает: пересборку генерируемого блока, смену домена и команды,
+    смену обоих хэшей, смену шаблона (service -> controller) и перенос."""
+
+def test_materialize_never_deletes(...):
+    """Ни один сценарий не удаляет файл: узел исчез из манифеста, doc_path изменился,
+    шаблон сменился, --team сузил множество. Число .md до >= числа после."""
+
+def test_broken_document_is_not_touched(...):
+    """Испорченный документ не изменяется ни на байт, код 1. Четыре вида порчи:
+    битый YAML, незакрытый front matter, непарный маркер секции,
+    generated:end без generated:start."""
+
+def test_crlf_document_is_not_rewritten_forever(...):
+    """Документ с CRLF, отличающийся только переводами строк, остаётся unchanged."""
+
+def test_build_is_deterministic_under_shuffled_manifest(...):
+    """Тот же манифест с перевёрнутым порядком nodes даёт то же дерево."""
+
+def test_cyrillic_is_not_escaped(...):
+    """domain='Ценообразование' попадает во front matter как есть."""
+
+def test_orphan_scan_ignores_foreign_markdown(...):
+    """Дерево с docs/ml/docspipe/.venv/.../README.md и написанным руками docs/index.md:
+    ни один не становится сиротой. Воспроизводит раскладку АС CF."""
+
+def test_materialize_does_not_import_dotnet(...):
+    """Обходом AST: ни один модуль docpipe/materialize не импортирует docpipe.dotnet."""
+```
+
+---
+
+## Сквозная проверка
+
+```bash
+# 1. Дерево из золотого манифеста
+uv run docpipe materialize tests/golden/doc-tree.json --root /tmp/m1
+find /tmp/m1 -name '*.md' | sort                                       # 6 файлов
+uv run docpipe docs status tests/golden/doc-tree.json --root /tmp/m1   # 6 × empty, write
+
+# 2. Идемпотентность
+uv run docpipe materialize tests/golden/doc-tree.json --root /tmp/m1   # 6 × без изменений
+find /tmp/m1 -name '*.md' -newermt '-5 seconds' | wc -l                # 0
+
+# 3. Сохранность и цикл приёмки
+#    дописать текст в секцию purpose одного документа, затем:
+uv run docpipe docs status tests/golden/doc-tree.json --root /tmp/m1   # undeclared → review
+uv run docpipe docs accept tests/golden/doc-tree.json --root /tmp/m1 --all
+uv run docpipe docs status tests/golden/doc-tree.json --root /tmp/m1   # current → skip
+uv run docpipe materialize tests/golden/doc-tree.json --root /tmp/m1   # текст на месте
+
+# 4. Устаревание: подменить signature_hash узла в копии манифеста
+uv run docpipe docs status /tmp/changed.json --root /tmp/m1 --format json | jq '.documents[0]'
+                                                    # action=write, reason и changes заполнены
+
+# 5. Перенос: подменить имя типа в копии манифеста (doc_path и node_id меняются)
+uv run docpipe materialize /tmp/renamed.json --root /tmp/m1
+                                                    # перенесён, текст сохранён, review=relocated
+
+# 6. На реальном репозитории
+uv run docpipe scan --root examples/eShopOnWeb --out /tmp/e.json
+uv run docpipe materialize /tmp/e.json --root /tmp/e-docs
+uv run docpipe docs status /tmp/e.json --root /tmp/e-docs --format json | jq '.counts'
+
+# 7. Полная проверка перед отправкой ветки
+uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv run pytest -q
+```
+
+---
+
+## Сводка ловушек
+
+Каждая однажды прошла бы все критерии приёмки и сломалась бы в проде.
+
+1. **Перезапись при частичной ошибке.** Две фазы (план → проверка → запись) плюс атомарная
+   запись через временный файл и `os.replace`. Ошибка одного файла не прерывает прогон.
+2. **CRLF и завершающий перевод строки.** Сравнение — по нормализованному тексту, запись —
+   всегда `newline="\n"`. Сравнение по байтам даёт вечную перезапись всего дерева.
+3. **Порядок ключей в YAML.** `sort_keys=False` только для зоны `docpipe:`; чужие ключи —
+   `sorted`. Никогда не собирать YAML f-строками.
+4. **PyYAML переносит длинные строки с пробелами.** Обязательно `width=10**9`.
+5. **Юникод.** `allow_unicode=True` в каждом `safe_dump`.
+6. **Символы YAML-разметки в значениях.** `node_id` содержит обратную кавычку и `#`.
+   Дампер решает верно; ручная сборка — дефект.
+7. **Обход `docs/**` при поиске сирот.** Три защиты, нужны все; главная — «документ =
+   файл с `docpipe.node_id` **и** `docpipe.schema` вида `materialize/*`». Без проверки
+   схемы сиротами станет весь бизнес-каталог.
+8. **Пустые директории** создаются, но не удаляются никогда.
+9. **Регистр путей.** Имя модуля в `doc_path` не слагифицируется; блокирующая проверка
+   коллизии `doc_path.lower()`.
+10. **Конфликт `doc_path` двух узлов** проверяется повторно, независимо от `validate`.
+11. **Файл только для чтения**: ошибка собирается, прогон продолжается, код 1.
+12. **`is_section_empty` — самая дорогая функция шага 2.** Ошибка в сторону «не пусто»
+    заставит агента счесть всё дерево написанным. Отсюда: подсказки только в HTML-комментариях.
+13. **Маркер внутри блока кода** распознаётся только в строке, состоящей из одного маркера.
+14. **Смена `template` сама по себе не меняет секций** — они сверяются с фактическим
+    составом шаблона.
+15. **Идемпотентность — это сходимость**, а не совпадение с исходником.
+16. **`accept` берёт хэши из манифеста**, а не из зеркала во front matter.
+17. **`--team` сужает множество записи, но не множество сравнения.**
+18. **`posixpath.relpath`**, не `os.path.relpath`.
+19. **`matches_glob`**, не `fnmatch`.
+20. **BOM в существующем документе**: читать `utf-8-sig`.
+21. **Комментарии внутри front matter не переживают прогон** — PyYAML их не сохраняет.
+22. **Нормализация пробелов в `impl_hash`**, иначе `dotnet format` пометит всё дерево.
+
+---
+
+## Что НЕ входит в этот план
+
+- генерируемые индексы и карты «для людей» (`docs/_views/**`, `docs/index.md`) — документация
+  просто лежит в репозитории как набор `.md`;
+- любая интеграция с LLM и написание текста документации — это шаг 3;
+- бизнес-документация и её связь с технической — отдельный план,
+  [`business-implementation-plan.md`](business-implementation-plan.md). Он переиспользует
+  `document.py`, `template.py`, `plan.py` и `apply.py` целиком, поэтому единственное, что
+  требуется от шага 2, — не привязывать их к .NET;
+- поставка шага 2 в репозиторий АС CF (`deploy/install.sh`, `run.sh`) — отдельным заходом,
+  после проверки ядра на реальном репозитории;
+- парсеры Python и TypeScript.
