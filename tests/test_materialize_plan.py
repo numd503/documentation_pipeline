@@ -1,0 +1,551 @@
+"""План шага 2: статусы, решения, сироты, переносы (M07).
+
+План — чистая функция. Ни один тест здесь ничего не записывает через `apply`:
+всё, что нужно проверить, видно в самом плане, и это ровно то свойство, ради
+которого он отделён от записи.
+"""
+
+from pathlib import Path
+
+import pytest
+
+from docpipe.materialize.build import build_context
+from docpipe.materialize.plan import (
+    ExistingDoc,
+    PlanOptions,
+    build_plan,
+    match_relocations,
+    scan_docs,
+)
+from docpipe.materialize.template import load_templates
+from docpipe.model import Manifest
+
+GOLDEN = Path("tests/golden/doc-tree.json")
+EXAMPLES = frozenset({"controller", "service", "provider", "workflow"})
+
+
+@pytest.fixture
+def manifest() -> Manifest:
+    return Manifest.model_validate_json(GOLDEN.read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def templates():  # type: ignore[no-untyped-def]
+    return load_templates(Path("templates"))
+
+
+@pytest.fixture
+def context(manifest: Manifest, templates):  # type: ignore[no-untyped-def]
+    return build_context(manifest, templates, EXAMPLES)
+
+
+def _plan(manifest, templates, context, root: Path, **kwargs):  # type: ignore[no-untyped-def]
+    existing = scan_docs(root, "docs")
+    return build_plan(manifest, existing, templates, context, options=PlanOptions(**kwargs))
+
+
+def _apply(plan, root: Path) -> None:  # type: ignore[no-untyped-def]
+    """Минимальная запись — только чтобы было что читать следующим планом.
+    Настоящая запись со всеми гарантиями — задача M08."""
+    for doc in plan.documents:
+        if doc.content is None:
+            continue
+        path = root / doc.doc_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(doc.content, encoding="utf-8", newline="\n")
+
+
+# --------------------------------------------------------------------------------------
+# Пустое дерево и повторный прогон
+# --------------------------------------------------------------------------------------
+
+
+def test_empty_tree_gives_six_creates(manifest, templates, context, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    plan = _plan(manifest, templates, context, tmp_path)
+
+    assert plan.errors == []
+    assert len(plan.documents) == 6
+    assert {doc.file_action for doc in plan.documents} == {"create"}
+    assert {doc.status for doc in plan.documents} == {"missing"}
+    assert {doc.agent_action for doc in plan.documents} == {"write"}
+
+
+def test_second_plan_is_unchanged(manifest, templates, context, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+
+    plan = _plan(manifest, templates, context, tmp_path)
+
+    assert {doc.file_action for doc in plan.documents} == {"unchanged"}
+    assert all(doc.content is None for doc in plan.documents)
+
+
+def test_fresh_documents_are_empty_and_need_writing(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+
+    plan = _plan(manifest, templates, context, tmp_path)
+
+    assert {doc.status for doc in plan.documents} == {"empty"}
+    assert {doc.agent_action for doc in plan.documents} == {"write"}
+
+
+# --------------------------------------------------------------------------------------
+# Жизненный цикл одного документа
+# --------------------------------------------------------------------------------------
+
+
+def _fill(root: Path, doc_path: str) -> None:
+    path = root / doc_path
+    text = path.read_text(encoding="utf-8")
+    for name in ("purpose", "api", "behaviour", "collaboration", "notes"):
+        text = text.replace(
+            f"<!-- docpipe:section:end {name} -->",
+            f"Написанный человеком текст.\n<!-- docpipe:section:end {name} -->",
+        )
+    path.write_text(text, encoding="utf-8")
+
+
+def _accept(root: Path, doc_path: str, node) -> None:  # type: ignore[no-untyped-def]
+    path = root / doc_path
+    members = sorted({member.name for member in node.symbol.members})
+    text = path.read_text(encoding="utf-8").replace(
+        "docpipe_state:\n  accepted: null\n  review: null\n",
+        "docpipe_state:\n"
+        "  accepted:\n"
+        f"    signature_hash: {node.signature_hash}\n"
+        f"    impl_hash: {node.impl_hash}\n"
+        f"    kind: {node.kind}\n"
+        f"    members: [{', '.join(members)}]\n"
+        "  review: null\n",
+    )
+    path.write_text(text, encoding="utf-8")
+
+
+CONTROLLER = "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
+
+
+def _one(plan, doc_path: str):  # type: ignore[no-untyped-def]
+    return next(doc for doc in plan.documents if doc.doc_path == doc_path)
+
+
+def test_lifecycle_undeclared_then_current(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+    _fill(tmp_path, CONTROLLER)
+
+    plan = _plan(manifest, templates, context, tmp_path)
+    assert _one(plan, CONTROLLER).status == "undeclared"
+    assert _one(plan, CONTROLLER).agent_action == "review"
+
+    node = next(n for n in manifest.nodes if n.doc_path == CONTROLLER)
+    _accept(tmp_path, CONTROLLER, node)
+
+    plan = _plan(manifest, templates, context, tmp_path)
+    assert _one(plan, CONTROLLER).status == "current"
+    assert _one(plan, CONTROLLER).agent_action == "skip"
+
+
+def test_signature_change_makes_it_stale(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+    _fill(tmp_path, CONTROLLER)
+    node = next(n for n in manifest.nodes if n.doc_path == CONTROLLER)
+    _accept(tmp_path, CONTROLLER, node)
+
+    changed = manifest.model_copy(
+        update={
+            "nodes": [
+                n.model_copy(update={"signature_hash": "sha256:changed"})
+                if n.doc_path == CONTROLLER
+                else n
+                for n in manifest.nodes
+            ]
+        }
+    )
+    plan = _plan(changed, templates, build_context(changed, templates, EXAMPLES), tmp_path)
+
+    assert _one(plan, CONTROLLER).status == "stale"
+    assert _one(plan, CONTROLLER).agent_action == "write"
+    assert "контракт изменился" in _one(plan, CONTROLLER).reason
+
+
+def test_impl_change_alone_makes_it_drifted(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    """Реализация изменилась, контракт тот же — это `review`, а не `write`."""
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+    _fill(tmp_path, CONTROLLER)
+    node = next(n for n in manifest.nodes if n.doc_path == CONTROLLER)
+    _accept(tmp_path, CONTROLLER, node)
+
+    changed = manifest.model_copy(
+        update={
+            "nodes": [
+                n.model_copy(update={"impl_hash": "sha256:changed"})
+                if n.doc_path == CONTROLLER
+                else n
+                for n in manifest.nodes
+            ]
+        }
+    )
+    plan = _plan(changed, templates, build_context(changed, templates, EXAMPLES), tmp_path)
+
+    assert _one(plan, CONTROLLER).status == "drifted"
+    assert _one(plan, CONTROLLER).agent_action == "review"
+    assert "реализация изменилась" in _one(plan, CONTROLLER).reason
+
+
+# --------------------------------------------------------------------------------------
+# Сохранность и слияние
+# --------------------------------------------------------------------------------------
+
+
+def test_authored_text_survives_a_new_template_section(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    """Секции шаблона, которых в файле нет, дописываются в КОНЕЦ: вставка
+    по порядку требует угадать позицию относительно обвязки, которую человек
+    мог переписать."""
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+    _fill(tmp_path, CONTROLLER)
+
+    path = tmp_path / CONTROLLER
+    text = path.read_text(encoding="utf-8")
+    start = text.index("<!-- docpipe:section:start notes -->")
+    end = text.index("<!-- docpipe:section:end notes -->") + len(
+        "<!-- docpipe:section:end notes -->\n"
+    )
+    path.write_text(text[:start] + text[end:], encoding="utf-8")
+
+    plan = _plan(manifest, templates, context, tmp_path)
+    doc = _one(plan, CONTROLLER)
+
+    assert doc.file_action == "update"
+    assert doc.content is not None
+    assert doc.content.count("Написанный человеком текст.") == 4
+    assert doc.content.rstrip().endswith("<!-- docpipe:section:end notes -->")
+    assert "notes" in doc.empty_sections
+
+
+def test_orphan_sections_are_reported_not_removed(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+
+    path = tmp_path / CONTROLLER
+    path.write_text(
+        path.read_text(encoding="utf-8") + "\n<!-- docpipe:section:start responsibilities -->\n"
+        "Осталось от прошлого шаблона.\n"
+        "<!-- docpipe:section:end responsibilities -->\n",
+        encoding="utf-8",
+    )
+
+    doc = _one(_plan(manifest, templates, context, tmp_path), CONTROLLER)
+
+    assert doc.orphan_sections == ["responsibilities"]
+    assert doc.content is not None
+    assert "Осталось от прошлого шаблона." in doc.content
+
+
+def test_foreign_front_matter_keys_survive(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+
+    path = tmp_path / CONTROLLER
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "docpipe_state:", "zeta: 1\nalpha: 2\ndocpipe_state:", 1
+        ),
+        encoding="utf-8",
+    )
+
+    doc = _one(_plan(manifest, templates, context, tmp_path), CONTROLLER)
+
+    assert doc.content is not None
+    assert doc.content.index("alpha:") < doc.content.index("zeta:")
+
+
+# --------------------------------------------------------------------------------------
+# Границы дерева
+# --------------------------------------------------------------------------------------
+
+
+def test_broken_document_is_refused_not_a_blocking_error(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    """Отказ по одному файлу, а не блокирующая ошибка всего прогона."""
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+    path = tmp_path / CONTROLLER
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("<!-- docpipe:section:end notes -->", ""),
+        encoding="utf-8",
+    )
+
+    plan = _plan(manifest, templates, context, tmp_path)
+    broken = (
+        _one(plan, CONTROLLER)
+        if False
+        else next(doc for doc in plan.documents if doc.status == "broken")
+    )
+
+    assert plan.errors == []
+    assert broken.file_action == "refuse"
+    assert broken.error is not None
+
+
+def test_foreign_markdown_never_becomes_an_orphan(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    """Воспроизводит раскладку АС CF: инструмент лежит внутри `docs/`."""
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+
+    (tmp_path / "docs/index.md").write_text("# Написано руками\n", encoding="utf-8")
+    venv = tmp_path / "docs/ml/docspipe/.venv/lib/python3.12/site-packages/pkg"
+    venv.mkdir(parents=True)
+    (venv / "README.md").write_text("---\ntitle: чужое\n---\n", encoding="utf-8")
+
+    plan = _plan(manifest, templates, context, tmp_path)
+
+    assert not any(doc.status == "orphan" for doc in plan.documents)
+    assert len(plan.documents) == 6
+
+
+def test_business_document_is_not_ours(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    """Формат зон и ключ `docpipe` у слоёв общие — различает их только `schema`.
+
+    Без проверки схемы весь бизнес-каталог стал бы сиротами шага 2.
+    """
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+    (tmp_path / "docs/business").mkdir(parents=True)
+    (tmp_path / "docs/business/p.md").write_text(
+        "---\ndocpipe:\n  schema: business/1\n  id: bp.a.b\n  node_id: whatever\n---\n",
+        encoding="utf-8",
+    )
+
+    plan = _plan(manifest, templates, context, tmp_path)
+
+    assert not any(doc.status == "orphan" for doc in plan.documents)
+
+
+def test_orphan_is_reported_with_its_own_team(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    """У сироты узла нет, поэтому команда берётся из её собственного front
+    matter; иначе она была бы молча приписана текущей."""
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+
+    # Документ исчезнувшего узла: лежит не на пути ни одного узла и ни с чем
+    # не сопоставляется — ни по источникам, ни по impl_hash.
+    gone = tmp_path / "docs/modules/Sample.Pricing.Api/controllers/gone.md"
+    gone.write_text(
+        "---\n"
+        "docpipe:\n"
+        "  schema: materialize/1\n"
+        "  node_id: type:src/X/X.csproj#X.Gone`0\n"
+        "  impl_hash: sha256:zzz\n"
+        "  team: risk\n"
+        "  sources:\n"
+        "  - {path: src/X/Gone.cs, start: 1, end: 2}\n"
+        "docpipe_state:\n"
+        "  accepted: null\n"
+        "---\n",
+        encoding="utf-8",
+    )
+
+    plan = _plan(manifest, templates, context, tmp_path)
+    orphan = next(doc for doc in plan.documents if doc.status == "orphan")
+
+    assert orphan.team == "risk"
+    assert orphan.file_action == "unchanged"
+
+
+def test_team_filter_narrows_writes_but_not_comparison(  # type: ignore[no-untyped-def]
+    manifest, templates, tmp_path: Path
+) -> None:
+    """Фильтр сужает множество того, что пишется; множество, с которым
+    сравнивают, — никогда. Иначе `--team pricing` объявил бы сиротами
+    документацию всех остальных команд."""
+    from docpipe.materialize.ownership import load_ownership
+
+    ownership_file = tmp_path / "ownership.yaml"
+    ownership_file.write_text(
+        'version: "1"\n'
+        "teams: [{id: pricing, title: P}, {id: risk, title: R}]\n"
+        "rules:\n"
+        "  - {id: p, team: pricing, priority: 10, when: {kind: [controller]}}\n"
+        "  - {id: r, team: risk, priority: 10,\n"
+        "     when: {kind: [service, provider, workflow, ignite_service]}}\n",
+        encoding="utf-8",
+    )
+    ownership = load_ownership(ownership_file)
+    context = build_context(manifest, templates, EXAMPLES)
+
+    full = build_plan(manifest, [], templates, context, ownership)
+    narrowed = build_plan(
+        manifest, [], templates, context, ownership, PlanOptions(teams=("pricing",))
+    )
+
+    assert len(full.documents) == 6
+    assert len(narrowed.documents) == 2
+    assert {doc.team for doc in narrowed.documents} == {"pricing"}
+    assert not any(doc.status == "orphan" for doc in narrowed.documents)
+
+
+# --------------------------------------------------------------------------------------
+# Блокирующие ошибки
+# --------------------------------------------------------------------------------------
+
+
+def test_two_nodes_on_one_path_block_everything(manifest, templates, context) -> None:  # type: ignore[no-untyped-def]
+    """Без проверки второй узел молча затрёт первый, и потеряется не пустой
+    скелет, а написанный документ."""
+    first = manifest.nodes[0]
+    clash = manifest.nodes[1].model_copy(update={"doc_path": first.doc_path})
+    broken = manifest.model_copy(update={"nodes": [first, clash]})
+
+    plan = build_plan(broken, [], templates, context)
+
+    assert plan.documents == []
+    assert any("на один путь претендуют" in error for error in plan.errors)
+
+
+def test_case_only_difference_blocks(manifest, templates, context) -> None:  # type: ignore[no-untyped-def]
+    """На macOS и Windows файловая система регистронезависима, а имя модуля
+    в `doc_path` не слагифицируется. `docpipe validate` этого не ловит."""
+    first = manifest.nodes[0]
+    clash = manifest.nodes[1].model_copy(update={"doc_path": first.doc_path.upper()})
+    broken = manifest.model_copy(update={"nodes": [first, clash]})
+
+    plan = build_plan(broken, [], templates, context)
+
+    assert any("различаются только регистром" in error for error in plan.errors)
+
+
+def test_missing_template_blocks(manifest, templates, context) -> None:  # type: ignore[no-untyped-def]
+    broken = manifest.model_copy(
+        update={"nodes": [manifest.nodes[0].model_copy(update={"template": "нет-такого"})]}
+    )
+
+    plan = build_plan(broken, [], templates, context)
+
+    assert any("нет шаблонов: нет-такого" in error for error in plan.errors)
+
+
+def test_two_files_with_one_node_id_block(manifest, templates, context, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+    original = (tmp_path / CONTROLLER).read_text(encoding="utf-8")
+    (tmp_path / "docs/copy.md").write_text(original, encoding="utf-8")
+
+    plan = build_plan(manifest, scan_docs(tmp_path, "docs"), templates, context)
+
+    assert any("один узел в нескольких файлах" in error for error in plan.errors)
+
+
+# --------------------------------------------------------------------------------------
+# Автоперенос
+# --------------------------------------------------------------------------------------
+
+
+def _doc(path: str, node_id: str, *, sources: list[str] = (), impl: str = "") -> ExistingDoc:  # type: ignore[assignment]
+    from docpipe.materialize.document import parse_document
+
+    lines = [
+        "---",
+        "docpipe:",
+        "  schema: materialize/1",
+        f"  node_id: {node_id}",
+        f"  impl_hash: {impl or 'sha256:x'}",
+        "  sources:",
+    ]
+    lines += [f"  - {{path: {source}, start: 1, end: 2}}" for source in sources]
+    lines += ["docpipe_state:", "  accepted: null", "---", ""]
+    text = "\n".join(lines)
+    return ExistingDoc(path=path, text=text, parsed=parse_document(text))
+
+
+def test_reclassification_is_an_exact_relocation(manifest) -> None:  # type: ignore[no-untyped-def]
+    """Правило переклассифицировало тип: `doc_path` изменился, `node_id` — нет."""
+    node = manifest.nodes[0]
+    orphan = _doc("docs/modules/X/services/old.md", node.id)
+
+    matched, notes = match_relocations([node], [orphan])
+
+    assert matched[node.id][1] == "exact"
+    assert notes == []
+
+
+def test_rename_with_the_same_file_is_high_confidence(manifest) -> None:  # type: ignore[no-untyped-def]
+    node = next(n for n in manifest.nodes if n.symbol and n.symbol.sources)
+    orphan = _doc(
+        "docs/modules/X/services/old.md",
+        "type:другой#Старый`0",
+        sources=[node.symbol.sources[0].path],
+    )
+
+    matched, _ = match_relocations([node], [orphan])
+
+    assert matched[node.id][1] == "high"
+
+
+def test_two_candidates_stay_unmoved(manifest) -> None:  # type: ignore[no-untyped-def]
+    """Требование «пара единственная в обе стороны» снимает главный риск —
+    два типа, обменявшихся именами."""
+    node = next(n for n in manifest.nodes if n.symbol and n.symbol.sources)
+    path = node.symbol.sources[0].path
+    orphans = [
+        _doc("docs/a.md", "type:a#A`0", sources=[path]),
+        _doc("docs/b.md", "type:b#B`0", sources=[path]),
+    ]
+
+    matched, notes = match_relocations([node], orphans)
+
+    assert matched == {}
+    assert any("кандидатов на перенос несколько" in note for note in notes)
+
+
+def test_no_signal_stays_orphan(manifest) -> None:  # type: ignore[no-untyped-def]
+    node = manifest.nodes[0]
+    orphan = _doc("docs/a.md", "type:a#A`0", sources=["src/Совсем/Другое.cs"], impl="sha256:zzz")
+
+    matched, notes = match_relocations([node], [orphan])
+
+    assert matched == {}
+    assert notes == []
+
+
+def test_relocated_document_keeps_its_text(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+    _fill(tmp_path, CONTROLLER)
+    _accept(tmp_path, CONTROLLER, next(n for n in manifest.nodes if n.doc_path == CONTROLLER))
+
+    moved = manifest.model_copy(
+        update={
+            "nodes": [
+                n.model_copy(
+                    update={
+                        "doc_path": "docs/modules/Sample.Pricing.Api/services/pricing-controller.md"
+                    }
+                )
+                if n.doc_path == CONTROLLER
+                else n
+                for n in manifest.nodes
+            ]
+        }
+    )
+    plan = _plan(moved, templates, build_context(moved, templates, EXAMPLES), tmp_path)
+    doc = next(d for d in plan.documents if d.relocate_from)
+
+    assert doc.confidence == "exact"
+    assert doc.relocate_from == CONTROLLER
+    assert doc.file_action == "relocate"
+    assert doc.status == "relocated"
+    assert doc.content is not None and "Написанный человеком текст." in doc.content
+    assert not any(d.status == "orphan" for d in plan.documents)

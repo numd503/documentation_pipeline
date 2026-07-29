@@ -193,7 +193,9 @@ def dump_front_matter(
     for key in sorted(preserved or {}):
         mapping[key] = (preserved or {})[key]
 
-    return f"---\n{_dump(mapping)}---\n\n"
+    # Разделяющая пустая строка сюда НЕ входит: при слиянии она уже есть
+    # в сохранённом теле документа, и вторая копилась бы при каждом прогоне.
+    return f"---\n{_dump(mapping)}---\n"
 
 
 # --------------------------------------------------------------------------------------
@@ -274,7 +276,12 @@ def _link_text(links: list[ResolvedLink], node: DocNode, target: str) -> str:
     return ", ".join(parts)
 
 
-def build_generated_block(node: DocNode, context: BuildContext, team: str | None = None) -> str:
+def build_generated_block(
+    node: DocNode,
+    context: BuildContext,
+    team: str | None = None,
+    notes: list[str] | None = None,
+) -> str:
     """Собрать содержимое генерируемого блока.
 
     Порядок разделов фиксирован, и раздел без данных печатается со словом
@@ -289,12 +296,12 @@ def build_generated_block(node: DocNode, context: BuildContext, team: str | None
     shape = f"{modifiers} {kind_text}".strip()
     owner = f"владелец `{team}`" if team else "владелец не задан"
     fqn = symbol.fqn if symbol else node.title
-    lines += [
-        f"`{fqn}` — {shape}, модуль `{node.module}`, домен `{node.domain}`, {owner}.",
-        "",
-        "### Исходники",
-        "",
-    ]
+    lines += [f"`{fqn}` — {shape}, модуль `{node.module}`, домен `{node.domain}`, {owner}.", ""]
+
+    # Замечания живут в генерируемом блоке намеренно: они исчезнут сами, как
+    # только исчезнет их причина. В авторской секции их пришлось бы убирать руками.
+    lines += [*(notes or []), ""] if notes else []
+    lines += ["### Исходники", ""]
 
     if symbol and symbol.sources:
         lines += [

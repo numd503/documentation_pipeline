@@ -57,7 +57,6 @@ docpipe_state:
   accepted: null
   review: null
 ---
-
 """
 
 
