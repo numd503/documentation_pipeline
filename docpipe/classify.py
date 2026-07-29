@@ -18,6 +18,13 @@ import yaml
 
 from docpipe.discovery import matches_glob
 from docpipe.model import Symbol
+from docpipe.ruleset import (
+    PredicateTable,
+    evaluate,
+    load_rule_items,
+    pick_winner,
+    validate_condition,
+)
 
 
 @dataclass(frozen=True)
@@ -155,49 +162,18 @@ _PREDICATES: Final[dict[str, Any]] = {
     "has_member_with_attribute": _has_member_with_attribute,
 }
 
-_COMBINATORS: Final[frozenset[str]] = frozenset({"any", "all"})
+
+# Регулярки компилируются при загрузке: битая обнаружилась бы иначе посреди
+# прогона, на первом символе, который до неё дошёл.
+_TABLE: Final[PredicateTable] = PredicateTable(
+    predicates=_PREDICATES,
+    regex_keys=frozenset({"name_regex", "namespace_regex"}),
+)
 
 
 # --------------------------------------------------------------------------------------
 # Загрузка
 # --------------------------------------------------------------------------------------
-
-
-def _validate_condition(node: Any, where: str) -> None:
-    """Проверить узел `when` при загрузке, а не при первом применении.
-
-    Опечатка в имени предиката иначе означала бы правило, которое просто
-    никогда не срабатывает: набор молча теряет вид сущности, и понять это
-    можно только по счётчику `unclassified`.
-    """
-    if not isinstance(node, dict) or len(node) != 1:
-        raise ValueError(
-            f"{where}: узел условия должен быть словарём с одним ключом, получено {node!r}"
-        )
-
-    key, value = next(iter(node.items()))
-    if key in _COMBINATORS:
-        if not isinstance(value, list) or not value:
-            raise ValueError(f"{where}: `{key}` требует непустой список условий")
-        for index, child in enumerate(value):
-            _validate_condition(child, f"{where}.{key}[{index}]")
-        return
-
-    if key not in _PREDICATES:
-        known = ", ".join(sorted(_PREDICATES))
-        raise ValueError(f"{where}: неизвестный предикат `{key}`; известны: {known}")
-
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ValueError(f"{where}.{key}: ожидается список строк, получено {value!r}")
-
-    if key in ("name_regex", "namespace_regex"):
-        for pattern in value:
-            try:
-                re.compile(pattern)
-            except re.error as exc:
-                raise ValueError(
-                    f"{where}.{key}: неверное регулярное выражение {pattern!r}: {exc}"
-                ) from exc
 
 
 def load_ruleset(path: Path) -> Ruleset:
@@ -214,16 +190,10 @@ def load_ruleset(path: Path) -> Ruleset:
             raise ValueError(f"{path}: exclude.name_regex {pattern!r}: {exc}") from exc
 
     rules: list[Rule] = []
-    seen: set[str] = set()
-    for index, item in enumerate(raw.get("rules") or []):
-        missing = {"id", "kind", "template", "priority", "when"} - set(item)
-        if missing:
-            raise ValueError(f"{path}: правило #{index} без полей {sorted(missing)}")
-        if item["id"] in seen:
-            raise ValueError(f"{path}: повтор id правила {item['id']!r}")
-        seen.add(item["id"])
-
-        _validate_condition(item["when"], f"{path}:{item['id']}.when")
+    for item in load_rule_items(
+        raw.get("rules"), path, {"id", "kind", "template", "priority", "when"}
+    ):
+        validate_condition(item["when"], f"{path}:{item['id']}.when", _TABLE)
         rules.append(
             Rule(
                 id=item["id"],
@@ -245,15 +215,6 @@ def load_ruleset(path: Path) -> Ruleset:
 # --------------------------------------------------------------------------------------
 # Применение
 # --------------------------------------------------------------------------------------
-
-
-def _evaluate(node: dict[str, Any], symbol: Symbol) -> bool:
-    key, value = next(iter(node.items()))
-    if key == "any":
-        return any(_evaluate(child, symbol) for child in value)
-    if key == "all":
-        return all(_evaluate(child, symbol) for child in value)
-    return bool(_PREDICATES[key](symbol, value))
 
 
 def is_excluded(symbol: Symbol, ruleset: Ruleset) -> bool:
@@ -279,14 +240,11 @@ def classify(symbol: Symbol, ruleset: Ruleset) -> Classification | None:
     if is_excluded(symbol, ruleset):
         return None
 
-    matched = [rule for rule in ruleset.rules if _evaluate(rule.when, symbol)]
+    matched = [rule for rule in ruleset.rules if evaluate(rule.when, symbol, _TABLE)]
     if not matched:
         return None
 
-    # При равном приоритете побеждает лексикографически меньший id: порядок
-    # правил в файле источником решения быть не может — иначе перестановка
-    # строк в YAML меняла бы манифест.
-    winner = min(matched, key=lambda rule: (-rule.priority, rule.id))
+    winner = pick_winner(matched)
     return Classification(
         kind=winner.kind,
         template=winner.template,

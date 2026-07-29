@@ -1,0 +1,313 @@
+"""Запись на диск и команда `docpipe materialize` (M08).
+
+Эталонное дерево `tests/golden/docs/**` сравнивается **байт в байт**: оно же
+служит живой документацией формата. Обновлять его осознанно, а не по факту
+падения теста.
+"""
+
+import ast
+import os
+import stat
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from docpipe.cli import app
+
+GOLDEN_MANIFEST = Path("tests/golden/doc-tree.json")
+GOLDEN_DOCS = Path("tests/golden/docs")
+CONTROLLER = "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
+runner = CliRunner()
+
+
+def _run(root: Path, *extra: str):  # type: ignore[no-untyped-def]
+    return runner.invoke(app, ["materialize", str(GOLDEN_MANIFEST), "--root", str(root), *extra])
+
+
+def _tree(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes() for path in sorted(root.rglob("*.md"))
+    }
+
+
+# --------------------------------------------------------------------------------------
+# Золотое дерево
+# --------------------------------------------------------------------------------------
+
+
+def test_creates_the_golden_tree(tmp_path: Path) -> None:
+    result = _run(tmp_path)
+
+    assert result.exit_code == 0
+    assert _tree(tmp_path / "docs") == _tree(GOLDEN_DOCS)
+    assert len(_tree(tmp_path / "docs")) == 6
+
+
+def test_second_run_changes_nothing(tmp_path: Path) -> None:
+    """Повторный прогон не меняет ни байта и не трогает `mtime`.
+
+    Запись одинакового содержимого — это всё равно тысячи строк в `git status`
+    при включённом фильтре переводов строк.
+    """
+    _run(tmp_path)
+    before = {path: path.stat().st_mtime_ns for path in sorted((tmp_path / "docs").rglob("*.md"))}
+    snapshot = _tree(tmp_path / "docs")
+
+    result = _run(tmp_path)
+
+    assert result.exit_code == 0
+    assert _tree(tmp_path / "docs") == snapshot
+    assert {path: path.stat().st_mtime_ns for path in before} == before
+
+
+def test_build_is_deterministic_under_shuffled_manifest(tmp_path: Path) -> None:
+    """Тот же манифест с перевёрнутым порядком узлов даёт то же дерево."""
+    import json
+
+    payload = json.loads(GOLDEN_MANIFEST.read_text(encoding="utf-8"))
+    payload["nodes"] = list(reversed(payload["nodes"]))
+    shuffled = tmp_path / "shuffled.json"
+    shuffled.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    straight = tmp_path / "a"
+    reversed_root = tmp_path / "b"
+    _run(straight)
+    runner.invoke(app, ["materialize", str(shuffled), "--root", str(reversed_root)])
+
+    assert _tree(straight / "docs") == _tree(reversed_root / "docs")
+
+
+# --------------------------------------------------------------------------------------
+# Сохранность авторского текста
+# --------------------------------------------------------------------------------------
+
+
+def _write_section(root: Path, doc_path: str, name: str, text: str) -> None:
+    path = root / doc_path
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            f"<!-- docpipe:section:end {name} -->",
+            f"{text}\n<!-- docpipe:section:end {name} -->",
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_authored_text_survives_everything(tmp_path: Path) -> None:
+    """Текст агента переживает пересборку генерируемого блока, смену владельца,
+    смену обоих хэшей и добавление секции шаблона."""
+    import json
+
+    _run(tmp_path)
+    _write_section(tmp_path, CONTROLLER, "purpose", "Авторский текст.")
+
+    payload = json.loads(GOLDEN_MANIFEST.read_text(encoding="utf-8"))
+    for node in payload["nodes"]:
+        node["domain"] = "Другой домен"
+        node["signature_hash"] = "sha256:changed"
+        node["impl_hash"] = "sha256:changed"
+    changed = tmp_path / "changed.json"
+    changed.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    result = runner.invoke(app, ["materialize", str(changed), "--root", str(tmp_path)])
+    text = (tmp_path / CONTROLLER).read_text(encoding="utf-8")
+
+    assert result.exit_code == 0
+    assert "Авторский текст." in text
+    assert "domain: Другой домен" in text
+    assert "sha256:changed" in text
+
+
+def test_materialize_never_deletes(tmp_path: Path) -> None:
+    """Ни один сценарий не удаляет файл: узел исчез из манифеста, `--team`
+    сузил множество. Число `.md` до не меньше числа после."""
+    import json
+
+    _run(tmp_path)
+    before = len(_tree(tmp_path / "docs"))
+
+    payload = json.loads(GOLDEN_MANIFEST.read_text(encoding="utf-8"))
+    payload["nodes"] = payload["nodes"][:2]
+    shrunk = tmp_path / "shrunk.json"
+    shrunk.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    runner.invoke(app, ["materialize", str(shrunk), "--root", str(tmp_path)])
+
+    assert len(_tree(tmp_path / "docs")) >= before
+
+
+def test_crlf_document_is_not_rewritten_forever(tmp_path: Path) -> None:
+    """Документ с CRLF, отличающийся только переводами строк, остаётся
+    без изменений: сравнение идёт по нормализованному тексту."""
+    _run(tmp_path)
+    path = tmp_path / CONTROLLER
+    path.write_bytes(path.read_text(encoding="utf-8").replace("\n", "\r\n").encode("utf-8"))
+    before = path.stat().st_mtime_ns
+
+    result = _run(tmp_path)
+
+    assert result.exit_code == 0
+    assert path.stat().st_mtime_ns == before
+    assert b"\r\n" in path.read_bytes()
+
+
+# --------------------------------------------------------------------------------------
+# Отказы
+# --------------------------------------------------------------------------------------
+
+
+def _break(root: Path, doc_path: str, kind: str) -> None:
+    path = root / doc_path
+    text = path.read_text(encoding="utf-8")
+    if kind == "yaml":
+        text = text.replace("docpipe:", "docpipe:\n  - [битый", 1)
+    elif kind == "front-matter":
+        text = text.replace("---\n\n# ", "\n\n# ", 1)
+    elif kind == "section":
+        text = text.replace("<!-- docpipe:section:end notes -->", "")
+    elif kind == "generated":
+        text = text.replace("<!-- docpipe:generated:start -->\n", "", 1)
+    path.write_text(text, encoding="utf-8")
+
+
+@pytest.mark.parametrize("kind", ["yaml", "front-matter", "section", "generated"])
+def test_broken_document_is_not_touched(tmp_path: Path, kind: str) -> None:
+    """Испорченный документ не изменяется ни на байт, код 1.
+
+    Единственный экземпляр принятого состояния живёт в этом файле, поэтому
+    всё, что мешает надёжно его прочитать, — отказ, а не самолечение.
+    """
+    _run(tmp_path)
+    _break(tmp_path, CONTROLLER, kind)
+    before = (tmp_path / CONTROLLER).read_bytes()
+
+    result = _run(tmp_path)
+
+    assert result.exit_code == 1
+    assert (tmp_path / CONTROLLER).read_bytes() == before
+    assert "pricing-controller.md" in result.stdout
+
+
+def test_force_recreates_and_keeps_a_copy(tmp_path: Path) -> None:
+    _run(tmp_path)
+    _break(tmp_path, CONTROLLER, "section")
+    before = (tmp_path / CONTROLLER).read_bytes()
+
+    result = _run(tmp_path, "--force")
+    backup = tmp_path / CONTROLLER.replace(".md", ".md.broken")
+
+    assert result.exit_code == 0
+    assert backup.read_bytes() == before
+    assert (tmp_path / CONTROLLER).read_bytes() != before
+    assert "docpipe:section:end notes" in (tmp_path / CONTROLLER).read_text(encoding="utf-8")
+
+
+def test_read_only_file_does_not_stop_the_others(tmp_path: Path) -> None:
+    """Прерывание на первой ошибке оставило бы дерево наполовину обновлённым."""
+    import json
+
+    _run(tmp_path)
+
+    payload = json.loads(GOLDEN_MANIFEST.read_text(encoding="utf-8"))
+    for node in payload["nodes"]:
+        node["domain"] = "Новый домен"
+    changed = tmp_path / "changed.json"
+    changed.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    blocked = (tmp_path / CONTROLLER).parent
+    os.chmod(blocked, stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        result = runner.invoke(app, ["materialize", str(changed), "--root", str(tmp_path)])
+    finally:
+        os.chmod(blocked, stat.S_IRWXU)
+
+    updated = [
+        path
+        for path in (tmp_path / "docs").rglob("*.md")
+        if "Новый домен" in path.read_text(encoding="utf-8")
+    ]
+
+    assert result.exit_code == 1
+    assert "Ошибки записи:" in result.stdout
+    assert len(updated) == 5
+    assert len(_tree(tmp_path / "docs")) == 6
+
+
+# --------------------------------------------------------------------------------------
+# Флаги
+# --------------------------------------------------------------------------------------
+
+
+def test_dry_run_writes_nothing(tmp_path: Path) -> None:
+    result = _run(tmp_path, "--dry-run")
+
+    assert result.exit_code == 0
+    assert _tree(tmp_path) == {}
+    assert "Что было бы сделано:" in result.stdout
+    assert "создано:      6" in result.stdout
+
+
+def test_unknown_team_is_a_user_error(tmp_path: Path) -> None:
+    ownership = tmp_path / "ownership.yaml"
+    ownership.write_text(
+        'version: "1"\nteams: [{id: pricing, title: P}]\n'
+        "rules:\n  - {id: p, team: pricing, priority: 10, when: {kind: [controller]}}\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--ownership", str(ownership), "--team", "нетакой")
+
+    assert result.exit_code == 2
+    assert "известны: pricing" in result.stderr
+
+
+def test_team_filter_writes_only_its_own(tmp_path: Path) -> None:
+    ownership = tmp_path / "ownership.yaml"
+    ownership.write_text(
+        'version: "1"\nteams: [{id: pricing, title: P}]\n'
+        "rules:\n  - {id: p, team: pricing, priority: 10, when: {kind: [controller]}}\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--ownership", str(ownership), "--team", "pricing")
+
+    assert result.exit_code == 0
+    assert len(_tree(tmp_path / "docs")) == 2
+    assert "team: pricing" in (tmp_path / CONTROLLER).read_text(encoding="utf-8")
+
+
+def test_missing_template_directory_is_a_user_error(tmp_path: Path) -> None:
+    result = _run(tmp_path, "--templates", str(tmp_path / "нет"))
+
+    assert result.exit_code == 2
+
+
+# --------------------------------------------------------------------------------------
+# Граница пакета
+# --------------------------------------------------------------------------------------
+
+
+def test_materialize_does_not_import_dotnet() -> None:
+    """Обходом AST, а не импортом: импорт проверил бы только то, что модуль
+    загружается, а не то, что зависимости нет.
+
+    Граница нужна, чтобы шаг 2 не пришлось переписывать при появлении парсера
+    Python или TypeScript. На ней же стоит бизнес-слой.
+    """
+    offenders: list[str] = []
+    for path in sorted(Path("docpipe/materialize").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "docpipe.dotnet"
+            ):
+                offenders.append(f"{path.name}: from {node.module}")
+            if isinstance(node, ast.Import):
+                offenders += [
+                    f"{path.name}: import {alias.name}"
+                    for alias in node.names
+                    if alias.name.startswith("docpipe.dotnet")
+                ]
+
+    assert offenders == []

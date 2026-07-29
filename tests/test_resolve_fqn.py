@@ -11,6 +11,7 @@ from docpipe.dotnet.resolve import (
     symbol_key,
 )
 from docpipe.model import FileParseResult, Symbol
+from docpipe.tree import signature_hash
 from tests.conftest import by_fqn, index_of
 
 SAMPLE_FQNS = {
@@ -345,3 +346,114 @@ def test_index_is_deterministic(sample_solution: Path) -> None:
 def test_index_keys_are_sorted(sample_solution: Path) -> None:
     keys = list(index_of(sample_solution))
     assert keys == sorted(keys)
+
+
+# --------------------------------------------------------------------------------------
+# impl_hash: «переписано тело» против «изменён контракт» (M02)
+# --------------------------------------------------------------------------------------
+
+_BODY = b"""
+namespace N;
+public class Service
+{
+    public int Compute(int x) { return x + 1; }
+}
+"""
+
+
+def _one(source: bytes) -> Symbol:
+    return next(iter(_synthetic({"a.cs": source}).values()))
+
+
+def test_impl_hash_is_filled() -> None:
+    assert _one(_BODY).impl_hash.startswith("sha256:")
+
+
+def test_reformatting_does_not_change_impl_hash() -> None:
+    """Без нормализации пробелов прогон `dotnet format` по репозиторию изменил бы
+    хэш у всех типов сразу, и всё дерево документации потребовало бы пересмотра."""
+    reformatted = b"""
+namespace N;
+public    class      Service
+{
+
+        public int Compute(int x)
+        {
+            return x + 1;
+        }
+
+}
+"""
+
+    assert _one(reformatted).impl_hash == _one(_BODY).impl_hash
+
+
+def test_normalisation_boundary_is_whitespace_runs() -> None:
+    """Записанная граница: схлопываются ПОСЛЕДОВАТЕЛЬНОСТИ пробельных символов.
+
+    Вставка пробела там, где его не было (`(int x)` -> `( int x )`), хэш меняет.
+    Отступы, переносы строк и пустые строки — самая частая часть переформатирования —
+    покрыты; смена правил расстановки пробелов вокруг скобок даст разовую волну
+    `drifted` по всему дереву. Это приемлемо: событие однократное и снимается
+    приёмкой, а более агрессивная нормализация схлопывала бы и значимые различия.
+    """
+    spaced = _BODY.replace(b"Compute(int x)", b"Compute( int x )")
+
+    assert _one(spaced).impl_hash != _one(_BODY).impl_hash
+
+
+def test_body_change_moves_impl_hash_but_not_signature() -> None:
+    """Проверяется парой: врозь смысл двух хэшей теряется.
+
+    `signature_hash` намеренно нечувствителен к телу — это экономит шагу 3 тысячи
+    документов. Но описание «как работает» зависит именно от тела, и без второго
+    сигнала оно устаревает молча.
+    """
+    changed = _BODY.replace(b"return x + 1;", b"return x * 2;")
+
+    before, after = _one(_BODY), _one(changed)
+
+    assert after.impl_hash != before.impl_hash
+    assert signature_hash(after) == signature_hash(before)
+
+
+def test_signature_change_moves_both() -> None:
+    changed = _BODY.replace(b"public int Compute(int x)", b"public long Compute(int x)")
+
+    before, after = _one(_BODY), _one(changed)
+
+    assert after.impl_hash != before.impl_hash
+    assert signature_hash(after) != signature_hash(before)
+
+
+def test_partial_impl_hash_ignores_file_order() -> None:
+    """`partial`-тип собирается из нескольких файлов, и порядок их обхода
+    источником порядка быть не может."""
+    first = b"namespace N;\npublic partial class P { public void A() { } }\n"
+    second = b"namespace N;\npublic partial class P { public void B() { } }\n"
+
+    forward = next(iter(_synthetic({"a.cs": first, "b.cs": second}).values()))
+    backward = next(iter(_synthetic({"b.cs": second, "a.cs": first}).values()))
+
+    assert forward.impl_hash == backward.impl_hash
+
+
+def test_partial_impl_hash_reacts_to_any_half() -> None:
+    first = b"namespace N;\npublic partial class P { public void A() { } }\n"
+    second = b"namespace N;\npublic partial class P { public void B() { } }\n"
+    edited = second.replace(b"public void B() { }", b"public void B() { Log(); }")
+
+    before = next(iter(_synthetic({"a.cs": first, "b.cs": second}).values()))
+    after = next(iter(_synthetic({"a.cs": first, "b.cs": edited}).values()))
+
+    assert after.impl_hash != before.impl_hash
+
+
+def test_xml_doc_edit_does_not_change_impl_hash() -> None:
+    """Записанная граница: `SourceSpan` не включает XML-doc, потому что
+    комментарий — предшествующий сосед объявления, а не его потомок."""
+    documented = "namespace N;\n/// <summary>Было.</summary>\npublic class S { }\n".encode()
+    edited = "namespace N;\n/// <summary>Стало.</summary>\npublic class S { }\n".encode()
+
+    assert _one(documented).impl_hash == _one(edited).impl_hash
+    assert _one(documented).xml_doc != _one(edited).xml_doc

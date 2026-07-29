@@ -371,6 +371,7 @@ def build_nodes(
                 related=_relations(symbol, interfaces),
                 matched_rules=classification.matched_rules,
                 signature_hash=signature_hash(symbol),
+                impl_hash=symbol.impl_hash,
             )
         )
 

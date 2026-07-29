@@ -11,6 +11,7 @@
 
 from collections import defaultdict
 
+from docpipe.hashing import stable_hash
 from docpipe.model import Attribute, FileParseResult, Member, RawDeclaration, SourceSpan, Symbol
 
 # Разделители ключа символа. Ни один не встречается в FQN, поэтому ключ
@@ -289,6 +290,9 @@ def _build_symbol(
         sources=sorted(sources, key=lambda span: (span.path, span.start)),
         xml_doc=xml_doc,
         ambiguous=ambiguous,
+        # Сортировка обязательна: `partial`-тип собирается из нескольких файлов,
+        # и порядок их обхода источником порядка быть не может.
+        impl_hash=stable_hash(sorted(declaration.decl_hash for _, declaration in items)),
     )
 
 

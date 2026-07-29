@@ -196,3 +196,39 @@ def test_creates_missing_cache_directory(tmp_path: Path) -> None:
     with ParseCache(path, VERSIONS):
         pass
     assert path.is_file()
+
+
+def test_cache_version_bump_invalidates_old_entries(tmp_path: Path) -> None:
+    """Старый кэш не должен отдавать записи без `decl_hash` (M02).
+
+    Хэш содержимого файла при смене формата разбора не меняется, поэтому
+    попадание в кэш вернуло бы запись, собранную прошлой версией моделей.
+    Единственный способ это заметить — сверить версию формата.
+    """
+    import docpipe.cache as cache_module
+
+    parsed = _result("S.cs", b"namespace N;\npublic class S { public void M() { } }\n")
+    original = cache_module.CACHE_VERSION
+    try:
+        cache_module.CACHE_VERSION = "old"
+        with ParseCache(_db(tmp_path), VERSIONS) as stale:
+            stale.put(parsed)
+            assert stale.get(parsed.path, parsed.content_hash) is not None
+
+        cache_module.CACHE_VERSION = original
+        with ParseCache(_db(tmp_path), VERSIONS) as fresh:
+            assert fresh.get(parsed.path, parsed.content_hash) is None
+    finally:
+        cache_module.CACHE_VERSION = original
+
+
+def test_declarations_carry_decl_hash_through_cache(tmp_path: Path) -> None:
+    parsed = _result("S.cs", b"namespace N;\npublic class S { public void M() { } }\n")
+
+    with ParseCache(_db(tmp_path), VERSIONS) as cache:
+        cache.put(parsed)
+        restored = cache.get(parsed.path, parsed.content_hash)
+
+    assert restored is not None
+    assert restored.declarations[0].decl_hash == parsed.declarations[0].decl_hash
+    assert restored.declarations[0].decl_hash.startswith("sha256:")

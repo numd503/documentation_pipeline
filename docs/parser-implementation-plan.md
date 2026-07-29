@@ -2718,6 +2718,9 @@ uv run pytest tests/test_deploy_bundle.py -q
 
 - создание директорий и `.md`-файлов (шаг 2 пайплайна);
 - шаблоны документации (Service / Provider / Workflow / Controller);
-- генерация `docs/_views/**`;
 - парсеры Python и TypeScript;
 - любая интеграция с LLM.
+
+Первые два пункта закрыты шагом 2 — см. [`materialize-implementation-plan.md`](materialize-implementation-plan.md)
+и справочник [`materialize.md`](materialize.md). Генерация `docs/_views/**` стояла здесь же:
+от неё отказались, документация просто лежит в репозитории набором `.md`.

@@ -35,6 +35,13 @@ class DocpipeConfig(BaseModel):
     out: str = "artifacts/doc-tree.json"
     cache_dir: str = ".docpipe/cache"
 
+    # Шаг 2. Все со значениями по умолчанию: модель `extra="forbid"`, но
+    # существующие конфигурации обязаны продолжать работать.
+    templates: str = "templates"
+    ownership: str | None = None
+    docs_root: str = "docs"
+    docs_scan_exclude: list[str] = Field(default_factory=list)
+
 
 def load_config(path: Path | None) -> DocpipeConfig:
     """Загрузить конфигурацию; при `None` вернуть значения по умолчанию.

@@ -37,6 +37,7 @@
       "domain": "Sample.Common",
       "endpoints": [],
       "id": "type:src/Sample.Common/Sample.Common.csproj#Sample.Common.Web.BaseApiController`0",
+      "impl_hash": "sha256:62880d6798773493d6b5d95fe9d32306084abceddc5c4c2ec4929e89732fd8c3",
       "kind": "controller",
       "matched_rules": [
         "controller.aspnet"
@@ -64,6 +65,7 @@
           "ControllerBase"
         ],
         "fqn": "Sample.Common.Web.BaseApiController",
+        "impl_hash": "sha256:62880d6798773493d6b5d95fe9d32306084abceddc5c4c2ec4929e89732fd8c3",
         "members": [
           {
             "attributes": [],
@@ -124,6 +126,7 @@
         }
       ],
       "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Controllers.PricingController`0",
+      "impl_hash": "sha256:74ba5471180f9a88bdbc3e969e8ac5b8a802e1741f504714bbfbafaaf19e50c2",
       "kind": "controller",
       "matched_rules": [
         "controller.aspnet"
@@ -154,6 +157,7 @@
           "BaseApiController"
         ],
         "fqn": "Sample.Pricing.Api.Controllers.PricingController",
+        "impl_hash": "sha256:74ba5471180f9a88bdbc3e969e8ac5b8a802e1741f504714bbfbafaaf19e50c2",
         "members": [
           {
             "attributes": [],
@@ -247,6 +251,7 @@
       "domain": "Sample.Pricing.Api",
       "endpoints": [],
       "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Grid.RiskComputeService`0",
+      "impl_hash": "sha256:7006712d45f5bc29c8408a7a2ce9dd08d32703a6ff025a07ddce5555255a2ae8",
       "kind": "ignite_service",
       "matched_rules": [
         "ignite.service",
@@ -269,6 +274,7 @@
           "IService"
         ],
         "fqn": "Sample.Pricing.Api.Grid.RiskComputeService",
+        "impl_hash": "sha256:7006712d45f5bc29c8408a7a2ce9dd08d32703a6ff025a07ddce5555255a2ae8",
         "members": [
           {
             "attributes": [],
@@ -340,6 +346,7 @@
       "domain": "Sample.Pricing.Api",
       "endpoints": [],
       "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Providers.CurveProvider`0",
+      "impl_hash": "sha256:5e887d367fc40d9fe0b7e4ed494f37dc00909f7d9381ff0097dd78626d0c6952",
       "kind": "provider",
       "matched_rules": [
         "provider"
@@ -366,6 +373,7 @@
           "IPricingProvider<string>"
         ],
         "fqn": "Sample.Pricing.Api.Providers.CurveProvider",
+        "impl_hash": "sha256:5e887d367fc40d9fe0b7e4ed494f37dc00909f7d9381ff0097dd78626d0c6952",
         "members": [
           {
             "attributes": [],
@@ -418,6 +426,7 @@
       "domain": "Sample.Pricing.Api",
       "endpoints": [],
       "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Services.PricingService`0",
+      "impl_hash": "sha256:3e188468eec8292d750a44b5f96624e284134d787c96b7aa6ae3e2dd5f264408",
       "kind": "service",
       "matched_rules": [
         "service"
@@ -444,6 +453,7 @@
           "IPricingService"
         ],
         "fqn": "Sample.Pricing.Api.Services.PricingService",
+        "impl_hash": "sha256:3e188468eec8292d750a44b5f96624e284134d787c96b7aa6ae3e2dd5f264408",
         "members": [
           {
             "attributes": [],
@@ -529,6 +539,7 @@
       "domain": "Sample.Pricing.Api",
       "endpoints": [],
       "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Workflows.ValuationWorkflow`0",
+      "impl_hash": "sha256:0b51e71098485603e9d1e458ae3da281ce422f99986abe237fbb15432d243e72",
       "kind": "workflow",
       "matched_rules": [
         "workflow"
@@ -544,6 +555,7 @@
         "base_types": [],
         "base_types_raw": [],
         "fqn": "Sample.Pricing.Api.Workflows.ValuationWorkflow",
+        "impl_hash": "sha256:0b51e71098485603e9d1e458ae3da281ce422f99986abe237fbb15432d243e72",
         "members": [
           {
             "attributes": [],
@@ -586,5 +598,5 @@
   },
   "partial": null,
   "ruleset_version": "2026-07-26.1",
-  "schema_version": "1.0"
+  "schema_version": "1.1"
 }
