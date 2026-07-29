@@ -2748,3 +2748,58 @@ uv run pytest tests/test_resolve_fqn.py tests/test_tree.py tests/test_cache.py \
 uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv run pytest -q
                                                                         # 675 passed
 ```
+
+---
+
+## M01 — `ruleset.py`: общий движок правил ✅
+
+Создано: `docpipe/ruleset.py`, `tests/test_ruleset_engine.py` (30 тестов).
+Изменено: `docpipe/classify.py`.
+
+### Критерий «поведенчески пусто» выполнен буквально
+
+```
+git diff --stat tests/test_classify.py     # пусто
+git diff --stat tests/golden/doc-tree.json # пусто
+```
+
+Ни один тест классификации не потребовалось тронуть, золотой манифест совпал
+байт в байт. Это и был смысл задачи: рефакторинг, который что-то «заодно
+улучшил» в сообщениях, невозможно отличить от рефакторинга, который что-то
+сломал.
+
+Сообщения об ошибках перенесены **дословно** — они и были главной причиной
+выноса. `tests/test_classify.py` проверяет четыре формулировки по подстрокам
+(`неизвестный предикат`, `повтор id`, `регулярное выражение`, `без полей`),
+и любая правка текста уронила бы их.
+
+### Что осталось у классификации, а что ушло в движок
+
+В движок: `validate_condition`, `evaluate`, `pick_winner`, `load_rule_items`,
+`COMBINATORS`, `PredicateTable`.
+
+У классификации: сами предикаты и модели `Rule`/`Ruleset`/`Classification`.
+Предикаты знают про `Symbol`, то есть про предметную область, и их вынос сделал
+бы движок зависимым от моделей .NET — ровно того, чего бизнес-слой и владение
+избегают.
+
+`regex_keys` в таблице вместо захардкоженного списка: у владения будет свой
+набор regex-предикатов (`namespace_regex`), и знать о нём движку неоткуда.
+
+### Тест движка — на искусственной таблице
+
+Соблазн проверять движок на `rules/dotnet.yaml` велик и неверен: такой тест
+проверял бы заодно классификацию, то есть не проверял бы движок. Взята таблица
+из трёх предикатов над игрушечным предметом.
+
+Отдельно проверено то, ради чего вынос и делался: путь до узла в сообщении
+(`r.when.all[1].any[0]`) — без него опечатку в глубоком условии искать негде.
+
+### Проверка
+
+```bash
+uv run pytest tests/test_ruleset_engine.py tests/test_classify.py tests/test_scan_e2e.py -q
+                                                                       # 92 passed
+uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv run pytest -q
+                                                                       # 705 passed
+```
