@@ -1,0 +1,36 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!-- Миниатюра Items-Workflows.xml. Инварианты:
+     1. файл сохранён С BOM — так и лежат файлы поставки, редактировавшиеся
+        под Windows. Снимать BOM при «чистке» фикстуры нельзя: проверка
+        чтения байтами перестанет что-либо проверять;
+     2. один workflow объявлен двумя версиями, у обеих IsActive="true" —
+        признаком актуальности этот атрибут не является;
+     3. Path записан разделителями Windows и отсчитывается от базы
+        развёртывания (каталог `deployment`), а не от каталога этого файла. -->
+<Project InnerName="SbtCms">
+    <Lists>
+        <List InnerName="Workflows" TableName="WORKFLOWS">
+            <Items>
+
+                <Item KeyField="WorkflowTitle" KeyValue="Онлайн УФН" Override="false"
+                      IsActive="true" IsCancellable="false">
+                    <File Path="Data\Items\Workflows\Sample.v1.json"
+                          FieldInnerName="WorkflowDefinition" />
+                </Item>
+
+                <Item KeyField="WorkflowTitle" KeyValue="Онлайн УФН (версия 2)" Override="false"
+                      IsActive="true" IsCancellable="false">
+                    <File Path="Data\Items\Workflows\Sample.v2.json"
+                          FieldInnerName="WorkflowDefinition" />
+                </Item>
+
+                <Item KeyField="WorkflowTitle" KeyValue="Оборванная ссылка" Override="false"
+                      IsActive="true" IsCancellable="false">
+                    <File Path="Data\Items\Workflows\Missing.v1.json"
+                          FieldInnerName="WorkflowDefinition" />
+                </Item>
+
+            </Items>
+        </List>
+    </Lists>
+</Project>

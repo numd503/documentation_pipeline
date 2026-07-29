@@ -1,0 +1,17 @@
+{
+  "Id": "SampleWorkflow",
+  "Version": 1,
+  "DataType": "Sbt.Sample.Models.SampleAggregate, Sbt.Sample",
+  "DefaultErrorBehavior": "Terminate",
+  "Steps": [
+    {
+      "Id": "CollectStep",
+      "StepType": "Sbt.Sample.Steps.CollectStep, Sbt.Sample",
+      "NextStepId": "ScoreStep"
+    },
+    {
+      "Id": "ScoreStep",
+      "StepType": "Sbt.Sample.Steps.ScoreStep, Sbt.Sample"
+    }
+  ]
+}

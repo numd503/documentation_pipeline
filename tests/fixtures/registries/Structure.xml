@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Миниатюра Cashflow.Structure.xml. Инварианты:
+     1. виды полей читаются по префиксу Field*, а не по перечню: FieldSomethingNew
+        здесь именно для того, чтобы белый список сломал тест;
+     2. FieldLookup несёт ListSource — это связь между сущностями, объявленная,
+        а не выведенная;
+     3. обработчики событий приходят из ДВУХ сборок и включают повтор класса
+        с разным EventType;
+     4. <Forms> присутствуют, чтобы проверить, что они не подбираются как поля. -->
+<Project InnerName="CashflowCms" DisplayName="Cashflow CMS">
+    <Lists>
+
+        <List InnerName="UserTasks" TableName="USER_TASKS" DisplayName="Задачи пользователей">
+            <Fields>
+                <FieldText InnerName="UserTasksTitle" ColumnName="TITLE"
+                           DisplayName="Наименование задачи" Required="false"
+                           MaximumLength="300" IsTitle="true" />
+                <FieldLookup InnerName="UserTasksType" ColumnName="TASK_TYPE_ID"
+                             DisplayName="Тип задачи" Required="true"
+                             ListSource="UserTaskTypes" />
+                <FieldDateTime InnerName="UserTasksTaskStartTime" ColumnName="TASK_START_TIME"
+                               DisplayName="Дата и время старта задачи" Required="false" />
+                <FieldSomethingNew InnerName="UserTasksExperimental" ColumnName="EXPERIMENTAL"
+                                   DisplayName="Поле неизвестного вида" Required="false" />
+            </Fields>
+
+            <Forms>
+                <Form Mode="Display" InnerName="DisplayUserTask" DisplayName="Детали задачи" />
+                <Form Mode="List" InnerName="AllUserTasks" DisplayName="Задачи пользователей" />
+            </Forms>
+
+            <EventReceivers>
+                <EventReceiver Class="Sbt.Cashflow.Reports.EventReceivers.UserTasksValidatingEventReceiver"
+                               Assembly="Sbt.Cashflow.Reports.EventReceivers"
+                               EventType="ItemAdding" />
+                <EventReceiver Class="Sbt.Cashflow.Reports.EventReceivers.UserTasksValidatingEventReceiver"
+                               Assembly="Sbt.Cashflow.Reports.EventReceivers"
+                               EventType="ItemUpdating" />
+                <EventReceiver Class="Sbt.Cashflow.ML.EventReceivers.UserTasksAddedTriggerSampleWorkflowEventReceiver"
+                               Assembly="Sbt.Cashflow.ML.EventReceivers"
+                               EventType="ItemAdded" />
+            </EventReceivers>
+        </List>
+
+        <List InnerName="UserTaskTypes" TableName="USER_TASK_TYPES" DisplayName="Типы задач">
+            <Fields>
+                <FieldText InnerName="UserTaskTypesTitle" ColumnName="TITLE"
+                           DisplayName="Наименование типа" Required="true" />
+            </Fields>
+        </List>
+
+    </Lists>
+</Project>
