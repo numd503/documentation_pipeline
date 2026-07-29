@@ -13,8 +13,9 @@
 владелец или домен: это поля проекции.
 """
 
+import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, Literal
 
@@ -24,6 +25,7 @@ from docpipe.materialize.build import (
     build_front_matter,
     build_generated_block,
     dump_front_matter,
+    template_refs,
 )
 from docpipe.materialize.document import (
     MANAGED_END,
@@ -36,7 +38,7 @@ from docpipe.materialize.document import (
 from docpipe.materialize.model import ParsedDocument, Segment
 from docpipe.materialize.ownership import Ownership, owner_of
 from docpipe.materialize.template import Template, substitute
-from docpipe.model import DocNode, Manifest
+from docpipe.model import DocNode, Manifest, SourceSpan
 
 FileAction = Literal["create", "update", "unchanged", "refuse", "relocate"]
 AgentAction = Literal["write", "review", "skip"]
@@ -142,6 +144,11 @@ class PlannedDoc:
     confidence: Confidence | None = None
     team: str | None = None
     template: str = ""
+    kind: str = ""
+    template_ref: str = ""
+    example_ref: str | None = None
+    sources: list[SourceSpan] = field(default_factory=list)
+    broken_links: list[str] = field(default_factory=list)
     empty_sections: list[str] = field(default_factory=list)
     orphan_sections: list[str] = field(default_factory=list)
     changes: Changes = field(default_factory=Changes)
@@ -614,6 +621,7 @@ def build_plan(
                 "review": {"reason": "relocated", "from": relocated_from},
             }
 
+        template_ref, example_ref = template_refs(node, context)
         damaged = broken.get(node.doc_path)
         text, empty, orphan_sections = _compose(
             node, template, context, team, None if damaged else source, state
@@ -661,6 +669,10 @@ def build_plan(
                 confidence=moved[1] if moved else None,
                 team=team,
                 template=node.template,
+                kind=node.kind,
+                template_ref=template_ref,
+                example_ref=example_ref,
+                sources=list(node.symbol.sources) if node.symbol else [],
                 empty_sections=empty,
                 orphan_sections=orphan_sections,
                 changes=changes,
@@ -692,6 +704,52 @@ def build_plan(
     )
 
 
+_LINK = re.compile(r"\]\(([^)]+)\)")
+
+
+def check_links(existing: list[ExistingDoc], root: Path) -> dict[str, list[str]]:
+    """Относительные ссылки в **авторских** секциях, которые никуда не ведут.
+
+    Ссылки в генерируемых блоках чинятся сами: блоки пересобираются в том же
+    прогоне. Поставленные агентом внутри своих секций — не чинятся, поэтому
+    о них надо сообщать.
+
+    Внешние адреса и якоря не проверяются: они не про файловую систему.
+    """
+    broken: dict[str, list[str]] = {}
+    for doc in existing:
+        if doc.parsed is None:
+            continue
+        targets: list[str] = []
+        for segment in doc.parsed.segments:
+            if segment.kind != "section":
+                continue
+            for match in _LINK.finditer(segment.body):
+                target = match.group(1).split("#", 1)[0].split(" ", 1)[0].strip()
+                if not target or "://" in target or target.startswith(("/", "#", "mailto:")):
+                    continue
+                resolved = (root / doc.path).parent / target
+                if not resolved.exists():
+                    targets.append(target)
+        if targets:
+            broken[doc.path] = sorted(set(targets))
+    return broken
+
+
+def with_links(plan: MaterializePlan, broken: dict[str, list[str]]) -> MaterializePlan:
+    """Приписать плану найденные битые ссылки. План остаётся чистой функцией:
+    файловую систему трогает `check_links`, а не он."""
+    if not broken:
+        return plan
+    return replace(
+        plan,
+        documents=[
+            replace(doc, broken_links=broken[doc.doc_path]) if doc.doc_path in broken else doc
+            for doc in plan.documents
+        ],
+    )
+
+
 def relocation_note(plan: MaterializePlan) -> list[str]:
     """Строки про переносы — для отчёта."""
     return [
@@ -703,6 +761,7 @@ def relocation_note(plan: MaterializePlan) -> list[str]:
 
 __all__ = [
     "DEFAULT_DOCS_SCAN_EXCLUDE",
+    "check_links",
     "Accepted",
     "Changes",
     "ExistingDoc",
@@ -714,4 +773,5 @@ __all__ = [
     "match_relocations",
     "relocation_note",
     "scan_docs",
+    "with_links",
 ]

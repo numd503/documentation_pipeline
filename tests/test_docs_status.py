@@ -1,0 +1,298 @@
+"""Команда `docs status` — вход агента шага 3 (M09).
+
+Команда информационная: ни один тест здесь не проверяет запись, зато один
+проверяет её отсутствие. Информационная команда, которая что-то меняет,
+перестаёт гоняться в CI.
+"""
+
+import json
+from pathlib import Path
+
+from typer.testing import CliRunner
+
+from docpipe.cli import app
+
+MANIFEST = Path("tests/golden/doc-tree.json")
+CONTROLLER = "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
+runner = CliRunner()
+
+
+def _materialize(root: Path, manifest: Path = MANIFEST):  # type: ignore[no-untyped-def]
+    return runner.invoke(app, ["materialize", str(manifest), "--root", str(root)])
+
+
+def _status(root: Path, *extra: str, manifest: Path = MANIFEST):  # type: ignore[no-untyped-def]
+    return runner.invoke(app, ["docs", "status", str(manifest), "--root", str(root), *extra])
+
+
+def _fill(root: Path, doc_path: str, name: str, text: str) -> None:
+    path = root / doc_path
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            f"<!-- docpipe:section:end {name} -->",
+            f"{text}\n<!-- docpipe:section:end {name} -->",
+        ),
+        encoding="utf-8",
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Свежее дерево
+# --------------------------------------------------------------------------------------
+
+
+def test_fresh_tree_is_all_empty_and_needs_writing(tmp_path: Path) -> None:
+    _materialize(tmp_path)
+
+    result = _status(tmp_path)
+
+    assert result.exit_code == 0
+    assert "empty            6" in result.stdout
+    assert result.stdout.count("write   empty") == 6
+
+
+def test_status_writes_nothing(tmp_path: Path) -> None:
+    """Соблазн «заодно починить front matter» превращает информационную
+    команду в изменяющую."""
+    _materialize(tmp_path)
+    before = {path: path.read_bytes() for path in sorted((tmp_path / "docs").rglob("*.md"))}
+
+    _status(tmp_path)
+
+    assert {path: path.read_bytes() for path in before} == before
+
+
+# --------------------------------------------------------------------------------------
+# Формат json
+# --------------------------------------------------------------------------------------
+
+
+def test_json_shape(tmp_path: Path) -> None:
+    _materialize(tmp_path)
+
+    payload = json.loads(_status(tmp_path, "--format", "json").stdout)
+
+    assert payload["total"] == 6
+    assert payload["counts"] == {"empty": 6}
+    assert payload["manifest_partial"] is False
+    assert [doc["doc_path"] for doc in payload["documents"]] == sorted(
+        doc["doc_path"] for doc in payload["documents"]
+    )
+
+    first = payload["documents"][0]
+    assert set(first) == {
+        "action",
+        "reason",
+        "changes",
+        "doc_path",
+        "node_id",
+        "status",
+        "kind",
+        "template_ref",
+        "example_ref",
+        "team",
+        "empty_sections",
+        "orphan_sections",
+        "sources",
+        "broken_links",
+    }
+    assert first["sources"][0]["path"].endswith(".cs")
+
+
+def test_json_is_byte_stable(tmp_path: Path) -> None:
+    """Иначе агент увидит изменение там, где его нет."""
+    _materialize(tmp_path)
+
+    assert (
+        _status(tmp_path, "--format", "json").stdout == _status(tmp_path, "--format", "json").stdout
+    )
+
+
+def test_example_ref_is_null_where_there_is_no_example(tmp_path: Path) -> None:
+    _materialize(tmp_path)
+
+    payload = json.loads(_status(tmp_path, "--format", "json").stdout)
+    ignite = next(doc for doc in payload["documents"] if doc["kind"] == "ignite_service")
+
+    assert ignite["template_ref"] == "templates/ignite-service.md"
+    assert ignite["example_ref"] is None
+
+
+# --------------------------------------------------------------------------------------
+# Фильтры
+# --------------------------------------------------------------------------------------
+
+
+def test_positional_path_narrows_to_a_directory(tmp_path: Path) -> None:
+    _materialize(tmp_path)
+
+    result = _status(tmp_path, "docs/modules/Sample.Common", "--format", "json")
+    payload = json.loads(result.stdout)
+
+    assert payload["total"] == 1
+    assert payload["documents"][0]["doc_path"].startswith("docs/modules/Sample.Common/")
+
+
+def test_positional_path_accepts_a_file(tmp_path: Path) -> None:
+    _materialize(tmp_path)
+
+    payload = json.loads(_status(tmp_path, CONTROLLER, "--format", "json").stdout)
+
+    assert payload["total"] == 1
+
+
+def test_action_filter(tmp_path: Path) -> None:
+    _materialize(tmp_path)
+
+    payload = json.loads(_status(tmp_path, "--action", "review", "--format", "json").stdout)
+
+    assert payload["total"] == 0
+
+
+def test_partially_filled_document_still_needs_writing(tmp_path: Path) -> None:
+    _materialize(tmp_path)
+    _fill(tmp_path, CONTROLLER, "purpose", "Написано.")
+
+    payload = json.loads(_status(tmp_path, CONTROLLER, "--format", "json").stdout)
+    doc = payload["documents"][0]
+
+    assert doc["action"] == "write"
+    assert doc["status"] == "empty"
+    assert "purpose" not in doc["empty_sections"]
+    assert doc["empty_sections"] == ["api", "behaviour", "collaboration", "notes"]
+
+
+# --------------------------------------------------------------------------------------
+# Коды возврата
+# --------------------------------------------------------------------------------------
+
+
+def test_fail_on_matches(tmp_path: Path) -> None:
+    _materialize(tmp_path)
+
+    assert _status(tmp_path, "--fail-on", "empty").exit_code == 1
+    assert _status(tmp_path, "--fail-on", "stale").exit_code == 0
+
+
+def test_fail_on_typo_is_a_user_error(tmp_path: Path) -> None:
+    """Опечатка `--fail-on statle` иначе дала бы вечно зелёную проверку в CI."""
+    _materialize(tmp_path)
+
+    result = _status(tmp_path, "--fail-on", "statle")
+
+    assert result.exit_code == 2
+    assert "неизвестные значения statle" in result.stderr
+    assert "empty" in result.stderr
+
+
+def test_action_typo_is_a_user_error(tmp_path: Path) -> None:
+    _materialize(tmp_path)
+
+    result = _status(tmp_path, "--action", "wrte")
+
+    assert result.exit_code == 2
+    assert "неизвестные значения wrte" in result.stderr
+
+
+# --------------------------------------------------------------------------------------
+# Битые ссылки в авторских секциях
+# --------------------------------------------------------------------------------------
+
+
+def test_broken_link_inside_an_authored_section(tmp_path: Path) -> None:
+    """Ссылки в генерируемых блоках чинятся сами — блоки пересобираются.
+    Поставленные агентом внутри своих секций не чинятся, поэтому о них сообщают."""
+    _materialize(tmp_path)
+    _fill(tmp_path, CONTROLLER, "purpose", "См. [соседний](../services/нет-такого.md).")
+
+    payload = json.loads(_status(tmp_path, CONTROLLER, "--format", "json").stdout)
+
+    assert payload["documents"][0]["broken_links"] == ["../services/нет-такого.md"]
+
+
+def test_working_link_is_not_reported(tmp_path: Path) -> None:
+    _materialize(tmp_path)
+    _fill(tmp_path, CONTROLLER, "purpose", "См. [сервис](../services/pricing-service.md).")
+
+    payload = json.loads(_status(tmp_path, CONTROLLER, "--format", "json").stdout)
+
+    assert payload["documents"][0]["broken_links"] == []
+
+
+def test_external_links_are_not_checked(tmp_path: Path) -> None:
+    """Внешний адрес и якорь не про файловую систему."""
+    _materialize(tmp_path)
+    _fill(
+        tmp_path,
+        CONTROLLER,
+        "purpose",
+        "[внешняя](https://example.com/x) и [якорь](#назначение).",
+    )
+
+    payload = json.loads(_status(tmp_path, CONTROLLER, "--format", "json").stdout)
+
+    assert payload["documents"][0]["broken_links"] == []
+
+
+def test_generated_block_links_are_not_checked(tmp_path: Path) -> None:
+    """В генерируемом блоке ссылки на исходники ведут наружу дерева документации
+    и в тестовом окружении не существуют — сообщать о них нечего."""
+    _materialize(tmp_path)
+
+    payload = json.loads(_status(tmp_path, "--format", "json").stdout)
+
+    assert all(doc["broken_links"] == [] for doc in payload["documents"])
+
+
+# --------------------------------------------------------------------------------------
+# Частичный манифест
+# --------------------------------------------------------------------------------------
+
+
+def test_partial_manifest_is_flagged(tmp_path: Path) -> None:
+    payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    payload["partial"] = {"scope": ["src/Sample.Pricing.Api"], "outside_from_cache": True}
+    partial = tmp_path / "partial.json"
+    partial.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    _materialize(tmp_path, partial)
+    text = _status(tmp_path, manifest=partial)
+    machine = json.loads(_status(tmp_path, "--format", "json", manifest=partial).stdout)
+
+    assert "манифест частичный" in text.stdout
+    assert machine["manifest_partial"] is True
+
+
+# --------------------------------------------------------------------------------------
+# Полный цикл статусов
+# --------------------------------------------------------------------------------------
+
+
+def test_current_is_only_in_the_counter(tmp_path: Path) -> None:
+    """На АС CF подробный список по всем документам — тысячи строк, и в них
+    теряется то немногое, ради чего команду и звали."""
+    _materialize(tmp_path)
+    node = json.loads(MANIFEST.read_text(encoding="utf-8"))["nodes"]
+    controller = next(n for n in node if n["doc_path"] == CONTROLLER)
+    for name in ("purpose", "api", "behaviour", "collaboration", "notes"):
+        _fill(tmp_path, CONTROLLER, name, "Текст.")
+
+    path = tmp_path / CONTROLLER
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "docpipe_state:\n  accepted: null\n  review: null\n",
+            "docpipe_state:\n"
+            "  accepted:\n"
+            f"    signature_hash: {controller['signature_hash']}\n"
+            f"    impl_hash: {controller['impl_hash']}\n"
+            f"    kind: {controller['kind']}\n"
+            "    members: []\n"
+            "  review: null\n",
+        ),
+        encoding="utf-8",
+    )
+
+    result = _status(tmp_path)
+
+    assert "current          1" in result.stdout
+    assert CONTROLLER not in result.stdout

@@ -128,6 +128,19 @@ def build_context(
 # --------------------------------------------------------------------------------------
 
 
+def template_refs(node: DocNode, context: BuildContext) -> tuple[str, str | None]:
+    """Пути к скелету и образцу. `example_ref` бывает `None`.
+
+    Образцов четыре, а шаблонов семь: для Ignite их нет намеренно. Подставлять
+    путь к несуществующему файлу нельзя — агент пошёл бы его читать.
+    """
+    example = f"{context.templates_dir}/examples/{node.template}.md"
+    return (
+        f"{context.templates_dir}/{node.template}.md",
+        example if node.template in context.examples else None,
+    )
+
+
 def build_front_matter(
     node: DocNode, context: BuildContext, team: str | None
 ) -> DocpipeFrontMatter:
@@ -136,7 +149,7 @@ def build_front_matter(
         (m for m in context.manifest.modules if m.id == node.parent),
         None,
     )
-    example = f"{context.templates_dir}/examples/{node.template}.md"
+    template_ref, example_ref = template_refs(node, context)
 
     return DocpipeFrontMatter(
         node_id=node.id,
@@ -145,8 +158,8 @@ def build_front_matter(
         fqn=node.symbol.fqn if node.symbol else node.title,
         kind=node.kind,
         template=node.template,
-        template_ref=f"{context.templates_dir}/{node.template}.md",
-        example_ref=example if node.template in context.examples else None,
+        template_ref=template_ref,
+        example_ref=example_ref,
         module=node.module,
         module_csproj=module.csproj if module else "",
         domain=node.domain,

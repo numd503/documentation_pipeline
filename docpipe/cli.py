@@ -15,7 +15,20 @@ from docpipe.hashing import stable_json_dumps
 from docpipe.materialize.apply import apply_plan, format_result
 from docpipe.materialize.build import build_context
 from docpipe.materialize.ownership import load_ownership
-from docpipe.materialize.plan import PlanOptions, build_plan, scan_docs
+from docpipe.materialize.plan import (
+    PlanOptions,
+    build_plan,
+    check_links,
+    scan_docs,
+    with_links,
+)
+from docpipe.materialize.status import (
+    AGENT_ACTIONS,
+    STATUSES,
+    filter_documents,
+    format_status,
+    format_status_json,
+)
 from docpipe.materialize.template import load_templates
 from docpipe.model import Manifest, RunMeta
 from docpipe.registry import load_registries, read_registry
@@ -339,6 +352,98 @@ def materialize(
     typer.echo(format_result(plan, result, dry_run))
 
     if plan.errors or result.errors or result.refused:
+        raise typer.Exit(code=1)
+
+
+docs_app = typer.Typer(
+    help="Состояние дерева документации.",
+    no_args_is_help=True,
+)
+app.add_typer(docs_app, name="docs")
+
+
+@docs_app.command("status")
+def docs_status(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    paths: Annotated[
+        list[Path] | None,
+        typer.Argument(help="Файлы или каталоги. Без них — всё дерево."),
+    ] = None,
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
+    templates_dir: Annotated[
+        Path | None, typer.Option("--templates", help="Каталог шаблонов.")
+    ] = None,
+    ownership_file: Annotated[
+        Path | None, typer.Option("--ownership", help="Правила владения.")
+    ] = None,
+    team: Annotated[
+        list[str] | None, typer.Option("--team", help="Только эти команды; можно повторять.")
+    ] = None,
+    action: Annotated[
+        list[str] | None,
+        typer.Option("--action", help="Только эти решения: write, review, skip."),
+    ] = None,
+    fail_on: Annotated[
+        list[str] | None,
+        typer.Option("--fail-on", help="Код 1 при встрече статуса; можно повторять."),
+    ] = None,
+    output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
+) -> None:
+    """Что делать с каждым документом. Ничего не пишет.
+
+    Соблазн «заодно починить front matter» превращает информационную команду
+    в изменяющую, и её перестают гонять в CI.
+    """
+    for name, values, allowed in (
+        ("--action", action, AGENT_ACTIONS),
+        ("--fail-on", fail_on, STATUSES),
+    ):
+        unknown = sorted(set(values or ()) - allowed)
+        if unknown:
+            # Опечатка `--fail-on statle` иначе дала бы вечно зелёную проверку.
+            typer.echo(
+                f"{name}: неизвестные значения {', '.join(unknown)};"
+                f" известны: {', '.join(sorted(allowed))}",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+
+    settings = load_config(config)
+    templates_path = templates_dir or Path(settings.templates)
+    ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
+
+    try:
+        manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+        templates = load_templates(templates_path)
+        ownership = load_ownership(ownership_path) if ownership_path else None
+    except (OSError, ValueError) as exc:
+        typer.echo(f"{exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    examples = frozenset(path.stem for path in (templates_path / "examples").glob("*.md"))
+    context = build_context(manifest, templates, examples, templates_path.as_posix())
+    existing = scan_docs(root, settings.docs_root, settings.docs_scan_exclude)
+    plan = with_links(
+        build_plan(
+            manifest,
+            existing,
+            templates,
+            context,
+            ownership,
+            PlanOptions(docs_root=settings.docs_root, teams=tuple(team or ())),
+        ),
+        check_links(existing, root),
+    )
+
+    selected = filter_documents(plan.documents, paths or [], action or [])
+    typer.echo(
+        format_status_json(plan, selected)
+        if output_format == "json"
+        else format_status(plan, selected)
+    )
+
+    if plan.errors or (fail_on and {doc.status for doc in selected} & set(fail_on)):
         raise typer.Exit(code=1)
 
 
