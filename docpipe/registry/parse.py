@@ -53,6 +53,20 @@ def parse_schedule(raw: str) -> Schedule | None:
     return Schedule(interval_seconds=interval, first_time=elem.get("FirstTime"))
 
 
+def strip_generic_arity(fqn: str) -> str:
+    """Убрать арность и аргументы дженерика: `Foo`2[[…]]` → `Foo`.
+
+    В манифесте `symbol.fqn` хранится без арности (она вынесена в
+    `type_parameters` и приписывается только к `id` узла). Реестр же приходит
+    из среды выполнения, где имя закрытого дженерика записано полностью.
+    Без этой нормализации ни один дженерик-шаг не сопоставится с узлом.
+
+    Резать по первой обратной кавычке достаточно: в сегментах namespace
+    и в имени типа она встречаться не может.
+    """
+    return fqn.split("`", 1)[0].strip()
+
+
 def split_type_name(raw: str) -> tuple[str, str | None]:
     """Разделить assembly-qualified имя типа на FQN и простое имя сборки.
 

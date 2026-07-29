@@ -30,8 +30,6 @@ registries:
       ref: "@KeyValue"
       contract_fqn: "@JOBCLASS"
       assembly: "@JOBASSEMBLY"
-      disabled: "@JOBDISABLED"
-      override: "@Override"
       schedule_raw: "@JOBSCHEDULE"
 
   - id: workflows
@@ -42,8 +40,6 @@ registries:
     item_xpath: "./Lists/List[@InnerName='Workflows']/Items/Item[@KeyField='WorkflowTitle']"
     fields:
       title: "@KeyValue"
-      is_active: "@IsActive"
-      override: "@Override"
       definition: "./File[@FieldInnerName='WorkflowDefinition']/@Path"
     follow:
       field: definition

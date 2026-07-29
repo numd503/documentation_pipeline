@@ -78,8 +78,6 @@ def test_jobs(specs: dict[str, RegistrySpec]) -> None:
     by_ref = {item.ref: item for item in result.items}
 
     assert sorted(by_ref) == ["Financial reports job", "PM: Load limits"]
-    assert by_ref["PM: Load limits"].fields["override"] == "false"
-    assert by_ref["Financial reports job"].fields["override"] == "true"
     assert by_ref["PM: Load limits"].fields["contract_fqn"].endswith("ILoadLimitsJob")
 
 
@@ -89,7 +87,24 @@ def test_workflows(specs: dict[str, RegistrySpec]) -> None:
     assert len(result.items) == 2
     assert {item.ref for item in result.items} == {"SampleWorkflow"}
     assert sorted(item.fields["version"] for item in result.items) == ["1", "2"]
-    assert all(item.fields["is_active"] == "true" for item in result.items)
+
+
+@pytest.mark.parametrize("flag", ["override", "is_active", "disabled"])
+def test_state_flags_are_deliberately_not_read(specs: dict[str, RegistrySpec], flag: str) -> None:
+    """Флаги состояния не читаются, и это решение, а не упущение.
+
+    `Override`, `IsActive`, `JOBDISABLED` описывают политику поставки и состояние
+    БД, а не бизнес-смысл. Инструмент видит репозиторий и боевой БД не знает
+    никогда, поэтому «джоб выключен» или «версия активна» сказать не может —
+    а прочитанный флаг рано или поздно кто-нибудь прочтёт как факт. Политика
+    поставки к тому же меняется независимо от кода, и привязка к ней устаревала
+    бы от правки процедуры развёртывания.
+
+    Атрибуты в фикстурах при этом остаются: они описывают реальность файлов.
+    """
+    for name in ("jobs", "workflows"):
+        for item in _read(specs, name).items:
+            assert flag not in item.fields
 
 
 def test_structure(specs: dict[str, RegistrySpec]) -> None:
