@@ -13,6 +13,15 @@ from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.hashing import stable_json_dumps
 from docpipe.model import Manifest, RunMeta
+from docpipe.registry import load_registries, read_registry
+from docpipe.registry.anchors import (
+    ResolvedAnchor,
+    counts,
+    filter_anchors,
+    format_anchors,
+    format_explain,
+    resolve_anchors,
+)
 from docpipe.stats import (
     format_breakdown,
     format_stats,
@@ -256,6 +265,97 @@ def stats(
         raise typer.Exit(code=2) from exc
 
     typer.echo(format_stats(stats_from_manifest(manifest), total_label="total nodes"))
+
+
+anchors_app = typer.Typer(
+    help="Точки входа, объявленные в реестрах платформы.",
+    no_args_is_help=True,
+)
+app.add_typer(anchors_app, name="anchors")
+
+
+def _load_anchors(
+    manifest_path: Path, registries: Path, root: Path
+) -> tuple[list[ResolvedAnchor], list[str]]:
+    """Прочитать манифест и реестры. Ошибки чтения — код 2, замечания — в отчёт."""
+    try:
+        manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Не удалось прочитать манифест: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    try:
+        specs = load_registries(registries)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Не удалось прочитать описание реестров: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    results = [read_registry(spec, root) for spec in specs]
+    errors = [error for result in results for error in result.errors]
+    return resolve_anchors(results, manifest), errors
+
+
+@anchors_app.command("list")
+def anchors_list(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    registries: Annotated[Path, typer.Option("--registries", help="Описание реестров.")],
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория: пути реестров от него.")
+    ] = Path("."),
+    kind: Annotated[
+        list[str] | None, typer.Option("--kind", help="Только эти виды; можно повторять.")
+    ] = None,
+    team: Annotated[
+        list[str] | None, typer.Option("--team", help="Только эти команды; можно повторять.")
+    ] = None,
+    output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
+) -> None:
+    """Инвентаризация точек входа.
+
+    Неразрешённые ссылки на типы — находка, а не ошибка: код возврата остаётся
+    нулевым. Узлами документации становятся только enrolled и классифицированные
+    типы, поэтому «не найден среди узлов» и «типа нет» — разные вещи, и различить
+    их по манифесту нельзя.
+    """
+    anchors, errors = _load_anchors(manifest_path, registries, root)
+    selected = filter_anchors(anchors, kind or [], team or [])
+
+    if output_format == "json":
+        typer.echo(
+            stable_json_dumps(
+                {
+                    "counts": counts(selected),
+                    "anchors": [anchor.model_dump(mode="json") for anchor in selected],
+                    "registry_errors": errors,
+                    "total": len(selected),
+                }
+            )
+        )
+    else:
+        typer.echo(format_anchors(selected, errors))
+
+
+@anchors_app.command("explain")
+def anchors_explain(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    ref: Annotated[str, typer.Argument(help="Якорь: `ref` или строка показа.")],
+    registries: Annotated[Path, typer.Option("--registries", help="Описание реестров.")],
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+) -> None:
+    """Показать всё, что известно про один якорь.
+
+    Совпадение ищется и по `ref`, и по строке показа. Строка показа при этом
+    **не разбирается** на части: `JOBTITLE` содержит пробелы и двоеточия,
+    а заголовок workflow — кириллицу.
+    """
+    anchors, _ = _load_anchors(manifest_path, registries, root)
+    found = [anchor for anchor in anchors if ref in (anchor.ref, anchor.display)]
+
+    if not found:
+        typer.echo(f"Якорь не найден: {ref}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo("\n\n".join(format_explain(anchor) for anchor in found))
 
 
 if __name__ == "__main__":

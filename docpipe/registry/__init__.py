@@ -6,6 +6,7 @@
 не восстанавливается статическим анализом — его читают отсюда.
 """
 
+from docpipe.registry.anchors import AnchorTarget, ResolvedAnchor, resolve_anchors
 from docpipe.registry.config import load_registries
 from docpipe.registry.model import (
     ChildSpec,
@@ -18,12 +19,15 @@ from docpipe.registry.model import (
 from docpipe.registry.reader import read_registry
 
 __all__ = [
+    "AnchorTarget",
     "ChildSpec",
     "FollowChildSpec",
     "FollowSpec",
     "RegistryItem",
     "RegistryResult",
     "RegistrySpec",
+    "ResolvedAnchor",
     "load_registries",
     "read_registry",
+    "resolve_anchors",
 ]
