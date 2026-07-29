@@ -1,0 +1,153 @@
+# Реестры платформы: файлы, которые УЖЕ объявляют точки входа.
+#
+# Это данные, а не код: добавить вид триггера — значит дописать сюда реестр.
+# Пути указаны для АС CF; на другом репозитории меняются они, а не механика.
+#
+# Почему реестры, а не поиск по коду. Джобы, workflow и обработчики событий
+# в АС CF диспетчеризуются по данным: универсальный раннер получает имя типа
+# из строки XML или из БД. Литерала конкретного workflow в C# не существует
+# структурно — граф триггеров статическим анализом не восстанавливается.
+# Подробно: docs/findings-cashflow-registries.md.
+
+version: "1"
+registries_version: "2026-07-29.1"
+
+registries:
+  # ------------------------------------------------------------------------------------
+  # Сервисы кластера Ignite
+  # ------------------------------------------------------------------------------------
+  # Якорь — @name, а НЕ @class: `name="CalcDxExcel"` при
+  # `class="…CalcService.DXExcelCalcService"`. Имя сервиса не выводится из класса
+  # и не обязано быть именем интерфейса — это независимый идентификатор,
+  # который знает вызывающий. Переименование класса якорь не меняет.
+  #
+  # item_xpath берёт ТОЛЬКО прямых детей: внутри <add name="…"> лежит
+  # <interceptors><add type="…"/></interceptors>, и обход по `.//add` подобрал бы
+  # интерцепторы как сервисы.
+  - id: grid-services
+    kind: grid_service
+    path: sbt.cashflow.gridservice.subrepo/Sbt.CMS.GridService.Initializer/services.config
+    format: xml
+    item_xpath: "./dotNetServices/add"
+    fields:
+      ref: "@name"
+      impl_fqn: "@class"
+      assembly: "@assembly"
+      team: "@team"
+
+  # ------------------------------------------------------------------------------------
+  # Джобы Quartz
+  # ------------------------------------------------------------------------------------
+  # Якорь — @KeyValue при KeyField="JOBTITLE": это первичный ключ строки
+  # в таблице JOBS, то есть идентичность джоба в системе.
+  #
+  # JOBCLASS — ИНТЕРФЕЙС, не реализация. До кода два шага: интерфейс →
+  # реализации через related[].implemented_by → узел.
+  #
+  # Override="false" означает, что при развёртывании запись не перезаписывает
+  # существующую строку в БД: расписание и признак активности для неё —
+  # «объявлено при установке», а не факт. Поэтому поле читается.
+  - id: jobs
+    kind: job
+    paths:
+      - "sbt.cashflow.deployment/Sbt.Deployment.Db/Cashflow/Data/Items/Items*.xml"
+    format: xml
+    item_xpath: "./Lists/List[@InnerName='JOBS']/Items/Item[@KeyField='JOBTITLE']"
+    fields:
+      ref: "@KeyValue"
+      contract_fqn: "@JOBCLASS"
+      assembly: "@JOBASSEMBLY"
+      disabled: "@JOBDISABLED"
+      override: "@Override"
+      schedule_raw: "@JOBSCHEDULE"
+
+  # ------------------------------------------------------------------------------------
+  # Workflow (workflow-core) и их шаги
+  # ------------------------------------------------------------------------------------
+  # Два имени, и нужны оба: @KeyValue — бизнес-заголовок по-русски, для человека;
+  # Id + Version из JSON — идентичность в движке, то есть якорь.
+  #
+  # base отсчитывается от корня развёртывания, а НЕ от каталога этого файла:
+  # Path записан как `Data\Items\Workflows\X.json`, и склейка с каталогом реестра
+  # даёт `…/Data/Items/Data/Items/Workflows/X.json` — путь, который выглядит
+  # настоящим и указывает в никуда.
+  #
+  # IsActive="true" стоит одновременно у нескольких версий и признаком
+  # актуальности НЕ является. Читаются все версии; какая живая — знает БД.
+  - id: workflows
+    kind: workflow
+    paths:
+      - "sbt.cashflow.deployment/Sbt.Deployment.Db/Cashflow/Data/Items/Items*.xml"
+    format: xml
+    item_xpath: "./Lists/List[@InnerName='Workflows']/Items/Item[@KeyField='WorkflowTitle']"
+    fields:
+      title: "@KeyValue"
+      is_active: "@IsActive"
+      override: "@Override"
+      definition: "./File[@FieldInnerName='WorkflowDefinition']/@Path"
+    follow:
+      field: definition
+      base: sbt.cashflow.deployment/Sbt.Deployment.Db/Cashflow
+      format: json
+      fields:
+        ref: "Id"
+        version: "Version"
+        data_type: "DataType"
+        error_behavior: "DefaultErrorBehavior"
+      children:
+        kind: workflow_step
+        list: "Steps"
+        fields:
+          ref: "Id"
+          impl_type: "StepType"
+          next: "NextStepId"
+
+  # ------------------------------------------------------------------------------------
+  # Предметная модель платформы: списки, поля, связи, обработчики событий
+  # ------------------------------------------------------------------------------------
+  # Самый ценный из реестров. DisplayName у списка и у каждого поля заполнены
+  # по-русски — это готовый глоссарий, написанный аналитиками. FieldLookup несёт
+  # ListSource, то есть связь между сущностями ОБЪЯВЛЕНА, а не выведена из кода.
+  #
+  # Вид поля закодирован именем элемента (FieldText, FieldLookup, FieldDateTime),
+  # поэтому берётся через `#tag`. Перечень видов заведомо неполон, отсюда `*`:
+  # белый список молча потерял бы поле нового вида.
+  #
+  # Обработчик событий — пара «список + EventType». Это якорь уровня контракта:
+  # он не меняется от рефакторинга C#.
+  - id: structure
+    kind: list
+    path: sbt.cms.cashflow.subrepo/Sbt.CMS.Cashflow.Structure/Cashflow.Structure.xml
+    format: xml
+    item_xpath: "./Lists/List"
+    fields:
+      ref: "@InnerName"
+      table: "@TableName"
+      display_name: "@DisplayName"
+    children:
+      - kind: list_field
+        item_xpath: "./Fields/*"
+        fields:
+          ref: "@InnerName"
+          field_type: "#tag"
+          column: "@ColumnName"
+          display_name: "@DisplayName"
+          required: "@Required"
+          lookup: "@ListSource"
+      - kind: list_event
+        item_xpath: "./EventReceivers/EventReceiver"
+        fields:
+          ref: "@EventType"
+          impl_fqn: "@Class"
+          assembly: "@Assembly"
+
+  # ------------------------------------------------------------------------------------
+  # Kafka: заглушка
+  # ------------------------------------------------------------------------------------
+  # Источник перечня топиков не найден. Пока список ведётся здесь руками; когда
+  # источник найдётся, заглушка заменяется описанием файла, и ни один
+  # бизнес-документ от этого не меняется.
+  - id: kafka-topics
+    kind: kafka_topic
+    format: inline
+    items: []
