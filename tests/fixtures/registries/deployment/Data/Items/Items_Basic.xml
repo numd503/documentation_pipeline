@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Миниатюра Items_Basic.xml. Инварианты:
+     1. кроме JOBS есть посторонний справочник — обход по `.//Item` втянул бы его;
+     2. Override встречается в обоих значениях: "false" означает, что запись
+        не перезаписывает существующую строку в БД, и расписание может расходиться
+        с боевым;
+     3. JOBSCHEDULE — экранированный XML внутри атрибута. -->
+<Project InnerName="SbtCms">
+    <Lists>
+
+        <List InnerName="Departments" TableName="DEPARTMENTS">
+            <Items>
+                <Item KeyField="DEPARTMENTTITLE" KeyValue="Казначейство" Override="true" />
+                <Item KeyField="DEPARTMENTTITLE" KeyValue="Риски" Override="true" />
+            </Items>
+        </List>
+
+        <List InnerName="JOBS" TableName="JOBS">
+            <Items>
+
+                <Item KeyField="JOBTITLE"
+                      KeyValue="Financial reports job"
+                      Override="true"
+                      JOBCLASS="Sbt.CMS.Cashflow.Infrastructure.QuartzJobInterfaces.IFinancialReportJob"
+                      JOBASSEMBLY="Sbt.CMS.Cashflow.Infrastructure"
+                      JOBDISABLED="0"
+                      JOBSCHEDULE="&lt;JobSchedule Interval=&quot;60&quot; FirstTime=&quot;2017-01-01&quot; /&gt;" />
+
+                <Item KeyField="JOBTITLE"
+                      KeyValue="PM: Load limits"
+                      Override="false"
+                      JOBCLASS="Sbt.CMS.Cashflow.Infrastructure.QuartzJobInterfaces.ILoadLimitsJob"
+                      JOBASSEMBLY="Sbt.CMS.Cashflow.Infrastructure"
+                      JOBDISABLED="0"
+                      JOBSCHEDULE="&lt;JobSchedule Interval=&quot;86400&quot; FirstTime=&quot;2020-01-01&quot; /&gt;" />
+
+            </Items>
+        </List>
+
+    </Lists>
+</Project>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Файл намеренно испорчен: тег <List> не закрыт. Проверяет, что один битый
+     файл даёт строку в errors, а не роняет чтение остальных. Чинить нельзя. -->
+<Project InnerName="SbtCms">
+    <Lists>
+        <List InnerName="JOBS" TableName="JOBS">
+            <Items>
+                <Item KeyField="JOBTITLE" KeyValue="Битая запись" Override="true" />
+            </Items>
+    </Lists>
+</Project>

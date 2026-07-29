@@ -1,0 +1,22 @@
+{
+  "Id": "SampleWorkflow",
+  "Version": 2,
+  "DataType": "Sbt.Sample.Models.SampleAggregate, Sbt.Sample",
+  "DefaultErrorBehavior": "Terminate",
+  "Steps": [
+    {
+      "Id": "CollectStep",
+      "StepType": "Sbt.Sample.Steps.CollectStep, Sbt.Sample",
+      "NextStepId": "ThresholdStep"
+    },
+    {
+      "Id": "ThresholdStep",
+      "StepType": "Sbt.Sample.Steps.MapStep`2[[System.String, mscorlib],[System.Int32, mscorlib]], Sbt.Sample",
+      "NextStepId": "ScoreStep"
+    },
+    {
+      "Id": "ScoreStep",
+      "StepType": "Sbt.Sample.Steps.ScoreStep, Sbt.Sample"
+    }
+  ]
+}
