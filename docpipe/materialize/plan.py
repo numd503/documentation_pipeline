@@ -560,12 +560,18 @@ def build_plan(
     by_path = {doc.path: doc for doc in existing if doc.error is None}
     node_ids = {node.id for node in manifest.nodes}
 
+    broken = {doc.path: doc for doc in existing if doc.error is not None}
+    node_paths = {node.doc_path for node in manifest.nodes}
+
     documents: list[PlannedDoc] = []
-    for doc in existing:
-        if doc.error is not None:
+    for path, doc in sorted(broken.items()):
+        # Испорченный файл на пути узла обрабатывается вместе с узлом: иначе
+        # узел окажется «без файла», получит `create` и молча затрёт документ,
+        # прочитать который не удалось. Ровно то, что запрещено.
+        if path not in node_paths:
             documents.append(
                 PlannedDoc(
-                    doc_path=doc.path,
+                    doc_path=path,
                     node_id=None,
                     file_action="refuse",
                     status="broken",
@@ -581,7 +587,6 @@ def build_plan(
     #
     # Множество строится по ПОЛНОМУ набору узлов, даже при `--team`: фильтр
     # сужает то, что пишется, множество сравнения — никогда.
-    node_paths = {node.doc_path for node in manifest.nodes}
     unplaced = [doc for doc in existing if doc.error is None and doc.path not in node_paths]
     homeless = [node for node in manifest.nodes if node.doc_path not in by_path]
     relocations, notes = match_relocations(homeless, unplaced)
@@ -600,9 +605,39 @@ def build_plan(
             source = moved[0]
 
         state = (source.parsed.state if source and source.parsed else None) if source else None
-        text, empty, orphan_sections = _compose(node, template, context, team, source, state)
         relocated_from = moved[0].path if moved else None
+        if relocated_from:
+            # Отметка о пересмотре ставится здесь, а не при записи: содержимое
+            # документа целиком считается планом, и `apply` остаётся тупым.
+            state = {
+                **(state or {"accepted": None}),
+                "review": {"reason": "relocated", "from": relocated_from},
+            }
+
+        damaged = broken.get(node.doc_path)
+        text, empty, orphan_sections = _compose(
+            node, template, context, team, None if damaged else source, state
+        )
         status, agent_action, reason, changes = decide(node, source, empty, relocated_from)
+
+        if damaged is not None:
+            documents.append(
+                PlannedDoc(
+                    doc_path=node.doc_path,
+                    node_id=node.id,
+                    file_action="refuse",
+                    status="broken",
+                    agent_action="review",
+                    reason="структура документа испорчена, файл не тронут",
+                    # Содержимое собрано из шаблона: оно нужно только `--force`,
+                    # который сохраняет исходник рядом и пересоздаёт документ.
+                    content=text,
+                    team=team,
+                    template=node.template,
+                    error=damaged.error,
+                )
+            )
+            continue
 
         if source is None:
             file_action: FileAction = "create"

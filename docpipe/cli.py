@@ -12,6 +12,11 @@ from docpipe.diff import diff_manifests, format_changes
 from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.hashing import stable_json_dumps
+from docpipe.materialize.apply import apply_plan, format_result
+from docpipe.materialize.build import build_context
+from docpipe.materialize.ownership import load_ownership
+from docpipe.materialize.plan import PlanOptions, build_plan, scan_docs
+from docpipe.materialize.template import load_templates
 from docpipe.model import Manifest, RunMeta
 from docpipe.registry import load_registries, read_registry
 from docpipe.registry.anchors import (
@@ -265,6 +270,76 @@ def stats(
         raise typer.Exit(code=2) from exc
 
     typer.echo(format_stats(stats_from_manifest(manifest), total_label="total nodes"))
+
+
+@app.command()
+def materialize(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория с документацией.")
+    ] = Path("."),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    templates_dir: Annotated[
+        Path | None, typer.Option("--templates", help="Каталог шаблонов.")
+    ] = None,
+    ownership_file: Annotated[
+        Path | None, typer.Option("--ownership", help="Правила владения.")
+    ] = None,
+    team: Annotated[
+        list[str] | None, typer.Option("--team", help="Только узлы этих команд; можно повторять.")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Показать план, ничего не писать.")
+    ] = False,
+    force: Annotated[
+        bool, typer.Option("--force", help="Пересоздать испорченные документы.")
+    ] = False,
+) -> None:
+    """Создать или обновить документы по манифесту.
+
+    Две фазы строго: план → проверка → запись. При блокирующей ошибке
+    не записывается ничего: половина обновлённого дерева хуже необновлённого,
+    потому что о ней никто не узнает.
+    """
+    settings = load_config(config)
+    templates_path = templates_dir or Path(settings.templates)
+    ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
+
+    try:
+        manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+        templates = load_templates(templates_path)
+        ownership = load_ownership(ownership_path) if ownership_path else None
+    except (OSError, ValueError) as exc:
+        typer.echo(f"{exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    if team:
+        known = {item.id for item in ownership.teams} if ownership else set()
+        unknown = sorted(set(team) - known)
+        if unknown:
+            listing = ", ".join(sorted(known)) or "(правила владения не заданы)"
+            typer.echo(f"Неизвестные команды: {', '.join(unknown)}; известны: {listing}", err=True)
+            raise typer.Exit(code=2)
+
+    examples = frozenset(path.stem for path in (templates_path / "examples").glob("*.md"))
+    context = build_context(manifest, templates, examples, templates_path.as_posix())
+    existing = scan_docs(root, settings.docs_root, settings.docs_scan_exclude)
+    plan = build_plan(
+        manifest,
+        existing,
+        templates,
+        context,
+        ownership,
+        PlanOptions(docs_root=settings.docs_root, teams=tuple(team or ()), force=force),
+    )
+
+    result = apply_plan(plan, root, dry_run=dry_run, force=force)
+    typer.echo(format_result(plan, result, dry_run))
+
+    if plan.errors or result.errors or result.refused:
+        raise typer.Exit(code=1)
 
 
 anchors_app = typer.Typer(
