@@ -38,6 +38,21 @@
 **классификация — правила, описание — агент.** Решение «этот класс — контроллер» принимает
 правило из YAML. Решение «что этот контроллер делает» принимает агент.
 
+Отдельно от этих трёх шагов стоит **бизнес-слой**: процессы и сущности, которые из кода
+не выводятся и пишутся аналитиками.
+
+```
+   реестры платформы ──▶ якоря (точки входа) ──┐
+                                               ├──▶ бизнес-документы ◀──▶ технические
+   каталог аналитика ──▶ бизнес-процессы ──────┘        (связь по якорю, не по коду)
+```
+
+Связь между слоями держится на одном инварианте: **техника ссылается на бизнес, бизнес
+о технике не знает.** Якорем служит не имя класса, а строка, которую обязан знать
+вызывающий, — имя сервиса кластера, заголовок джоба, идентификатор workflow, маршрут.
+Поэтому рефакторинг, не меняющий бизнес-смысла, связь не рвёт. Подробно —
+в [`docs/business-implementation-plan.md`](docs/business-implementation-plan.md).
+
 ## Состояние
 
 Реализуется **шаг 1** — `docpipe`, детерминированный построитель структуры документации.
@@ -57,10 +72,16 @@
 | ✅ T18–T21 | скоуп-режим, сравнение манифестов, статистика, проверка, финализация |
 | ⬜ T05b | связанные исходники `<Compile Include>` — отложена, см. [findings-stress.md](docs/findings-stress.md) |
 
-**Шаг 1 закончен.** Дальше — шаг 2 (материализация `.md`-скелетов по манифесту)
-и шаг 3 (наполнение агентом). Их в этом плане нет намеренно.
+**Шаг 1 закончен.** 460 тестов, 3733 строки кода.
 
-460 тестов, 3733 строки кода.
+Дальше спланировано, но не реализовано:
+
+| План | О чём | Объём |
+|---|---|---|
+| [`docs/materialize-implementation-plan.md`](docs/materialize-implementation-plan.md) | шаг 2: материализация `.md`-скелетов по манифесту, зоны документа, приёмка | M01–M11 |
+| [`docs/business-implementation-plan.md`](docs/business-implementation-plan.md) | бизнес-слой: реестры точек входа, каталог процессов, связь с технической документацией | B01–B11 |
+
+Шаг 3 (наполнение агентом) отдельного плана пока не имеет.
 
 ## Как этим пользоваться
 
@@ -570,8 +591,12 @@ tests/fixtures/
 | [`purpose.md`](purpose.md) | постановка задачи |
 | [`CASHFLOW.md`](CASHFLOW.md) | **что проверить и решить при настройке на репозитории АС CF** |
 | [`docs/parser-architecture.md`](docs/parser-architecture.md) | архитектура шага 1: решения и их обоснование |
-| [`docs/parser-implementation-plan.md`](docs/parser-implementation-plan.md) | исполнительный план на 24 задачи с критериями приёмки |
+| [`docs/parser-implementation-plan.md`](docs/parser-implementation-plan.md) | исполнительный план шага 1 на 24 задачи с критериями приёмки |
+| [`docs/materialize-implementation-plan.md`](docs/materialize-implementation-plan.md) | исполнительный план шага 2: формат документа, зоны, статусы, приёмка |
+| [`docs/business-implementation-plan.md`](docs/business-implementation-plan.md) | исполнительный план бизнес-слоя: якоря, реестры, каталог, `business_hash` |
+| [`docs/manifest.md`](docs/manifest.md) | справочник по манифесту: что лежит в `doc-tree.json` |
 | [`docs/implementation-log.md`](docs/implementation-log.md) | журнал: что сделано, что проверено, где план разошёлся с реальностью |
+| [`docs/findings-cashflow-registries.md`](docs/findings-cashflow-registries.md) | **разведка АС CF: где объявлены точки входа и что ломает их разбор** |
 | [`docs/findings-eshoponweb.md`](docs/findings-eshoponweb.md) | отчёт о прогоне на eShopOnWeb (244 файла) |
 | [`docs/findings-abp.md`](docs/findings-abp.md) | отчёт о прогоне на ABP (671 проект, 7869 файлов) |
 | [`docs/findings-stress.md`](docs/findings-stress.md) | стресс-тест на четырёх репозиториях: OpenTelemetry, semantic-kernel |

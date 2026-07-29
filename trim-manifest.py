@@ -53,9 +53,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("manifest", type=Path, help="исходный doc-tree.json")
     parser.add_argument("-o", "--out", type=Path, help="куда писать; по умолчанию stdout")
-    parser.add_argument(
-        "--compact", action="store_true", help="без отступов, одной строкой"
-    )
+    parser.add_argument("--compact", action="store_true", help="без отступов, одной строкой")
     args = parser.parse_args()
 
     try:
