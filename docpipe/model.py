@@ -28,8 +28,8 @@ DependencyVia = Literal["constructor", "di", "inheritance"]
 RelationKind = Literal["implements", "implemented_by", "uses"]
 
 # Аннотация обязательна: без неё константа выводится как `str`
-# и не подходит полю `Literal["1.0"]`.
-SCHEMA_VERSION: Final[Literal["1.0"]] = "1.0"
+# и не подходит полю `Literal["1.1"]`.
+SCHEMA_VERSION: Final[Literal["1.1"]] = "1.1"
 
 
 class _Base(BaseModel):
@@ -93,6 +93,14 @@ class RawDeclaration(_Base):
     members: list[Member] = Field(default_factory=list)
     span: SourceSpan
     xml_doc: str | None = None
+    decl_hash: str = ""
+    """Хэш текста объявления с нормализованными пробелами.
+
+    Нормализация обязательна: без неё прогон `dotnet format` по репозиторию
+    изменил бы хэш у всех типов сразу, и всё дерево документации стало бы
+    требовать пересмотра. Та же логика, по которой `signature_hash`
+    не включает номера строк.
+    """
 
 
 class DiRegistration(_Base):
@@ -152,6 +160,17 @@ class Symbol(_Base):
     sources: list[SourceSpan] = Field(default_factory=list)
     xml_doc: str | None = None
     ambiguous: bool = False
+    impl_hash: str = ""
+    """Хэш текстов всех объявлений типа.
+
+    Отвечает на вопрос, которого не задаёт `signature_hash`: «переписано тело
+    при том же контракте». Описание «как работает» зависит именно от тела,
+    и без второго сигнала оно устаревает молча.
+
+    `SourceSpan` не включает XML-doc — комментарий является предшествующим
+    соседом объявления, а не его потомком. Поэтому правка XML-doc `impl_hash`
+    не меняет. Это приемлемо; менять устройство span ради этого не нужно.
+    """
 
 
 # --------------------------------------------------------------------------------------
@@ -234,6 +253,7 @@ class DocNode(_Base):
     related: list[Relation] = Field(default_factory=list)
     matched_rules: list[str] = Field(default_factory=list)
     signature_hash: str
+    impl_hash: str = ""
 
 
 class ParserVersions(_Base):
@@ -259,7 +279,7 @@ class Manifest(_Base):
     сравнению файлов без логики исключения полей.
     """
 
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["1.1"] = SCHEMA_VERSION
     ruleset_version: str
     parser: ParserVersions
     partial: PartialInfo | None = None

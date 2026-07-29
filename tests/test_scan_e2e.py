@@ -40,7 +40,7 @@ def test_manifest_is_valid(sample_solution: Path, tmp_path: Path) -> None:
     manifest = Manifest.model_validate_json(out.read_text(encoding="utf-8"))
     assert len(manifest.nodes) == 6
     assert len(manifest.modules) == 2
-    assert manifest.schema_version == "1.0"
+    assert manifest.schema_version == "1.1"
     assert manifest.partial is None
 
 
@@ -361,3 +361,16 @@ def test_broken_rules_file_is_reported(sample_solution: Path, tmp_path: Path) ->
     )
     assert result.exit_code == 2
     assert "неизвестный предикат" in result.output
+
+
+def test_golden_nodes_have_impl_hash() -> None:
+    """Все шесть узлов эталона несут `impl_hash` (M02).
+
+    Пустое значение прошло бы схему и молча лишило шаг 2 сигнала «реализация
+    изменилась при том же контракте».
+    """
+    manifest = Manifest.model_validate_json(GOLDEN.read_text(encoding="utf-8"))
+
+    assert len(manifest.nodes) == 6
+    assert all(node.impl_hash.startswith("sha256:") for node in manifest.nodes)
+    assert len({node.impl_hash for node in manifest.nodes}) == 6

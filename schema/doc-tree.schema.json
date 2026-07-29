@@ -94,6 +94,11 @@
           "title": "Id",
           "type": "string"
         },
+        "impl_hash": {
+          "default": "",
+          "title": "Impl Hash",
+          "type": "string"
+        },
         "kind": {
           "title": "Kind",
           "type": "string"
@@ -265,7 +270,7 @@
     },
     "Module": {
       "additionalProperties": false,
-      "description": "Проект .NET (`.csproj`).\n\n`enrolled` отвечает на вопрос «входит ли модуль в документацию».\nНеenrolled модули всё равно парсятся — их символы нужны для графа\nнаследования, — но узлов документации не порождают.",
+      "description": "Проект .NET (`.csproj`).\n\n`enrolled` отвечает на вопрос «входит ли модуль в документацию».\nНеenrolled модули всё равно парсятся — их символы нужны для графа\nнаследования, — но узлов документации не порождают.\n\n`id` строится от пути, а не от имени: имена проектов не уникальны\n(в ABP 39 повторов, три разных `MyCompanyName.MyProjectName.csproj`),\nи ключ `module:{name}` молча склеил бы разные модули в один.\n\n`project_references` — тоже пути, сравнимые с полем `csproj` другого\nмодуля. Сопоставление по имени проекта при неуникальных именах давало бы\nребро графа в произвольный из одноимённых модулей.",
       "properties": {
         "csproj": {
           "title": "Csproj",
@@ -453,6 +458,11 @@
           "title": "Fqn",
           "type": "string"
         },
+        "impl_hash": {
+          "default": "",
+          "title": "Impl Hash",
+          "type": "string"
+        },
         "members": {
           "items": {
             "$ref": "#/$defs/Member"
@@ -565,8 +575,8 @@
       "type": "string"
     },
     "schema_version": {
-      "const": "1.0",
-      "default": "1.0",
+      "const": "1.1",
+      "default": "1.1",
       "title": "Schema Version",
       "type": "string"
     }

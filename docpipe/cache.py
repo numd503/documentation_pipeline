@@ -20,7 +20,7 @@ from docpipe.model import FileParseResult, ParserVersions
 
 # Версия формата хранения. Менять при любом изменении схемы или способа
 # сериализации payload — иначе старый кэш будет прочитан как новый.
-CACHE_VERSION = "1"
+CACHE_VERSION = "2"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta  (key TEXT PRIMARY KEY, value TEXT);

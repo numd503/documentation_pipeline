@@ -126,7 +126,7 @@ jq '.nodes[].doc_path' /tmp/dt.json
 
 ```jsonc
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "ruleset_version": "2026-07-26.1",
   "parser": { "tree_sitter": "0.26.0", "grammar_c_sharp": "0.23.5" },
   "modules": [
@@ -143,7 +143,8 @@ jq '.nodes[].doc_path' /tmp/dt.json
       "endpoints": [{ "http_method": "GET", "route": "api/v1/Pricing/{id:guid}" }],
       "dependencies": [{ "target": "…IPricingService", "via": "constructor",
                          "confidence": "high" }],
-      "signature_hash": "sha256:…",                 // без номеров строк и путей
+      "signature_hash": "sha256:…",                 // контракт: без номеров строк и путей
+      "impl_hash": "sha256:…",                      // тело: «переписано при том же контракте»
       "symbol": { "…": "полное описание типа: члены, базы, атрибуты, XML-doc" } }
   ]
 }

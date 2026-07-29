@@ -450,6 +450,20 @@ def _count_errors(node: Node) -> int:
     return total
 
 
+def _declaration_hash(declaration: Node) -> str:
+    """Хэш текста объявления с нормализованными пробелами.
+
+    Нормализация не косметическая: без неё прогон `dotnet format` по репозиторию
+    изменил бы хэш у всех типов сразу, и всё дерево документации потребовало бы
+    пересмотра. Та же логика, по которой `signature_hash` не включает номера строк.
+
+    `errors="replace"` вместо падения: файл в неверной кодировке — не повод
+    ронять разбор всего решения.
+    """
+    raw = (declaration.text or b"").decode("utf-8", errors="replace")
+    return content_hash(_WHITESPACE.sub(" ", raw).strip().encode("utf-8"))
+
+
 def _build_declaration(declaration: Node, path: str, members: list[Member]) -> RawDeclaration:
     return RawDeclaration(
         name=_text(declaration.child_by_field_name("name")),
@@ -467,6 +481,7 @@ def _build_declaration(declaration: Node, path: str, members: list[Member]) -> R
             end=declaration.end_point[0] + 1,
         ),
         xml_doc=_xml_doc(declaration),
+        decl_hash=_declaration_hash(declaration),
     )
 
 

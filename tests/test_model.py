@@ -89,7 +89,7 @@ def test_manifest_round_trip_through_json() -> None:
 
 def test_schema_version_defaults_and_is_pinned() -> None:
     """Чужая версия схемы должна отвергаться явно, а не разбираться молча."""
-    assert _minimal_manifest().schema_version == "1.0"
+    assert _minimal_manifest().schema_version == "1.1"
     payload = _minimal_manifest().model_dump()
     payload["schema_version"] = "2.0"
     with pytest.raises(ValidationError):
