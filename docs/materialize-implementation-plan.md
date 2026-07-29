@@ -72,7 +72,7 @@ docpipe:
   domain: Sample.Pricing.Api
   team: null
   signature_hash: sha256:0e29455f07023ae28072c3bef5b59c2725eead683869ad1b48c23170251613b4
-  impl_hash: sha256:77af12c0…
+  impl_hash: sha256:74ba5471180f9a88bdbc3e969e8ac5b8a802e1741f504714bbfbafaaf19e50c2
   ruleset_version: 2026-07-26.1
   sources:
   - path: src/Sample.Pricing.Api/Controllers/PricingController.cs
@@ -179,7 +179,7 @@ docpipe_state:
 | `node_id` | Единственная надёжная связь с манифестом. Требование постановки |
 | `doc_path` | Самопроверка: документ знает, где должен лежать. Расхождение = файл скопировали или перенесли руками |
 | `title`, `fqn` | `fqn` — ключ, по которому агент ищет тип своими средствами. Дублирует `node_id`, но тот неудобно парсить (в нём `#` и обратная кавычка) |
-| `kind`, `template`, `template_ref`, `example_ref` | Агент выбирает глубину и стиль по виду сущности; `*_ref` — репо-относительные пути к скелету и образцу |
+| `kind`, `template`, `template_ref`, `example_ref` | Агент выбирает глубину и стиль по виду сущности; `*_ref` — репо-относительные пути к скелету и образцу. `example_ref` бывает `null`: у `ignite-*` образцов нет намеренно, и подставлять путь к несуществующему файлу нельзя |
 | `module`, `module_csproj` | Имена проектов не уникальны (в ABP 39 повторов), поэтому фильтры по одному `module` врут |
 | `domain` | Ось группировки, ортогональная модулю. Требование постановки |
 | `team` | Результат ownership. Ключ присутствует всегда: отсутствие владельца должно быть видимым фактом, а не отсутствием строки |
@@ -200,7 +200,7 @@ docpipe_state:
 docpipe_state:
   accepted:
     signature_hash: sha256:0e29455f…
-    impl_hash: sha256:77af12c0…
+    impl_hash: sha256:74ba5471180f9a88bdbc3e969e8ac5b8a802e1741f504714bbfbafaaf19e50c2
     kind: controller
     members: [GetAsync, PricingController, RecalculateAsync]
   review: null
