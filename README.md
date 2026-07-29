@@ -559,6 +559,11 @@ docpipe/                  пакет шага 1
 ├── discovery.py          обход ФС с ignore-правилами и scope
 ├── hashing.py            content_hash, stable_json_dumps, slugify
 ├── model.py              16 pydantic-моделей трёх уровней
+├── registry/             реестры платформы: точки входа, объявленные не в коде
+│   ├── model.py          описание реестра и результат чтения
+│   ├── config.py         registries.yaml с проверкой структуры
+│   ├── reader.py         xml/json, вложенные записи, переход по ссылке
+│   └── parse.py          расписание джоба и assembly-qualified имена типов
 └── dotnet/
     ├── csproj.py         граф модулей: TFM, ProjectReference, PackageReference
     ├── sln.py            разбор файла решения
@@ -570,6 +575,7 @@ docpipe/                  пакет шага 1
 
 rules/dotnet.yaml         правила классификации — данные, а не код
 docpipe.example.yaml      пример конфигурации под свой репозиторий
+registries.example.yaml   реестры точек входа АС CF — тоже данные
 deploy/                   поставка внутрь репозитория АС CF: без тестов и dev-зависимостей
 ├── install.sh            установка в <репозиторий>/docs/ml/docspipe
 ├── pyproject.toml        runtime-зависимости без dev-группы

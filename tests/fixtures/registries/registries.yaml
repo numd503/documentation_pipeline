@@ -1,0 +1,94 @@
+# Зеркало `registries.example.yaml` по фикстурам.
+#
+# Отличаются ТОЛЬКО пути (`path`, `paths`, `follow.base`). Всё остальное —
+# item_xpath, поля, вложенные записи — обязано совпадать с поставляемым примером,
+# и это проверяется тестом: иначе пример и то, что реально проверено, разъедутся,
+# а заметит это только настройщик на боевом репозитории.
+
+version: "1"
+registries_version: "2026-07-29.1"
+
+registries:
+  - id: grid-services
+    kind: grid_service
+    path: services.config
+    format: xml
+    item_xpath: "./dotNetServices/add"
+    fields:
+      ref: "@name"
+      impl_fqn: "@class"
+      assembly: "@assembly"
+      team: "@team"
+
+  - id: jobs
+    kind: job
+    paths:
+      - "deployment/Data/Items/Items*.xml"
+    format: xml
+    item_xpath: "./Lists/List[@InnerName='JOBS']/Items/Item[@KeyField='JOBTITLE']"
+    fields:
+      ref: "@KeyValue"
+      contract_fqn: "@JOBCLASS"
+      assembly: "@JOBASSEMBLY"
+      disabled: "@JOBDISABLED"
+      override: "@Override"
+      schedule_raw: "@JOBSCHEDULE"
+
+  - id: workflows
+    kind: workflow
+    paths:
+      - "deployment/Data/Items/Items*.xml"
+    format: xml
+    item_xpath: "./Lists/List[@InnerName='Workflows']/Items/Item[@KeyField='WorkflowTitle']"
+    fields:
+      title: "@KeyValue"
+      is_active: "@IsActive"
+      override: "@Override"
+      definition: "./File[@FieldInnerName='WorkflowDefinition']/@Path"
+    follow:
+      field: definition
+      base: deployment
+      format: json
+      fields:
+        ref: "Id"
+        version: "Version"
+        data_type: "DataType"
+        error_behavior: "DefaultErrorBehavior"
+      children:
+        kind: workflow_step
+        list: "Steps"
+        fields:
+          ref: "Id"
+          impl_type: "StepType"
+          next: "NextStepId"
+
+  - id: structure
+    kind: list
+    path: Structure.xml
+    format: xml
+    item_xpath: "./Lists/List"
+    fields:
+      ref: "@InnerName"
+      table: "@TableName"
+      display_name: "@DisplayName"
+    children:
+      - kind: list_field
+        item_xpath: "./Fields/*"
+        fields:
+          ref: "@InnerName"
+          field_type: "#tag"
+          column: "@ColumnName"
+          display_name: "@DisplayName"
+          required: "@Required"
+          lookup: "@ListSource"
+      - kind: list_event
+        item_xpath: "./EventReceivers/EventReceiver"
+        fields:
+          ref: "@EventType"
+          impl_fqn: "@Class"
+          assembly: "@Assembly"
+
+  - id: kafka-topics
+    kind: kafka_topic
+    format: inline
+    items: []
