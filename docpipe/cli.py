@@ -1,5 +1,6 @@
 """Точка входа командной строки."""
 
+from collections import Counter
 from pathlib import Path
 from typing import Annotated
 
@@ -14,8 +15,17 @@ from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.hashing import stable_json_dumps
 from docpipe.materialize.apply import apply_plan, format_result
 from docpipe.materialize.build import build_context
-from docpipe.materialize.ownership import load_ownership
+from docpipe.materialize.ownership import (
+    Ownership,
+    explain,
+    lint,
+    load_ownership,
+    owner_of,
+)
 from docpipe.materialize.plan import (
+    ExistingDoc,
+    MaterializePlan,
+    PlannedDoc,
     PlanOptions,
     build_plan,
     check_links,
@@ -445,6 +455,245 @@ def docs_status(
 
     if plan.errors or (fail_on and {doc.status for doc in selected} & set(fail_on)):
         raise typer.Exit(code=1)
+
+
+def _prepare(
+    manifest_path: Path,
+    root: Path,
+    config: Path | None,
+    templates_dir: Path | None,
+    ownership_file: Path | None,
+    teams: tuple[str, ...] = (),
+    accept: tuple[str, ...] = (),
+) -> tuple[Manifest, Ownership | None, list[ExistingDoc], MaterializePlan]:
+    """Общая подготовка команд шага 2: манифест, шаблоны, владение, план."""
+    settings = load_config(config)
+    templates_path = templates_dir or Path(settings.templates)
+    ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
+
+    try:
+        manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+        templates = load_templates(templates_path)
+        ownership = load_ownership(ownership_path) if ownership_path else None
+    except (OSError, ValueError) as exc:
+        typer.echo(f"{exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    examples = frozenset(path.stem for path in (templates_path / "examples").glob("*.md"))
+    context = build_context(manifest, templates, examples, templates_path.as_posix())
+    existing = scan_docs(root, settings.docs_root, settings.docs_scan_exclude)
+    plan = build_plan(
+        manifest,
+        existing,
+        templates,
+        context,
+        ownership,
+        PlanOptions(docs_root=settings.docs_root, teams=teams, accept=accept),
+    )
+    return manifest, ownership, existing, plan
+
+
+@docs_app.command("accept")
+def docs_accept(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    paths: Annotated[list[Path] | None, typer.Argument(help="Файлы или каталоги.")] = None,
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
+    templates_dir: Annotated[
+        Path | None, typer.Option("--templates", help="Каталог шаблонов.")
+    ] = None,
+    ownership_file: Annotated[
+        Path | None, typer.Option("--ownership", help="Правила владения.")
+    ] = None,
+    node: Annotated[
+        list[str] | None, typer.Option("--node", help="Идентификатор узла; можно повторять.")
+    ] = None,
+    team: Annotated[list[str] | None, typer.Option("--team", help="Только эти команды.")] = None,
+    accept_all: Annotated[bool, typer.Option("--all", help="Все документы дерева.")] = False,
+    force: Annotated[bool, typer.Option("--force", help="Принять и пустые документы.")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Показать, не писать.")] = False,
+) -> None:
+    """Зафиксировать соответствие документа коду.
+
+    Единственный писатель принятого состояния. Хэши берутся из манифеста,
+    а не из front matter документа: тот — зеркало и мог отстать.
+    """
+    if not (paths or node or team or accept_all):
+        typer.echo("Нужен хотя бы один отбор: пути, --node, --team или --all", err=True)
+        raise typer.Exit(code=2)
+
+    _, _, _, plan = _prepare(
+        manifest_path, root, config, templates_dir, ownership_file, tuple(team or ())
+    )
+    if plan.errors:
+        typer.echo(format_status(plan, plan.documents))
+        raise typer.Exit(code=1)
+
+    selected = filter_documents(plan.documents, paths or [], [])
+    if node:
+        selected = [doc for doc in selected if doc.node_id in set(node)]
+
+    def _refusal(doc: PlannedDoc) -> str | None:
+        if doc.status == "broken":
+            return "структура документа испорчена"
+        if doc.node_id is None:
+            return "узла для документа нет"
+        if doc.status == "empty" and not force:
+            return "документ не наполнен, нужен --force"
+        return None
+
+    refused = [
+        f"{doc.doc_path}: {reason}" for doc in selected if (reason := _refusal(doc)) is not None
+    ]
+    if refused:
+        typer.echo("\n".join(["Приёмка отклонена:", *(f"  {line}" for line in refused)]), err=True)
+        raise typer.Exit(code=1)
+
+    targets = tuple(doc.doc_path for doc in selected)
+    if not targets:
+        typer.echo("Под отбор не попал ни один документ.")
+        return
+
+    _, _, _, accepted = _prepare(
+        manifest_path,
+        root,
+        config,
+        templates_dir,
+        ownership_file,
+        tuple(team or ()),
+        accept=targets,
+    )
+    chosen = [doc for doc in accepted.documents if doc.doc_path in set(targets)]
+    result = apply_plan(
+        MaterializePlan(documents=chosen, manifest_partial=accepted.manifest_partial),
+        root,
+        dry_run=dry_run,
+    )
+
+    typer.echo(f"Принято: {len(targets)}{' (ничего не записано)' if dry_run else ''}")
+    if result.errors:
+        typer.echo("\n".join(["Ошибки записи:", *(f"  {e}" for e in result.errors)]), err=True)
+        raise typer.Exit(code=1)
+
+
+@docs_app.command("adopt")
+def docs_adopt(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    from_path: Annotated[str, typer.Option("--from", help="Откуда переносить.")],
+    to_path: Annotated[str, typer.Option("--to", help="Куда переносить.")],
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
+    templates_dir: Annotated[
+        Path | None, typer.Option("--templates", help="Каталог шаблонов.")
+    ] = None,
+    ownership_file: Annotated[
+        Path | None, typer.Option("--ownership", help="Правила владения.")
+    ] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Показать, не писать.")] = False,
+) -> None:
+    """Перенести документ вручную.
+
+    Нужен там, где автоперенос отказался: кандидатов оказалось несколько,
+    и выбор за человеком. Отметку о пересмотре ставить не требуется — документ
+    писался для другого типа, и обычная логика статусов пометит его сама.
+    """
+    manifest, _, existing, plan = _prepare(
+        manifest_path, root, config, templates_dir, ownership_file
+    )
+    source = root / from_path
+    target = root / to_path
+
+    problems: list[str] = []
+    if not source.is_file():
+        problems.append(f"{from_path}: файла нет")
+    if target.exists():
+        problems.append(f"{to_path}: цель занята")
+    if to_path not in {node.doc_path for node in manifest.nodes}:
+        problems.append(f"{to_path}: ни один узел манифеста не претендует на этот путь")
+
+    moving = next((doc for doc in existing if doc.path == from_path), None)
+    if moving is not None and moving.node_id:
+        others = [
+            doc.path for doc in existing if doc.node_id == moving.node_id and doc.path != from_path
+        ]
+        if others:
+            problems.append(
+                f"{from_path}: узел {moving.node_id} уже описан в {', '.join(sorted(others))}"
+            )
+
+    if problems:
+        typer.echo("\n".join(["Перенос отклонён:", *(f"  {p}" for p in problems)]), err=True)
+        raise typer.Exit(code=1)
+
+    if dry_run:
+        typer.echo(f"Было бы перенесено: {from_path} → {to_path}")
+        return
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        source.replace(target)
+    except OSError as exc:
+        typer.echo(f"Перенос не удался: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    # Пересборка обычным прогоном: документ на новом месте получает свой
+    # front matter, а авторский текст остаётся дословно.
+    _, _, _, rebuilt = _prepare(manifest_path, root, config, templates_dir, ownership_file)
+    apply_plan(rebuilt, root)
+    typer.echo(f"Перенесено: {from_path} → {to_path}")
+
+
+@docs_app.command("owners")
+def docs_owners(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    ownership_file: Annotated[
+        Path | None, typer.Option("--ownership", help="Правила владения.")
+    ] = None,
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
+    explain_node: Annotated[
+        str | None, typer.Option("--explain", help="Идентификатор узла или путь документа.")
+    ] = None,
+    run_lint: Annotated[bool, typer.Option("--lint", help="Диагностика набора правил.")] = False,
+) -> None:
+    """Кто владеет документами и что не так с правилами владения."""
+    settings = load_config(config)
+    path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
+    if path is None:
+        typer.echo("Правила владения не заданы: --ownership или ключ `ownership`", err=True)
+        raise typer.Exit(code=2)
+
+    try:
+        manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+        ownership = load_ownership(path)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"{exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    if explain_node:
+        node = next(
+            (n for n in manifest.nodes if explain_node in (n.id, n.doc_path)),
+            None,
+        )
+        if node is None:
+            typer.echo(f"Узел не найден: {explain_node}", err=True)
+            raise typer.Exit(code=1)
+        typer.echo(explain(node, ownership))
+        return
+
+    if run_lint:
+        findings, warnings = lint(manifest.nodes, ownership)
+        for line in findings:
+            typer.echo(line)
+        for line in warnings:
+            typer.echo(line, err=True)
+        if findings or warnings:
+            raise typer.Exit(code=1)
+        typer.echo("Правила владения в порядке.")
+        return
+
+    counted = Counter(owner_of(node, ownership).team or "(не задан)" for node in manifest.nodes)
+    width = max(len(name) for name in counted)
+    typer.echo("\n".join(f"{name:<{width}}  {count:>5}" for name, count in sorted(counted.items())))
 
 
 anchors_app = typer.Typer(

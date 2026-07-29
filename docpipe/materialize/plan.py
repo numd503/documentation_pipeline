@@ -160,6 +160,10 @@ class PlanOptions:
     docs_root: str = "docs"
     teams: tuple[str, ...] = ()
     force: bool = False
+    # Документы, чьё принятое состояние надо переписать текущим (`docs accept`).
+    # Приёмка проходит через тот же план и ту же запись: отдельный путь записи
+    # означал бы вторую реализацию слияния зон.
+    accept: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -365,6 +369,40 @@ def _body(parsed: ParsedDocument, name: str) -> str:
 # --------------------------------------------------------------------------------------
 
 
+def public_members(node: DocNode) -> list[str]:
+    """Имена публичных членов, отсортированные.
+
+    Один источник и для приёмки, и для сравнения: считай их по-разному —
+    и `accept` зафиксирует один список, а `decide` сравнит с другим, из-за чего
+    документ навсегда останется `stale`.
+    """
+    if node.symbol is None:
+        return []
+    return sorted({m.name for m in node.symbol.members if "public" in m.modifiers})
+
+
+def accepted_state(node: DocNode) -> dict[str, Any]:
+    """Принятое состояние по узлу.
+
+    Хэши берутся ИЗ МАНИФЕСТА, а не из front matter документа: front matter —
+    зеркало и мог отстать (документ не материализовали после последнего `scan`).
+    Взяв значение оттуда, приёмка зафиксировала бы устаревший хэш, и документ
+    навсегда остался бы `current`, будучи `stale`.
+
+    Времени здесь нет: оно сделало бы приёмку неидемпотентной — два прогона
+    подряд меняли бы файл. История правок точнее хранится в git.
+    """
+    return {
+        "accepted": {
+            "signature_hash": node.signature_hash,
+            "impl_hash": node.impl_hash,
+            "kind": node.kind,
+            "members": public_members(node),
+        },
+        "review": None,
+    }
+
+
 def decide(
     node: DocNode,
     existing: ExistingDoc | None,
@@ -373,7 +411,7 @@ def decide(
 ) -> tuple[Status, AgentAction, str, Changes]:
     """Что делать агенту. Первое сработавшее условие выигрывает."""
     accepted = existing.accepted if existing else None
-    members = sorted({member.name for member in node.symbol.members}) if node.symbol else []
+    members = public_members(node)
 
     if existing is None:
         return "missing", "write", "документа ещё нет", Changes(relocated_from=relocated_from)
@@ -612,8 +650,10 @@ def build_plan(
             source = moved[0]
 
         state = (source.parsed.state if source and source.parsed else None) if source else None
+        if node.doc_path in options.accept:
+            state = accepted_state(node)
         relocated_from = moved[0].path if moved else None
-        if relocated_from:
+        if relocated_from and node.doc_path not in options.accept:
             # Отметка о пересмотре ставится здесь, а не при записи: содержимое
             # документа целиком считается планом, и `apply` остаётся тупым.
             state = {
@@ -764,6 +804,7 @@ __all__ = [
     "check_links",
     "Accepted",
     "Changes",
+    "accepted_state",
     "ExistingDoc",
     "MaterializePlan",
     "PlanOptions",
@@ -773,5 +814,6 @@ __all__ = [
     "match_relocations",
     "relocation_note",
     "scan_docs",
+    "public_members",
     "with_links",
 ]
