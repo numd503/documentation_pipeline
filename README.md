@@ -55,33 +55,27 @@
 
 ## Состояние
 
-Реализуется **шаг 1** — `docpipe`, детерминированный построитель структуры документации.
-Скоуп текущей версии: только .NET (C#).
+**Шаги 1 и 2 закончены.** Скоуп текущей версии: только .NET (C#).
 
-Готово 23 задачи из 24 (см. [журнал реализации](docs/implementation-log.md)):
-
-| | |
+| | Что |
 |---|---|
-| ✅ T00–T03 | каркас, тестовые решения, примитивы детерминизма, модели данных |
-| ✅ T04–T05 | обход ФС, разбор `.csproj` / `.sln` / `.slnx` |
-| ✅ T06–T08 | разбор C#: объявления типов, их члены, директивы `using` |
-| ✅ T09 | кэш разобранных файлов: на ABP тёплый прогон в 10 раз быстрее холодного |
-| ✅ T10–T11 | индекс символов: слияние `partial`, резолв баз, замыкание наследования |
-| ✅ T12–T13 | HTTP-маршруты контроллеров, регистрации в DI-контейнере |
-| ✅ T14–T17 | классификация, сборка дерева, команда `scan`, тесты детерминизма |
-| ✅ T18–T21 | скоуп-режим, сравнение манифестов, статистика, проверка, финализация |
+| ✅ **Шаг 1**, T00–T21 | `docpipe scan`: детерминированный манифест `doc-tree.json` по исходникам |
+| ✅ **Шаг 2**, M01–M11 | `docpipe materialize` и `docpipe docs`: документы, зоны, статусы, приёмка |
+| 🔨 **Бизнес-слой**, B01–B04 | реестры точек входа, инвентаризация, каталог процессов |
+| ⬜ Шаг 3 | наполнение документов агентом; отдельного плана пока нет |
 | ⬜ T05b | связанные исходники `<Compile Include>` — отложена, см. [findings-stress.md](docs/findings-stress.md) |
 
-**Шаг 1 закончен.** 460 тестов, 3733 строки кода.
+887 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
 
-Дальше спланировано, но не реализовано:
+Что уже работает сквозным прогоном:
 
-| План | О чём | Объём |
-|---|---|---|
-| [`docs/materialize-implementation-plan.md`](docs/materialize-implementation-plan.md) | шаг 2: материализация `.md`-скелетов по манифесту, зоны документа, приёмка | M01–M11 |
-| [`docs/business-implementation-plan.md`](docs/business-implementation-plan.md) | бизнес-слой: реестры точек входа, каталог процессов, связь с технической документацией | B01–B11 |
-
-Шаг 3 (наполнение агентом) отдельного плана пока не имеет.
+```bash
+docpipe scan --root . --out artifacts/doc-tree.json     # что документировать
+docpipe materialize artifacts/doc-tree.json --root .    # создать документы
+docpipe docs status artifacts/doc-tree.json --root .    # что делать агенту
+docpipe docs accept artifacts/doc-tree.json PATH        # зафиксировать соответствие коду
+docpipe anchors list artifacts/doc-tree.json --registries registries.yaml
+```
 
 ## Как этим пользоваться
 
@@ -180,6 +174,12 @@ jq '.nodes[].doc_path' /tmp/dt.json
 
 | Команда | Зачем |
 |---|---|
+| `materialize MANIFEST` | создать или обновить документы по манифесту |
+| `docs status MANIFEST` | что делать с каждым документом; вход агента шага 3 |
+| `docs accept MANIFEST` | зафиксировать соответствие документа коду |
+| `docs adopt MANIFEST` | перенести документ вручную |
+| `docs owners MANIFEST` | владельцы документов и диагностика правил владения |
+| `anchors list MANIFEST` | инвентаризация точек входа по реестрам платформы |
 | `diff OLD NEW [--format text\|json]` | что изменилось между манифестами |
 | `validate MANIFEST` | схема плюс четыре инварианта; код 1 при нарушении |
 | `stats MANIFEST` | состав готового дерева |
@@ -560,6 +560,16 @@ docpipe/                  пакет шага 1
 ├── discovery.py          обход ФС с ignore-правилами и scope
 ├── hashing.py            content_hash, stable_json_dumps, slugify
 ├── model.py              16 pydantic-моделей трёх уровней
+├── materialize/          шаг 2: документы, зоны, статусы, приёмка
+│   ├── document.py       обратимый разбор `.md` на front matter и сегменты
+│   ├── template.py       загрузка скелетов и подстановка
+│   ├── build.py          front matter, генерируемый блок, кросс-ссылки
+│   ├── ownership.py      кто владеет документом
+│   ├── plan.py           статусы, решения, сопоставление переносов
+│   ├── apply.py          атомарная запись
+│   └── status.py         отчёт `docs status`
+├── business/             бизнес-каталог: процессы и сущности
+├── ruleset.py            общий движок правил: условия, приоритеты, диагностика
 ├── registry/             реестры платформы: точки входа, объявленные не в коде
 │   ├── model.py          описание реестра и результат чтения
 │   ├── config.py         registries.yaml с проверкой структуры
@@ -575,7 +585,9 @@ docpipe/                  пакет шага 1
     └── queries/*.scm     declarations.scm, members.scm, usings.scm, di.scm
 
 rules/dotnet.yaml         правила классификации — данные, а не код
+templates/                семь скелетов документов и четыре заполненных образца
 docpipe.example.yaml      пример конфигурации под свой репозиторий
+ownership.example.yaml    правила владения — кому принадлежит документ
 registries.example.yaml   реестры точек входа АС CF — тоже данные
 deploy/                   поставка внутрь репозитория АС CF: без тестов и dev-зависимостей
 ├── install.sh            установка в <репозиторий>/docs/ml/docspipe
@@ -602,6 +614,8 @@ tests/fixtures/
 | [`docs/materialize-implementation-plan.md`](docs/materialize-implementation-plan.md) | исполнительный план шага 2: формат документа, зоны, статусы, приёмка |
 | [`docs/business-implementation-plan.md`](docs/business-implementation-plan.md) | исполнительный план бизнес-слоя: якоря, реестры, каталог, `business_hash` |
 | [`docs/manifest.md`](docs/manifest.md) | справочник по манифесту: что лежит в `doc-tree.json` |
+| [`docs/materialize.md`](docs/materialize.md) | **справочник по шагу 2: устройство документа, статусы, команды, цикл работы** |
+| [`templates/README.md`](templates/README.md) | как устроены скелеты и что переживает прогон |
 | [`docs/implementation-log.md`](docs/implementation-log.md) | журнал: что сделано, что проверено, где план разошёлся с реальностью |
 | [`docs/findings-cashflow-registries.md`](docs/findings-cashflow-registries.md) | **разведка АС CF: где объявлены точки входа и что ломает их разбор** |
 | [`docs/findings-eshoponweb.md`](docs/findings-eshoponweb.md) | отчёт о прогоне на eShopOnWeb (244 файла) |
