@@ -1,0 +1,11 @@
+# Дерево бизнес-возможностей: маленькое, меняется раз в год, поэтому одним
+# файлом, а не документом на возможность.
+version: "1"
+
+capabilities:
+  - id: cap.valuation
+    title: Оценка и переоценка
+
+  - id: cap.valuation.eod
+    title: Закрытие дня
+    parent: cap.valuation
