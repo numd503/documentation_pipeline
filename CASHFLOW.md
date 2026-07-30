@@ -22,7 +22,6 @@ $WORK/cfml/sbt.cms.cashflow              репозиторий АС CF
     ├── docpipe/                         пакет
     ├── pyproject.toml, uv.lock          только runtime-зависимости
     ├── uv.toml                          зеркало пакетов и сертификаты
-    ├── rules/dotnet.yaml                эталонный набор — для сравнения
     └── cashflow-docspipe/               всё, что настроено под АС CF
         ├── docpipe.yaml, rules.yaml
         ├── artifacts/                   манифест и сидкар

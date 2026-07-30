@@ -6,6 +6,7 @@
 согласованность проверяется здесь.
 """
 
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -160,6 +161,55 @@ def test_installer_inputs_exist(relative: str) -> None:
 
 def test_installer_is_executable() -> None:
     assert DEPLOY.joinpath("install.sh").stat().st_mode & 0o111
+
+
+def _install(target: Path) -> subprocess.CompletedProcess[str]:
+    """Прогнать установщик без подъёма окружения. Сеть при этом не нужна."""
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "App.sln").touch()
+    return subprocess.run(
+        [str(DEPLOY / "install.sh"), str(target), "--skip-sync"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def test_installed_tree_holds_exactly_one_ruleset(tmp_path: Path) -> None:
+    """Второй набор правил в дереве поставки — молчаливая ошибка, а не удобство.
+
+    Путь `rules/dotnet.yaml` совпадает со значением `rules` по умолчанию, поэтому
+    прогон из каталога инструмента **без** `--config` взял бы эталонный набор
+    вместо настроенного и завершился бы успешно — с манифестом, построенным
+    не теми правилами.
+
+    Эталон при этом ничего не давал: отличия помечены пометками «АС CF» в самом
+    наборе, а новая версия приходит при обновлении как `rules.yaml.new`.
+    """
+    _install(tmp_path / "repo")
+    installed = tmp_path / "repo" / "docs/ml/docspipe"
+
+    rulesets = sorted(p.relative_to(installed).as_posix() for p in installed.rglob("*.yaml"))
+    assert rulesets == ["cashflow-docspipe/docpipe.yaml", "cashflow-docspipe/rules.yaml"]
+    assert not (installed / "rules").exists()
+
+
+def test_installer_warns_about_a_ruleset_left_by_older_versions(tmp_path: Path) -> None:
+    """Установщик ничего не удаляет, поэтому про остаток обязан сказать.
+
+    Молча оставить его — значит оставить и ловушку: путь совпадает со значением
+    по умолчанию, и подхват выглядит как успешный прогон.
+    """
+    target = tmp_path / "repo"
+    stale = target / "docs/ml/docspipe/rules"
+    stale.mkdir(parents=True)
+    (stale / "dotnet.yaml").write_text("ruleset_version: old\n", encoding="utf-8")
+
+    result = _install(target)
+
+    assert "остался от прежней версии" in result.stderr
+    assert "rm -r" in result.stderr
+    assert (stale / "dotnet.yaml").is_file()  # сказали, но не удалили
 
 
 # --------------------------------------------------------------------------------------
