@@ -13,7 +13,8 @@ from pathlib import Path
 import pytest
 
 from docpipe.classify import condition_values, load_ruleset
-from docpipe.config import load_config
+from docpipe.config import DocpipeConfig, load_config
+from docpipe.materialize.template import load_templates
 
 ROOT = Path(__file__).parent.parent
 DEPLOY = ROOT / "deploy"
@@ -104,8 +105,30 @@ def test_bundle_config_excludes_the_documentation_tree() -> None:
 def test_bundle_paths_point_inside_the_bundle() -> None:
     """Все пути ведут в каталог инструмента, а не в рабочее дерево продукта."""
     config = load_config(BUNDLE_CONFIG)
-    for path in (config.rules, config.out, config.cache_dir):
+    for path in (config.rules, config.out, config.cache_dir, config.templates):
         assert path.startswith("docs/ml/docspipe/"), path
+
+
+def test_bundle_config_names_the_templates_directory() -> None:
+    """Значение по умолчанию здесь не работает, и отказ выглядит как ошибка пути.
+
+    `templates` отсчитывается от **текущего** каталога, как `out` и `rules`,
+    а команды по инструкции зовутся из корня репозитория АС CF. Значение
+    по умолчанию (`templates`) указывало бы на несуществующий `<корень>/templates`,
+    и `materialize` падал бы с «Каталог шаблонов не найден» — сообщением, по
+    которому не видно, что виновата конфигурация.
+    """
+    assert load_config(BUNDLE_CONFIG).templates != DocpipeConfig().templates
+
+
+def test_bundle_config_hides_the_tool_from_the_documentation_walk() -> None:
+    """Инструмент лежит внутри `docs/`, и без исключения обход зашёл бы в `.venv`.
+
+    Отдельно от `exclude`: тот про обход исходников, этот — про обход документов.
+    """
+    config = load_config(BUNDLE_CONFIG)
+    assert config.docs_root == "docs"
+    assert "docs/ml/**" in config.docs_scan_exclude
 
 
 def test_bundle_ruleset_loads() -> None:
@@ -192,6 +215,47 @@ def test_installed_tree_holds_exactly_one_ruleset(tmp_path: Path) -> None:
     rulesets = sorted(p.relative_to(installed).as_posix() for p in installed.rglob("*.yaml"))
     assert rulesets == ["cashflow-docspipe/docpipe.yaml", "cashflow-docspipe/rules.yaml"]
     assert not (installed / "rules").exists()
+
+
+def test_installed_tree_holds_the_templates(tmp_path: Path) -> None:
+    """Без шаблонов шаг 2 не запускается вовсе, а причина не видна из сообщения.
+
+    Проверяется получившееся дерево, а не текст скрипта: перестановка строк
+    в `install.sh` не должна ронять тест, а пропажа каталога — должна.
+    Каталог обязан ещё и **загружаться**: скопировать файлы и получить ноль
+    скелетов (например, разложив их по подкаталогам) — тот же отказ.
+    """
+    _install(tmp_path / "repo")
+    templates = tmp_path / "repo" / "docs/ml/docspipe/cashflow-docspipe/templates"
+
+    installed = load_templates(templates)
+    declared = {rule.template for rule in load_ruleset(BUNDLE_RULES).rules if rule.template}
+    assert declared <= set(installed), declared - set(installed)
+    assert sorted(p.name for p in (templates / "examples").glob("*.md"))
+
+
+def test_installed_templates_are_where_the_configuration_looks(tmp_path: Path) -> None:
+    """Путь в `docpipe.yaml` и место установки — две записи об одном и том же.
+
+    Разъедутся они молча: конфигурация останется валидной, установка — успешной,
+    а `materialize` откажет на чужой машине.
+    """
+    _install(tmp_path / "repo")
+    configured = load_config(BUNDLE_CONFIG).templates
+    assert (tmp_path / "repo" / configured).is_dir(), configured
+
+
+def test_installer_keeps_edited_templates(tmp_path: Path) -> None:
+    """Шаблон правят под проект, как и правила: затирать правку обновлением нельзя."""
+    target = tmp_path / "repo"
+    _install(target)
+    edited = target / "docs/ml/docspipe/cashflow-docspipe/templates/service.md"
+    edited.write_text(edited.read_text(encoding="utf-8") + "\n<!-- под АС CF -->\n", "utf-8")
+
+    _install(target)
+
+    assert "<!-- под АС CF -->" in edited.read_text(encoding="utf-8")
+    assert edited.with_suffix(".md.new").is_file()
 
 
 def test_installer_warns_about_a_ruleset_left_by_older_versions(tmp_path: Path) -> None:
