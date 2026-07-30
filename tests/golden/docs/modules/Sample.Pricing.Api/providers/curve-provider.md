@@ -15,7 +15,7 @@ docpipe:
   team: null
   signature_hash: sha256:4417c7fa09b3233aba42f96ec0c01d969cfeebdf54aa06e4357a1937c568a876
   impl_hash: sha256:5e887d367fc40d9fe0b7e4ed494f37dc00909f7d9381ff0097dd78626d0c6952
-  ruleset_version: 2026-07-26.1
+  ruleset_version: 2026-07-30.1
   sources:
   - path: src/Sample.Pricing.Api/Providers/CurveProvider.cs
     start: 6

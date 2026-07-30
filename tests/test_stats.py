@@ -12,7 +12,11 @@ from docpipe.model import DocNode, Manifest, Module, ParserVersions
 from docpipe.stats import (
     collect_stats,
     format_breakdown,
-    format_stats,
+    format_decisions,
+    format_kinds,
+    format_report,
+    format_skipped,
+    plural,
     stats_from_manifest,
     validate_manifest,
 )
@@ -51,26 +55,58 @@ def test_counts_on_fixture(sample_solution: Path) -> None:
         "service": 1,
         "workflow": 1,
         "interface_covered": 2,
-        "unclassified": 1,
-        "excluded": 1,
+        "undecided": 1,
+        "not_documented": 1,
     }
 
 
-def test_interface_with_documented_implementation_is_not_unclassified(
+def test_every_excluded_symbol_names_its_decision(sample_solution: Path) -> None:
+    """Отсев без причины — это снова безымянное число, от которого и уходим."""
+    stats = run(sample_solution).stats
+
+    assert stats.skipped == [
+        (
+            "data.contracts",
+            "Контракт передачи данных: смысл в вызывающем коде, а не в самом типе",
+            1,
+        )
+    ]
+    assert sum(count for _, _, count in stats.skipped) == stats.counts["not_documented"]
+
+
+def test_skipped_is_ordered_by_count_then_id(tmp_path: Path, sample_solution: Path) -> None:
+    """Порядок задан явно: таблица идёт в журнал, и он не должен зависеть от YAML."""
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(
+        "ruleset_version: t\nexclude:\n  rules:\n"
+        "    - {id: zzz.classes, reason: r1, priority: 5, when: {type_kind: ['class']}}\n"
+        "    - {id: aaa.interfaces, reason: r2, priority: 5, when: {type_kind: ['interface']}}\n"
+        "rules: []\n",
+        encoding="utf-8",
+    )
+    stats = run(sample_solution, ruleset=load_ruleset(rules)).stats
+
+    ids = [rule_id for rule_id, _, _ in stats.skipped]
+    counts = [count for _, _, count in stats.skipped]
+    assert counts == sorted(counts, reverse=True)
+    assert ids == ["zzz.classes", "aaa.interfaces"]  # 8 классов, 2 интерфейса
+
+
+def test_interface_with_documented_implementation_is_not_undecided(
     sample_solution: Path,
 ) -> None:
     """`IPricingService` реализован документируемым `PricingService`.
 
     Это не «правила не справились», а осознанное решение документировать
-    реализацию. Смешивать такие интерфейсы с типами, про которые правила
-    действительно ничего не знают, нельзя: `unclassified` существует ровно
-    для настройки правил, и мусор в нём обесценивает счётчик. В eShopOnWeb
-    таких 9 из 199, в ABP — 254 из 5267.
+    реализацию — принятое инструментом, а не человеком. Смешивать такие
+    интерфейсы с типами, про которые решения нет, нельзя: `undecided`
+    существует ровно для настройки правил, и мусор в нём обесценивает счётчик.
+    В eShopOnWeb таких 9 из 199, в ABP — 254 из 5267.
     """
     stats = run(sample_solution).stats
 
     assert stats.counts["interface_covered"] == 2
-    assert stats.counts["unclassified"] == 1  # остаётся только Program
+    assert stats.counts["undecided"] == 1  # остаётся только Program
 
 
 def test_totals_add_up(sample_solution: Path) -> None:
@@ -102,7 +138,7 @@ def test_breakdown_is_empty_when_everything_is_covered(
     stats = run(sample_solution, ruleset=load_ruleset(rules)).stats
 
     assert stats.breakdown == {}
-    assert "unclassified" not in stats.counts
+    assert "undecided" not in stats.counts
 
 
 # --------------------------------------------------------------------------------------
@@ -110,45 +146,105 @@ def test_breakdown_is_empty_when_everything_is_covered(
 # --------------------------------------------------------------------------------------
 
 
-def test_table_layout(sample_solution: Path) -> None:
-    lines = format_stats(run(sample_solution).stats).splitlines()
+def test_decisions_block_ends_with_the_undecided_line(sample_solution: Path) -> None:
+    """Значима последняя строка: всё выше неё решено, работа — в ней."""
+    lines = format_decisions(run(sample_solution).stats).splitlines()
+
+    assert lines[0] == "Решения по 10 символам:"
+    assert set(lines[-2].strip()) == {"-"}
+    assert lines[-1].strip().startswith("РЕШЕНИЕ НЕ ПРИНЯТО")
+    assert lines[-1].split()[3] == "1"
+
+
+def test_decisions_block_reports_completion_when_nothing_is_left(
+    sample_solution: Path, tmp_path: Path
+) -> None:
+    """Ноль нерешённого — не пустая строка, а видимое «настройка закончена».
+
+    Строка остаётся на месте и при нуле: исчезнув, она заставила бы искать,
+    пропала она потому, что всё решено, или потому, что отчёт сломался.
+    """
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(
+        "ruleset_version: t\nexclude: {}\nrules:\n"
+        "  - {id: all, kind: service, template: service, priority: 1,"
+        " when: {type_kind: ['class', 'record', 'interface', 'enum', 'struct']}}\n",
+        encoding="utf-8",
+    )
+    block = format_decisions(run(sample_solution, ruleset=load_ruleset(rules)).stats)
+
+    assert "решены все символы" in block
+    assert "РЕШЕНИЕ НЕ ПРИНЯТО" not in block
+
+
+def test_decisions_block_hides_empty_categories(sample_solution: Path) -> None:
+    """Категория без символов уводит взгляд от той, в которой они есть."""
+    block = format_decisions(run(sample_solution).stats)
+
+    assert "интерфейс с реализацией" in block
+    assert "вне области" not in block  # enrolled по умолчанию покрывает всё
+
+
+def test_kind_table_layout(sample_solution: Path) -> None:
+    lines = format_kinds(run(sample_solution).stats).splitlines()
 
     assert lines[0].startswith("kind")
     assert lines[0].rstrip().endswith("count")
     assert set(lines[1]) <= {"-", " "}
-    assert lines[-1].startswith("total symbols")
-    # Виды по алфавиту, служебные категории — после них.
-    kinds = [line.split()[0] for line in lines[2:-2]]
-    assert kinds[:5] == sorted(kinds[:5])
-    assert kinds[-3:] == ["interface_covered", "unclassified", "excluded"]
+    # Только виды и только по алфавиту: служебные категории — в блоке решений,
+    # и дублировать их значило бы предлагать сверять две таблицы об одном.
+    kinds = [line.split()[0] for line in lines[2:]]
+    assert kinds == sorted(kinds)
+    assert kinds == ["controller", "ignite_service", "provider", "service", "workflow"]
+    assert "total" not in lines[-1]
 
 
-def test_columns_fit_the_longest_label(sample_solution: Path) -> None:
-    """`interface_covered` — 17 символов, колонка обязана расшириться под него.
-
-    Иначе метка съезжает в колонку чисел, и таблица перестаёт читаться.
-    """
-    lines = format_stats(run(sample_solution).stats).splitlines()
+def test_kind_table_columns_fit_the_longest_label(sample_solution: Path) -> None:
+    """Метка не должна слипаться с числом или съезжать в колонку чисел."""
+    lines = format_kinds(run(sample_solution).stats).splitlines()
     widths = {len(line) for line in lines}
 
     assert len(widths) == 1, "все строки таблицы одной ширины"
-    covered = next(line for line in lines if line.startswith("interface_covered"))
-    assert covered.split()[-1] == "2"
-    assert covered.startswith("interface_covered ")  # метка не слиплась с числом
+    row = next(line for line in lines if line.startswith("ignite_service"))
+    assert row.split()[-1] == "1"
+    assert row.startswith("ignite_service ")
 
 
-def test_stats_from_manifest_has_no_unclassified(sample_solution: Path) -> None:
-    """В манифесте только узлы, поэтому непокрытое там посчитать не из чего."""
+def test_report_puts_decisions_before_details(sample_solution: Path) -> None:
+    """Порядок блоков несёт смысл: состояние, потом детали, потом что осталось."""
+    report = format_report(run(sample_solution).stats)
+    positions = [
+        report.index("Решения по"),
+        report.index("kind "),
+        report.index("Не документируем"),
+        report.index("Решение не принято — за что зацепиться"),
+    ]
+
+    assert positions == sorted(positions)
+
+
+def test_stats_from_manifest_has_no_decisions(sample_solution: Path) -> None:
+    """В манифесте только узлы, поэтому нерешённое там посчитать не из чего."""
     manifest, _ = scan(sample_solution)
     stats = stats_from_manifest(manifest)
 
     assert stats.total == len(manifest.nodes)
-    assert "unclassified" not in stats.counts
-    assert "total nodes" in format_stats(stats, total_label="total nodes")
+    assert "undecided" not in stats.counts
+    assert "total nodes" in format_kinds(stats, total_label="total nodes")
 
 
-def test_empty_breakdown_formats_to_nothing() -> None:
-    assert format_breakdown(collect_stats({}, [], load_ruleset(RULES))) == ""
+def test_empty_blocks_format_to_nothing() -> None:
+    empty = collect_stats({}, [], load_ruleset(RULES))
+
+    assert format_breakdown(empty) == ""
+    assert format_skipped(empty) == ""
+    assert format_kinds(empty) == ""
+
+
+def test_plural_agrees_with_the_number() -> None:
+    """«1 правил» в отчёте выглядит дефектом инструмента."""
+    forms = [plural(n, "правило", "правила", "правил") for n in (1, 2, 5, 11, 21, 112)]
+    assert forms == ["1 правило", "2 правила", "5 правил", "11 правил", "21 правило", "112 правил"]
 
 
 # --------------------------------------------------------------------------------------
@@ -254,10 +350,57 @@ def test_stats_flag_prints_and_writes_nothing(sample_solution: Path, tmp_path: P
     )
 
     assert result.exit_code == 0
-    assert "total symbols" in result.output
-    assert "unclassified" in result.output
+    assert "Решения по 10 символам" in result.output
+    assert "РЕШЕНИЕ НЕ ПРИНЯТО" in result.output
     assert not out.exists()
     assert not out.with_suffix(".run.json").exists()
+
+
+def test_fail_on_undecided_returns_one(sample_solution: Path, tmp_path: Path) -> None:
+    """Ради этого кода возврата всё и переделано.
+
+    Пока «не решено» было счётчиком «неклассифицировано», он был большим всегда,
+    и новый тип в репозитории в нём не выделялся. Доведённое до нуля «не решено»
+    превращает такой тип в упавшую сборку.
+    """
+    out = tmp_path / "doc-tree.json"
+    args = ["scan", "--root", str(sample_solution), "--out", str(out), "--no-cache"]
+
+    failed = runner.invoke(app, [*args, "--stats", "--fail-on-undecided"])
+    assert failed.exit_code == 1
+    assert "Решение не принято по 1 символу" in failed.output
+
+    silent = runner.invoke(app, [*args, "--stats"])
+    assert silent.exit_code == 0
+
+
+def test_fail_on_undecided_passes_when_everything_is_decided(
+    sample_solution: Path, tmp_path: Path
+) -> None:
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(
+        "ruleset_version: t\nexclude:\n  rules:\n"
+        "    - {id: all, reason: «фикстура целиком», when:"
+        " {type_kind: ['class', 'record', 'interface', 'enum', 'struct']}}\n"
+        "rules: []\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            "--root",
+            str(sample_solution),
+            "--out",
+            str(tmp_path / "doc-tree.json"),
+            "--rules",
+            str(rules),
+            "--no-cache",
+            "--fail-on-undecided",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
 
 
 def test_dry_run_on_unchanged_sources(sample_solution: Path, tmp_path: Path) -> None:
@@ -318,9 +461,10 @@ def test_stats_command_on_missing_file(tmp_path: Path) -> None:
 
 
 def test_not_enrolled_symbols_are_counted_separately(sample_solution: Path, tmp_path: Path) -> None:
-    """Символы неenrolled модулей — не «неклассифицированные».
+    """Символы неenrolled модулей — не «нерешённые».
 
-    Правила к ним и не применялись, а в `unclassified` они дают ложный сигнал
+    Решение по ним принято, просто в другом файле: `enrolled` в `docpipe.yaml`.
+    Правила к ним и не применялись, а в `undecided` они дают ложный сигнал
     «допишите правил». На semantic-kernel это 1597 символов из 1258 «непокрытых» —
     то есть счётчик состоял из них целиком и настраивать по нему было нельзя.
     """

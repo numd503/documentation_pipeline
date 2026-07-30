@@ -15,7 +15,7 @@ docpipe:
   team: null
   signature_hash: sha256:77256ff0709b18d4470a4e1a89bc1e3dc7ebef797cda634fd6527e732026735e
   impl_hash: sha256:0b51e71098485603e9d1e458ae3da281ce422f99986abe237fbb15432d243e72
-  ruleset_version: 2026-07-26.1
+  ruleset_version: 2026-07-30.1
   sources:
   - path: src/Sample.Pricing.Api/Workflows/ValuationWorkflow.cs
     start: 4

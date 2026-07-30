@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from docpipe.classify import load_ruleset
+from docpipe.classify import condition_values, load_ruleset
 from docpipe.config import load_config
 
 ROOT = Path(__file__).parent.parent
@@ -120,7 +120,14 @@ def test_bundle_ruleset_keeps_domain_entities_named_like_tests() -> None:
     любой каталог с таким именем. В наборе для АС CF они сужены до точки перед
     Test — то есть до каталогов тестовых проектов по конвенции .NET.
     """
-    globs = load_ruleset(BUNDLE_RULES).exclude.path_glob
+    # Через `condition_values`, а не по полю: набор может быть записан и краткой
+    # формой, и правилами с причинами, и вложенным `any`. Вопрос здесь про смысл
+    # («отсекается ли такой каталог»), и от формы записи он зависеть не должен.
+    globs = [
+        glob
+        for rule in load_ruleset(BUNDLE_RULES).exclude.rules
+        for glob in condition_values(rule.when, "path_glob")
+    ]
     assert "**/*Test/**" not in globs
     assert "**/*Tests/**" not in globs
     assert "**/*.Tests/**" in globs

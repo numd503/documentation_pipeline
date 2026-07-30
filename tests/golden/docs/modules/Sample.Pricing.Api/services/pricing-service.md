@@ -15,7 +15,7 @@ docpipe:
   team: null
   signature_hash: sha256:05cf41b6d0f4f482d6403b17ccca761c8a27fa815f5b04b552aad5bf70a6f2a6
   impl_hash: sha256:3e188468eec8292d750a44b5f96624e284134d787c96b7aa6ae3e2dd5f264408
-  ruleset_version: 2026-07-26.1
+  ruleset_version: 2026-07-30.1
   sources:
   - path: src/Sample.Pricing.Api/Services/PricingService.Calculations.cs
     start: 3

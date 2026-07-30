@@ -36,7 +36,7 @@ from docpipe.model import (
     ParserVersions,
     RunMeta,
 )
-from docpipe.stats import Stats, collect_stats
+from docpipe.stats import Stats, collect_stats, kind_counts
 from docpipe.tree import build_nodes
 
 DEFAULT_EXCLUDE = ["**/obj/**", "**/bin/**", "**/*.g.cs"]
@@ -326,7 +326,13 @@ def _counters(
     nodes: list[DocNode],
     modules: list[Module],
 ) -> dict[str, int]:
-    """Плоские счётчики для сидкара. Срезы туда не идут: они для человека, не для файла."""
+    """Плоские счётчики для сидкара. Срезы туда не идут: они для человека, не для файла.
+
+    `documented` дублирует сумму по видам намеренно: сидкар читают глазами и
+    из скриптов, и складывать виды вручную, чтобы сверить с `undecided`, значит
+    каждый раз заново решать, какие ключи считаются видами, а какие служебные.
+    """
+    kinds = kind_counts(statistics)
     return {
         "files": len(results),
         "parse_errors": sum(result.parse_errors for result in results),
@@ -335,5 +341,6 @@ def _counters(
         "modules": len(modules),
         "modules_enrolled": sum(1 for module in modules if module.enrolled),
         "nodes": len(nodes),
+        "documented": sum(kinds.values()),
         **statistics.counts,
     }

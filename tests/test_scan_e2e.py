@@ -51,11 +51,12 @@ def test_run_meta_is_valid(sample_solution: Path, tmp_path: Path) -> None:
     meta = RunMeta.model_validate_json(run_meta_path(out).read_text(encoding="utf-8"))
     assert meta.stats["nodes"] == 6
     assert meta.stats["symbols"] == 10
-    assert meta.stats["excluded"] == 1
+    assert meta.stats["documented"] == 6
+    assert meta.stats["not_documented"] == 1
     # Два интерфейса ушли в `interface_covered`: у обоих есть документируемая
-    # реализация, и в `unclassified` им не место — см. T20.
+    # реализация, и в `undecided` им не место — см. T20 и T23.
     assert meta.stats["interface_covered"] == 2
-    assert meta.stats["unclassified"] == 1
+    assert meta.stats["undecided"] == 1
     assert meta.parse_error_files == []
 
 

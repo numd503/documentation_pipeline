@@ -15,7 +15,7 @@ docpipe:
   team: null
   signature_hash: sha256:d5fc934fac3812b5ac007eefd293e5a03c183dcc5ba2a0616c11f71c9e887665
   impl_hash: sha256:7006712d45f5bc29c8408a7a2ce9dd08d32703a6ff025a07ddce5555255a2ae8
-  ruleset_version: 2026-07-26.1
+  ruleset_version: 2026-07-30.1
   sources:
   - path: src/Sample.Pricing.Api/Grid/RiskComputeService.cs
     start: 6

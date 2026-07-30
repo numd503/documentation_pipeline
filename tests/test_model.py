@@ -42,7 +42,7 @@ def _minimal_symbol() -> Symbol:
 
 def _minimal_manifest() -> Manifest:
     return Manifest(
-        ruleset_version="2026-07-26.1",
+        ruleset_version="2026-07-30.1",
         parser=PARSER_VERSIONS,
         modules=[
             Module(
