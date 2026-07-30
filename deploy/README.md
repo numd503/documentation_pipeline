@@ -95,7 +95,8 @@ SSL_CERT_FILE=/путь/до/corp-root-ca.pem ./deploy/install.sh <репози�
 ```bash
 cd $WORK/cfml/sbt.cms.cashflow/docs/ml/docspipe/cashflow-docspipe
 
-./run.sh stats        # срезы для настройки правил, ничего не пишет
+./run.sh stats        # состояние решений, ничего не пишет
+./run.sh symbols      # какие именно символы остались без решения
 ./run.sh scan         # построить манифест
 ./run.sh validate     # проверить построенное
 ```

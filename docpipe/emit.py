@@ -35,6 +35,7 @@ from docpipe.model import (
     Module,
     ParserVersions,
     RunMeta,
+    Symbol,
 )
 from docpipe.stats import Stats, collect_stats, kind_counts
 from docpipe.tree import build_nodes
@@ -195,11 +196,18 @@ def _outside_scope_results(
 
 @dataclass(frozen=True)
 class ScanResult:
-    """Всё, что даёт прогон. `stats` не входит в сидкар: срезы там не нужны."""
+    """Всё, что даёт прогон. `stats` не входит в сидкар: срезы там не нужны.
+
+    `index` — полный индекс символов, включая неклассифицированные и вне области.
+    В манифест они не попадают по определению, поэтому выборка символов
+    (`docpipe symbols`) без него невозможна: спрашивать «что осталось без решения»
+    у файла, куда попадает только решённое, бессмысленно.
+    """
 
     manifest: Manifest
     meta: RunMeta
     stats: Stats
+    index: dict[str, Symbol]
 
 
 def scan(
@@ -317,7 +325,7 @@ def run(
         ),
         parse_error_files=broken,
     )
-    return ScanResult(manifest=manifest, meta=meta, stats=statistics)
+    return ScanResult(manifest=manifest, meta=meta, stats=statistics, index=index)
 
 
 def _counters(

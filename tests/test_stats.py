@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 from docpipe.classify import load_ruleset
 from docpipe.cli import app
+from docpipe.config import DocpipeConfig
 from docpipe.emit import run, scan, write_manifest, write_run_meta
 from docpipe.model import DocNode, Manifest, Module, ParserVersions
 from docpipe.stats import (
@@ -241,6 +242,35 @@ def test_empty_blocks_format_to_nothing() -> None:
     assert format_kinds(empty) == ""
 
 
+def test_breakdown_marks_what_it_cut_off(sample_solution: Path) -> None:
+    """Обрезанный срез обязан сказать, что он обрезан.
+
+    На репозитории с сотнями проектов топ-15 выглядит полным списком, и половина
+    работы остаётся невидимой. Проверяется на `--top 0`: срез есть, показано ноль.
+    """
+    stats = run(sample_solution, DocpipeConfig(enrolled=["**"])).stats
+    cut = format_breakdown(stats, top=0)
+
+    assert "модули:" in cut
+    assert "и ещё 1 строка" in cut
+    assert "Sample.Pricing.Api" not in cut
+
+
+def test_breakdown_is_not_truncated_in_the_data(sample_solution: Path) -> None:
+    """Обрезка — дело вывода: `--top` иначе пришлось бы протаскивать до `run()`."""
+    stats = run(sample_solution).stats
+    assert stats.breakdown["модули"] == [("Sample.Pricing.Api", 1)]
+
+
+def test_top_flag_changes_how_much_is_shown(sample_solution: Path) -> None:
+    result = runner.invoke(
+        app, ["scan", "--root", str(sample_solution), "--stats", "--top", "0", "--no-cache"]
+    )
+
+    assert result.exit_code == 0
+    assert "и ещё" in result.output
+
+
 def test_plural_agrees_with_the_number() -> None:
     """«1 правил» в отчёте выглядит дефектом инструмента."""
     forms = [plural(n, "правило", "правила", "правил") for n in (1, 2, 5, 11, 21, 112)]
@@ -468,8 +498,6 @@ def test_not_enrolled_symbols_are_counted_separately(sample_solution: Path, tmp_
     «допишите правил». На semantic-kernel это 1597 символов из 1258 «непокрытых» —
     то есть счётчик состоял из них целиком и настраивать по нему было нельзя.
     """
-    from docpipe.config import DocpipeConfig
-
     config = DocpipeConfig(enrolled=["src/Sample.Pricing.Api/**"])
     stats = run(sample_solution, config).stats
 
@@ -480,7 +508,5 @@ def test_not_enrolled_symbols_are_counted_separately(sample_solution: Path, tmp_
 
 def test_breakdown_ignores_not_enrolled(sample_solution: Path) -> None:
     """Срезы подсказывают правила, поэтому неenrolled в них не место."""
-    from docpipe.config import DocpipeConfig
-
     stats = run(sample_solution, DocpipeConfig(enrolled=["src/Sample.Common/**"])).stats
     assert all("Pricing" not in name for rows in stats.breakdown.values() for name, _ in rows)

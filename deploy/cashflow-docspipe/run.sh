@@ -2,7 +2,8 @@
 #
 # Запуск docpipe на репозитории АС CF.
 #
-#     ./run.sh stats            # срезы для настройки правил, ничего не пишет
+#     ./run.sh stats            # состояние решений, ничего не пишет
+#     ./run.sh symbols [флаги]  # какие именно символы остались без решения
 #     ./run.sh scan             # построить манифест
 #     ./run.sh dry-run          # что изменилось бы, не записывая
 #     ./run.sh validate         # проверить готовый манифест
@@ -56,11 +57,16 @@ shift || true
 case "$MODE" in
     scan)     dp scan "${COMMON[@]}" --jobs "$JOBS" "$@" ;;
     stats)    dp scan "${COMMON[@]}" --jobs "$JOBS" --stats "$@" ;;
+    # Отладка набора правил на одном проекте:
+    #     ./run.sh symbols --module Sbt.Cashflow.Grid.Services.AutoConclusionService
+    #     ./run.sh symbols --state not_documented --rule generated.schemas
+    symbols)  dp symbols --root "$CF_ROOT" --config "$CONFIG" --rules "$RULES" \
+                  --jobs "$JOBS" "$@" ;;
     dry-run)  dp scan "${COMMON[@]}" --jobs "$JOBS" --dry-run "$@" ;;
     validate) dp validate "$OUT" "$@" ;;
     diff)     [ $# -ge 1 ] || { echo "Использование: run.sh diff <старый-манифест>" >&2; exit 2; }
               dp diff "$1" "$OUT" ;;
     --)       dp "$@" ;;
-    *)        echo "Неизвестный режим: $MODE. Доступны: stats, scan, dry-run, validate, diff, --" >&2
+    *)        echo "Неизвестный режим: $MODE. Доступны: stats, symbols, scan, dry-run, validate, diff, --" >&2
               exit 2 ;;
 esac
