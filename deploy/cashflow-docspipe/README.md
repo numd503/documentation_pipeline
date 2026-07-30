@@ -1,26 +1,53 @@
 # Настройка docpipe под АС CF
 
 Всё, что относится к этому проекту, лежит в этом каталоге: `docpipe.yaml`
-(где искать код), `rules.yaml` (что считать сервисом, контроллером, задачей
-кластера) и `run.sh` (запуск). Сам инструмент — уровнем выше и правке
-не подлежит: его обновляет `install.sh`.
+(где искать код) и `rules.yaml` (что считать сервисом, контроллером, задачей
+кластера). Сам инструмент — уровнем выше и правке не подлежит: его обновляет
+`install.sh`.
 
 Полный чек-лист настройки — в `CASHFLOW.md` репозитория разработки.
+
+## Переменные окружения
+
+Задать один раз в сессии; подставьте свои пути:
+
+```bash
+export CF_ROOT=$WORK/cfml/sbt.cms.cashflow      # корень репозитория АС CF
+export DOCPIPE=$CF_ROOT/docs/ml/docspipe        # каталог инструмента
+export BUNDLE=$DOCPIPE/cashflow-docspipe        # этот каталог: настройка под АС CF
+export PYTHONPATH=$DOCPIPE                      # нужен при установке с --no-install-project
+export OUT=$BUNDLE/artifacts/doc-tree.json      # манифест
+
+alias docpipe="uv run --no-sync --project $DOCPIPE python -m docpipe"
+```
+
+Три вещи, которые в этих строках существенны, а не просто длинны:
+
+- **`--no-sync`** — запуск не ходит в сеть. Без него `uv run` при каждом вызове
+  сверялся бы с индексом и на машине без доступа к нему падал бы на команде,
+  которая с зависимостями ничего не делает. Окружение поднимает `install.sh`.
+- **`python -m docpipe`, а не консольная команда `docpipe`** — работает и когда
+  пакет собран, и когда окружение поднято с `--no-install-project`. `PYTHONPATH`
+  нужен для второго случая: пакет лежит в дереве, но не в `site-packages`.
+- **`cd $CF_ROOT` перед вызовом** (ниже) — поле `out` в конфигурации задано
+  относительно **текущего каталога**, а не `--root`. Из другого каталога манифест
+  уедет в неожиданное место; либо переходите в корень, либо задавайте `--out $OUT`.
 
 ## Команды
 
 ```bash
-./run.sh stats            # состояние решений, ничего не пишет
-./run.sh symbols          # какие именно символы остались без решения
-./run.sh scan             # построить манифест
-./run.sh dry-run          # что изменилось бы, не записывая
-./run.sh validate         # проверить построенное
-./run.sh diff старый.json # сравнить с другим манифестом
-./run.sh -- version       # что угодно ещё, напрямую в docpipe
+cd $CF_ROOT
+
+docpipe scan --root . --config $BUNDLE/docpipe.yaml --jobs 4            # построить манифест
+docpipe scan --root . --config $BUNDLE/docpipe.yaml --stats            # состояние решений
+docpipe scan --root . --config $BUNDLE/docpipe.yaml --dry-run          # что изменилось бы
+docpipe symbols --root . --config $BUNDLE/docpipe.yaml                 # что осталось без решения
+docpipe validate $OUT                                                  # проверить построенное
+docpipe diff старый.json $OUT                                          # сравнить манифесты
+docpipe --help                                                         # все команды и флаги
 ```
 
-Переменные окружения: `JOBS` (по умолчанию 4), `OUT` (путь манифеста),
-`CF_ROOT` (корень репозитория, если раскладка отличается от описанной).
+`--rules` задавать не нужно: путь к `rules.yaml` прописан в `docpipe.yaml`.
 
 Результат прогона:
 
@@ -43,14 +70,14 @@ cd "$(git rev-parse --show-toplevel)"
 find . -name '*.csproj' -printf '%h\n' | cut -d/ -f2 | sort | uniq -c | sort -rn
 ```
 
-**2. Прогнать `./run.sh stats`** и посмотреть последнюю строку блока решений —
+**2. Прогнать `docpipe scan --root . --config $BUNDLE/docpipe.yaml --stats`** и посмотреть последнюю строку блока решений —
 «решение не принято». Под ней пять срезов: модули, окончания имён, базовые типы,
-атрибуты, namespace-ы. Модулей больше пятнадцати — `--top 40`.
+атрибуты, namespace-ы. Модулей больше пятнадцати — добавьте `--top 40`.
 
 **3. Взять самый крупный проект из среза «модули» и посмотреть, что в нём:**
 
 ```bash
-./run.sh symbols --module <имя-проекта>
+docpipe symbols --root . --config $BUNDLE/docpipe.yaml --module <имя-проекта>
 ```
 
 Команда печатает сами символы: замыкание наследования, атрибуты, публичные члены
@@ -60,13 +87,13 @@ find . -name '*.csproj' -printf '%h\n' | cut -d/ -f2 | sort | uniq -c | sort -rn
 **4. Проверить, что новое правило поймало именно то, что задумано:**
 
 ```bash
-./run.sh symbols --state documented --rule <id-правила>
-./run.sh symbols --state not_documented --rule <id-решения>
+docpipe symbols --root . --config $BUNDLE/docpipe.yaml --state documented    --rule <id-правила>
+docpipe symbols --root . --config $BUNDLE/docpipe.yaml --state not_documented --rule <id-решения>
 ```
 
 Правило, покрывающее 500 типов, полезнее пяти правил по десять. Останавливаться,
 когда «решение не принято» дойдёт до нуля или до остатка, который вы согласны держать;
-после этого закрепить: `./run.sh -- scan --fail-on-undecided`.
+после этого закрепить `--fail-on-undecided` в CI.
 
 ## Что проверить именно на этом репозитории
 

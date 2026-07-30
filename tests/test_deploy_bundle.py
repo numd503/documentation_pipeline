@@ -150,7 +150,6 @@ def test_bundle_ruleset_keeps_domain_entities_named_like_tests() -> None:
         "uv.toml.example",
         "cashflow-docspipe/docpipe.yaml",
         "cashflow-docspipe/rules.yaml",
-        "cashflow-docspipe/run.sh",
         "cashflow-docspipe/README.md",
     ],
 )
@@ -218,11 +217,29 @@ def test_shipped_lock_points_at_pypi() -> None:
     assert marker in (DEPLOY / "install.sh").read_text(encoding="utf-8")
 
 
-def test_run_script_never_touches_the_network() -> None:
-    """Запуск не должен требовать доступа к индексу пакетов.
+@pytest.mark.parametrize(
+    "relative",
+    ["README.md", "cashflow-docspipe/README.md", "cashflow-docspipe/docpipe.yaml"],
+)
+def test_documented_invocation_never_touches_the_network(relative: str) -> None:
+    """Инструкция по запуску обязана содержать `--no-sync`.
 
-    `uv run` без `--no-sync` сверяется с индексом на каждом вызове и на машине
-    без доступа к нему падает на команде, которая с зависимостями ничего
-    не делает.
+    `uv run` без него сверяется с индексом на каждом вызове и на машине без доступа
+    к нему падает — на команде, которая с зависимостями ничего не делает.
+
+    Раньше это проверялось по `run.sh`; скрипта больше нет, инструкция стала
+    единственным носителем требования, и проверять надо её. Иначе флаг тихо
+    выпадет при следующей правке документации, а обнаружится на закрытом контуре.
     """
-    assert "--no-sync" in (DEPLOY / "cashflow-docspipe" / "run.sh").read_text(encoding="utf-8")
+    assert "--no-sync" in (DEPLOY / relative).read_text(encoding="utf-8")
+
+
+def test_documented_invocation_works_in_both_install_modes() -> None:
+    """`python -m docpipe`, а не консольная команда: она есть не во всех режимах.
+
+    При установке с `--no-install-project` пакет не собирается, консольной команды
+    нет, и работает только вызов модулем — с `PYTHONPATH` на каталог инструмента.
+    """
+    text = (DEPLOY / "cashflow-docspipe" / "README.md").read_text(encoding="utf-8")
+    assert "python -m docpipe" in text
+    assert "PYTHONPATH" in text

@@ -1467,6 +1467,6 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv
   [`business-implementation-plan.md`](business-implementation-plan.md). Он переиспользует
   `document.py`, `template.py`, `plan.py` и `apply.py` целиком, поэтому единственное, что
   требуется от шага 2, — не привязывать их к .NET;
-- поставка шага 2 в репозиторий АС CF (`deploy/install.sh`, `run.sh`) — отдельным заходом,
+- поставка шага 2 в репозиторий АС CF (`deploy/install.sh`) — отдельным заходом,
   после проверки ядра на реальном репозитории;
 - парсеры Python и TypeScript.

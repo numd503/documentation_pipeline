@@ -4,11 +4,11 @@
 # каталога. Поэтому вручную команду запускают из корня репозитория:
 #
 #     cd $WORK/cfml/sbt.cms.cashflow
-#     uv run --project docs/ml/docspipe docpipe scan \
+#     uv run --no-sync --project docs/ml/docspipe python -m docpipe scan \
 #         --root . --config docs/ml/docspipe/cashflow-docspipe/docpipe.yaml
 #
-# Либо через ./run.sh из этого каталога — он подставляет абсолютные пути
-# и работает из любого места.
+# Переменные окружения и алиас, чтобы не набирать это каждый раз, — в README.md
+# рядом с этим файлом.
 
 # Корень обхода. Задаётся флагом `--root`; поле оставлено для совместимости.
 roots:

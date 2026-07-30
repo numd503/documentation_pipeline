@@ -146,7 +146,7 @@ uv sync --frozen --python 3.12.13
 
 Если `hatchling` недоступен — тот же вызов с `--no-install-project`: встанут только
 пять зависимостей, сам пакет собираться не будет. На то, как инструмент вызывается,
-это не влияет: `run.sh` работает в обоих режимах.
+это не влияет: вызов через `python -m docpipe` работает в обоих режимах.
 
 Проверка по возрастанию требовательности — важна именно последняя, она поднимает
 разбор, грамматику, модели и YAML разом:
@@ -154,8 +154,8 @@ uv sync --frozen --python 3.12.13
 ```bash
 PYTHONPATH=$BUNDLE uv run --no-sync --project $BUNDLE python -m docpipe version
 cd $BUNDLE/cashflow-docspipe
-./run.sh -- schema --out /tmp/schema.json      # pydantic жив
-./run.sh stats                                 # весь конвейер, ничего не пишет
+docpipe schema --out /tmp/schema.json                        # pydantic жив
+docpipe scan --root . --config $BUNDLE/docpipe.yaml --stats  # весь конвейер, ничего не пишет
 ```
 
 ## Шаг 7. Зафиксировать результат в клоне
