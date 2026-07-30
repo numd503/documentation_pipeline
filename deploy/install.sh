@@ -11,12 +11,13 @@
 #         --python /usr/bin/python3.12
 #
 # Кладёт в <репозиторий>/docs/ml/docspipe только то, что нужно для запуска:
-# пакет, манифест зависимостей без dev-группы, лок-файл и настройки под проект.
-# Тесты, фикстуры, план, журнал, ruff и mypy на целевую машину не попадают.
+# пакет, манифест зависимостей без dev-группы, лок-файл, настройки под проект
+# и шаблоны документов шага 2. Тесты, фикстуры, план, журнал, ruff и mypy
+# на целевую машину не попадают.
 #
 # Скрипт идемпотентен: повторный запуск обновляет код, но НЕ трогает уже
-# настроенные `docpipe.yaml`, `rules.yaml` и `uv.toml` — они кладутся рядом
-# как `*.new`. Затирать чужую настройку молча — худшее, что может сделать
+# настроенные `docpipe.yaml`, `rules.yaml`, `uv.toml` и шаблоны документов —
+# они кладутся рядом как `*.new`. Затирать чужую настройку молча — худшее, что может сделать
 # установщик.
 
 set -euo pipefail
@@ -133,6 +134,25 @@ keep_configured "$SOURCE/deploy/cashflow-docspipe/docpipe.yaml" \
 keep_configured "$SOURCE/deploy/cashflow-docspipe/rules.yaml" \
     "$DEST/cashflow-docspipe/rules.yaml" "cashflow-docspipe/rules.yaml"
 cp "$SOURCE/deploy/cashflow-docspipe/README.md" "$DEST/cashflow-docspipe/README.md"
+
+# --- шаблоны документов (шаг 2) ---------------------------------------------
+# Без этого каталога `docpipe materialize` падает на «Каталог шаблонов не найден»,
+# и по сообщению не видно, что виноват не путь, а поставка.
+#
+# Лежат в cashflow-docspipe, а не рядом с пакетом, потому что скелет документа —
+# настройка под проект ровно в той же мере, что и rules.yaml: его правят те же
+# люди и под тот же продукт. Отсюда и keep_configured — обновление инструмента
+# не имеет права затирать переписанный шаблон.
+#
+# ПУТЬ СЮДА ОБЯЗАН БЫТЬ В docpipe.yaml. Значение `templates` по умолчанию —
+# "templates" относительно ТЕКУЩЕГО каталога (как и `out`), а команды зовутся
+# из корня репозитория АС CF. То есть по умолчанию ищется $CF_ROOT/templates,
+# которого нет и не будет.
+mkdir -p "$DEST/cashflow-docspipe/templates/examples"
+for tpl in "$SOURCE"/templates/*.md "$SOURCE"/templates/examples/*.md; do
+    rel="${tpl#"$SOURCE"/templates/}"
+    keep_configured "$tpl" "$DEST/cashflow-docspipe/templates/$rel" "templates/$rel"
+done
 
 # --- настройки uv для закрытого контура -------------------------------------
 if [ -n "$INDEX" ]; then
