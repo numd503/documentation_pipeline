@@ -1,0 +1,1338 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>docpipe — пайплайн документации АС CF</title>
+<style>
+/* ────────────────────────────────────────────────────────────────────────────
+   Токены. Тема переопределяется на уровне токенов, а не компонентов:
+   компоненты знают только имена переменных.
+   ──────────────────────────────────────────────────────────────────────── */
+:root {
+  --paper:   #f3f5f2;
+  --paper-2: #fbfcfa;
+  --paper-3: #e9ece8;
+  --ink:     #15201e;
+  --ink-2:   #4b5755;
+  --ink-3:   #7e8886;
+  --rule:    rgba(21, 32, 30, .14);
+  --rule-2:  rgba(21, 32, 30, .32);
+  --det:     #0c6154;
+  --det-bg:  rgba(12, 97, 84, .09);
+  --agent:   #6a4b9a;
+  --agent-bg:rgba(106, 75, 154, .10);
+  --warn:    #99461f;
+  --warn-bg: rgba(153, 70, 31, .09);
+  --shadow:  0 1px 0 rgba(21,32,30,.05);
+
+  --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, "Times New Roman", serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper:   #0e1413;
+    --paper-2: #151d1b;
+    --paper-3: #1c2523;
+    --ink:     #e6ebe8;
+    --ink-2:   #a1acaa;
+    --ink-3:   #77817f;
+    --rule:    rgba(230, 235, 232, .16);
+    --rule-2:  rgba(230, 235, 232, .34);
+    --det:     #52c1ac;
+    --det-bg:  rgba(82, 193, 172, .12);
+    --agent:   #b39ce2;
+    --agent-bg:rgba(179, 156, 226, .13);
+    --warn:    #e08f68;
+    --warn-bg: rgba(224, 143, 104, .12);
+    --shadow:  0 1px 0 rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"] {
+  --paper:   #0e1413;
+  --paper-2: #151d1b;
+  --paper-3: #1c2523;
+  --ink:     #e6ebe8;
+  --ink-2:   #a1acaa;
+  --ink-3:   #77817f;
+  --rule:    rgba(230, 235, 232, .16);
+  --rule-2:  rgba(230, 235, 232, .34);
+  --det:     #52c1ac;
+  --det-bg:  rgba(82, 193, 172, .12);
+  --agent:   #b39ce2;
+  --agent-bg:rgba(179, 156, 226, .13);
+  --warn:    #e08f68;
+  --warn-bg: rgba(224, 143, 104, .12);
+  --shadow:  0 1px 0 rgba(0,0,0,.3);
+}
+:root[data-theme="light"] {
+  --paper:   #f3f5f2;
+  --paper-2: #fbfcfa;
+  --paper-3: #e9ece8;
+  --ink:     #15201e;
+  --ink-2:   #4b5755;
+  --ink-3:   #7e8886;
+  --rule:    rgba(21, 32, 30, .14);
+  --rule-2:  rgba(21, 32, 30, .32);
+  --det:     #0c6154;
+  --det-bg:  rgba(12, 97, 84, .09);
+  --agent:   #6a4b9a;
+  --agent-bg:rgba(106, 75, 154, .10);
+  --warn:    #99461f;
+  --warn-bg: rgba(153, 70, 31, .09);
+  --shadow:  0 1px 0 rgba(21,32,30,.05);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html {
+  font-size: clamp(12.5px, 0.60vw + 8.4px, 17px);
+  -webkit-text-size-adjust: 100%;
+}
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  line-height: 1.5;
+  font-feature-settings: "kern" 1;
+}
+
+/* ── Прогресс и HUD ─────────────────────────────────────────────────────── */
+.rail {
+  position: fixed; inset: 0 0 auto 0; height: 2px; z-index: 40;
+  background: var(--rule);
+}
+.rail-fill { height: 100%; width: 0; background: var(--det); transition: width .28s ease; }
+
+.hud {
+  position: fixed; inset: auto 0 0 0; z-index: 40;
+  display: flex; align-items: center; gap: 1.2rem;
+  padding: .55rem 2.2rem;
+  border-top: 1px solid var(--rule);
+  background: var(--paper);
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(8px);
+  font-family: var(--mono);
+  font-size: .7rem;
+  letter-spacing: .04em;
+  color: var(--ink-3);
+}
+.hud-section { text-transform: uppercase; white-space: nowrap; }
+.hud-dots { display: flex; gap: .28rem; margin-inline: auto; flex-wrap: wrap; }
+.dot {
+  width: 1.1rem; height: 1.1rem; padding: 0; border: 0; background: none;
+  cursor: pointer; position: relative;
+}
+.dot::after {
+  content: ""; position: absolute; inset: 50% 0 auto 0; height: 2px;
+  background: var(--rule-2); transform: translateY(-50%);
+  transition: background .2s ease, height .2s ease;
+}
+.dot[aria-current="true"]::after { background: var(--det); height: 4px; }
+.dot:hover::after { background: var(--ink-2); }
+.hud-count { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--ink-2); }
+.hud-btn {
+  font: inherit; color: var(--ink-2); background: none; cursor: pointer;
+  border: 1px solid var(--rule); padding: .12rem .5rem;
+}
+.hud-btn:hover { border-color: var(--rule-2); color: var(--ink); }
+:focus-visible { outline: 2px solid var(--det); outline-offset: 2px; }
+
+/* ── Слайд ──────────────────────────────────────────────────────────────── */
+.slide { display: none; }
+.slide.is-active {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 1.6rem;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 3.2rem clamp(1.6rem, 4.2vw, 5rem) 4.4rem;
+  align-content: start;
+  animation: rise .32s ease both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .slide.is-active { animation: none; }
+  .rail-fill { transition: none; }
+}
+
+.eyebrow {
+  font-family: var(--mono); font-size: .68rem; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--ink-3);
+  display: flex; align-items: baseline; gap: .8rem;
+  border-bottom: 1px solid var(--rule); padding-bottom: .5rem;
+}
+.eyebrow b { color: var(--det); font-weight: 600; }
+.eyebrow span { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+h1, h2 {
+  font-family: var(--mono); font-weight: 600; letter-spacing: -.02em;
+  text-wrap: balance; margin: .5rem 0 0;
+}
+h1 { font-size: clamp(2.1rem, 3.6vw, 3.3rem); line-height: 1.08; }
+h2 { font-size: clamp(1.35rem, 2.1vw, 1.95rem); line-height: 1.14; }
+.sub {
+  font-family: var(--serif); font-size: 1.06rem; color: var(--ink-2);
+  max-width: 62ch; margin: .7rem 0 0; line-height: 1.5;
+}
+h3 {
+  font-family: var(--mono); font-size: .74rem; font-weight: 600;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3);
+  margin: 0 0 .55rem;
+}
+p { margin: 0 0 .7rem; }
+p:last-child { margin-bottom: 0; }
+strong { font-weight: 600; }
+code {
+  font-family: var(--mono); font-size: .86em;
+  background: var(--paper-3); padding: .06em .3em; border-radius: 2px;
+}
+
+/* ── Раскладки ──────────────────────────────────────────────────────────── */
+.cols   { display: grid; gap: 1.4rem; align-content: start; }
+.c-2    { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.c-3    { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.c-2a   { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+.c-2b   { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); }
+.stack  { display: grid; gap: .9rem; align-content: start; }
+@media (max-width: 900px) {
+  .c-2, .c-3, .c-2a, .c-2b { grid-template-columns: minmax(0, 1fr); }
+}
+
+.card {
+  border: 1px solid var(--rule); background: var(--paper-2);
+  padding: 1rem 1.1rem; box-shadow: var(--shadow);
+}
+.card--flat { background: none; box-shadow: none; }
+.card--det   { border-left: 3px solid var(--det); }
+.card--agent { border-left: 3px solid var(--agent); }
+.card--warn  { border-left: 3px solid var(--warn); }
+
+.lede { font-size: 1rem; color: var(--ink-2); max-width: 68ch; }
+.small { font-size: .82rem; color: var(--ink-2); }
+.tiny  { font-size: .74rem; color: var(--ink-3); }
+
+/* ── Тезис ──────────────────────────────────────────────────────────────── */
+.thesis {
+  font-family: var(--serif); font-size: 1.12rem; line-height: 1.46;
+  color: var(--ink); border-left: 3px solid var(--det);
+  padding: .35rem 0 .35rem 1.1rem; max-width: 72ch;
+}
+.thesis em { color: var(--det); font-style: italic; }
+
+/* ── Списки ─────────────────────────────────────────────────────────────── */
+ul.ticks { list-style: none; margin: 0; padding: 0; display: grid; gap: .5rem; }
+ul.ticks li { position: relative; padding-left: 1.35rem; font-size: .92rem; }
+ul.ticks li::before {
+  content: "→"; position: absolute; left: 0; top: -.05em;
+  font-family: var(--mono); color: var(--det); font-size: .9em;
+}
+ul.ticks.neg li::before { content: "×"; color: var(--warn); }
+ul.ticks.todo li::before { content: "□"; color: var(--ink-3); }
+ul.ticks.done li::before { content: "▣"; color: var(--det); }
+
+ol.steps { list-style: none; margin: 0; padding: 0; counter-reset: st; display: grid; gap: .55rem; }
+ol.steps li {
+  counter-increment: st; position: relative; padding-left: 2.1rem; font-size: .9rem;
+}
+ol.steps li::before {
+  content: counter(st, decimal-leading-zero);
+  position: absolute; left: 0; top: .05em;
+  font-family: var(--mono); font-size: .74rem; color: var(--det);
+  font-variant-numeric: tabular-nums;
+}
+
+dl.defs { margin: 0; display: grid; gap: .85rem; }
+dl.defs dt {
+  font-family: var(--mono); font-size: .82rem; font-weight: 600; color: var(--ink);
+}
+dl.defs dd { margin: .15rem 0 0; font-size: .87rem; color: var(--ink-2); }
+
+/* ── Таблицы ────────────────────────────────────────────────────────────── */
+.tw { overflow-x: auto; }
+table {
+  border-collapse: collapse; width: 100%; font-size: .84rem;
+  font-variant-numeric: tabular-nums;
+}
+th {
+  text-align: left; font-family: var(--mono); font-weight: 600;
+  font-size: .68rem; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-3); border-bottom: 1px solid var(--rule-2);
+  padding: 0 .8rem .4rem 0; vertical-align: bottom;
+}
+td {
+  padding: .42rem .8rem .42rem 0; border-bottom: 1px solid var(--rule);
+  vertical-align: top; color: var(--ink-2);
+}
+td:first-child { color: var(--ink); }
+tr:last-child td { border-bottom: 0; }
+td.n { text-align: right; font-family: var(--mono); white-space: nowrap; }
+td.k, th.k { font-family: var(--mono); font-size: .78rem; white-space: nowrap; }
+
+/* ── Код ────────────────────────────────────────────────────────────────── */
+pre {
+  margin: 0; overflow-x: auto; font-family: var(--mono);
+  font-size: .74rem; line-height: 1.55; color: var(--ink-2);
+  background: var(--paper-2); border: 1px solid var(--rule);
+  padding: .8rem .9rem; tab-size: 2;
+}
+pre b   { color: var(--ink); font-weight: 600; }
+pre i   { color: var(--ink-3); font-style: normal; }
+pre u   { color: var(--det); text-decoration: none; }
+pre s   { color: var(--warn); text-decoration: none; }
+pre.plain { background: none; border: 0; padding: 0; }
+
+/* ── Метки ──────────────────────────────────────────────────────────────── */
+.tag {
+  display: inline-block; font-family: var(--mono); font-size: .64rem;
+  letter-spacing: .1em; text-transform: uppercase; padding: .12rem .45rem;
+  border: 1px solid currentColor; color: var(--ink-3); white-space: nowrap;
+}
+.tag--det   { color: var(--det);   background: var(--det-bg); }
+.tag--agent { color: var(--agent); background: var(--agent-bg); }
+.tag--warn  { color: var(--warn);  background: var(--warn-bg); }
+.tag--done  { color: var(--det);   background: var(--det-bg); }
+.tag--wip   { color: var(--warn);  background: var(--warn-bg); }
+.tag--none  { color: var(--ink-3); }
+
+/* ── Показатели ─────────────────────────────────────────────────────────── */
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+.stat { background: var(--paper-2); padding: .9rem 1rem; }
+.stat b {
+  display: block; font-family: var(--mono); font-size: clamp(1.3rem, 2vw, 1.85rem);
+  font-weight: 600; letter-spacing: -.02em; color: var(--ink);
+  font-variant-numeric: tabular-nums; line-height: 1.1;
+}
+.stat span { display: block; margin-top: .3rem; font-size: .76rem; color: var(--ink-3); }
+@media (max-width: 900px) { .stats { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+
+/* ── Диаграмма пайплайна ────────────────────────────────────────────────── */
+.pipe { display: grid; grid-template-columns: 2.4rem minmax(0, 1.15fr) minmax(0, 1fr); gap: .6rem; align-items: stretch; }
+.band {
+  writing-mode: vertical-rl; text-orientation: mixed;
+  font-family: var(--mono); font-size: .64rem; letter-spacing: .14em;
+  text-transform: uppercase; display: grid; place-items: center;
+  border: 1px solid currentColor; padding: .4rem 0;
+}
+.band--det   { color: var(--det);   background: var(--det-bg);   grid-row: span 2; }
+.band--agent { color: var(--agent); background: var(--agent-bg); }
+.pbox {
+  border: 1px solid var(--rule-2); background: var(--paper-2); padding: .7rem .9rem;
+  display: grid; gap: .2rem; align-content: center;
+}
+.pbox .n { font-family: var(--mono); font-size: .66rem; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+.pbox b  { font-family: var(--mono); font-size: .96rem; }
+.pbox em { font-style: normal; font-size: .8rem; color: var(--ink-2); }
+.pout {
+  display: grid; gap: .18rem; align-content: center; padding: .7rem 0 .7rem 1.4rem;
+  position: relative; font-size: .8rem; color: var(--ink-2);
+}
+.pout::before {
+  content: "──▶"; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  font-family: var(--mono); color: var(--ink-3); font-size: .72rem;
+}
+.pout code { background: none; padding: 0; color: var(--ink); font-size: .84rem; }
+@media (max-width: 900px) {
+  .pipe { grid-template-columns: minmax(0,1fr); }
+  .band { writing-mode: horizontal-tb; grid-row: auto !important; padding: .25rem; }
+  .pout::before { content: "▼"; left: 0; top: 0; transform: none; }
+  .pout { padding: .5rem 0 .5rem 1.4rem; }
+}
+
+/* ── Цепочка ────────────────────────────────────────────────────────────── */
+.chain { display: grid; gap: .5rem; }
+.link { display: grid; grid-template-columns: 8.5rem minmax(0,1fr); gap: .9rem; align-items: start; padding: .6rem 0; border-top: 1px solid var(--rule); }
+.link:first-child { border-top: 0; }
+.link .who { font-family: var(--mono); font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); padding-top: .15rem; }
+.link .what { font-size: .88rem; }
+.link .what b { font-family: var(--mono); font-size: .9rem; }
+.link .what em { font-style: normal; display: block; color: var(--ink-2); font-size: .82rem; margin-top: .15rem; }
+@media (max-width: 900px) { .link { grid-template-columns: minmax(0,1fr); } }
+
+/* ── Зоны документа ─────────────────────────────────────────────────────── */
+.doc { display: grid; gap: .35rem; }
+.zone { border-left: 3px solid var(--rule-2); padding-left: .8rem; }
+.zone--tool   { border-left-color: var(--det); }
+.zone--state  { border-left-color: var(--ink-3); }
+.zone--gen    { border-left-color: var(--det); }
+.zone--author { border-left-color: var(--agent); }
+.zone-label {
+  font-family: var(--mono); font-size: .64rem; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--ink-3); margin-bottom: .2rem;
+  display: flex; gap: .5rem; align-items: baseline;
+}
+.zone--tool .zone-label b, .zone--gen .zone-label b { color: var(--det); font-weight: 600; }
+.zone--author .zone-label b { color: var(--agent); font-weight: 600; }
+
+/* ── Титул ──────────────────────────────────────────────────────────────── */
+.title-slide.is-active { align-content: center; grid-template-rows: auto; gap: 0; }
+.title-wrap { display: grid; gap: 1.6rem; max-width: 74rem; }
+.title-mark {
+  font-family: var(--mono); font-size: .72rem; letter-spacing: .28em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.title-slide h1 { font-size: clamp(2.4rem, 5vw, 4.4rem); margin: 0; }
+.title-rule { height: 1px; background: var(--rule-2); }
+.hint {
+  font-family: var(--mono); font-size: .7rem; color: var(--ink-3);
+  letter-spacing: .05em;
+}
+
+/* ── Печать ─────────────────────────────────────────────────────────────── */
+@media print {
+  :root { --paper: #fff; --paper-2: #fff; --paper-3: #f1f1ef; }
+  html { font-size: 11px; }
+  .rail, .hud { display: none !important; }
+  .slide { display: grid !important; min-height: auto; break-after: page; padding: 1.2cm; animation: none; }
+  .slide:last-child { break-after: auto; }
+  .card, pre { box-shadow: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="rail"><div class="rail-fill" id="rail"></div></div>
+
+<!-- ═══ 01 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide title-slide is-active" data-section="Обзор">
+  <div class="title-wrap">
+    <div class="title-mark">docpipe · пайплайн технической документации</div>
+    <h1>Документация,<br>собранная из кода<br>и проверяемая как код</h1>
+    <div class="title-rule"></div>
+    <p class="sub">Три шага. Первые два детерминированы и покрыты тестами: одинаковый вход даёт
+      побайтово одинаковый выход. Третий — агент, и он единственный, кто пишет текст.
+      Граница между ними проведена один раз и дальше не сдвигается.</p>
+    <div class="stats">
+      <div class="stat"><b>1 &amp; 2</b><span>шага закончены, шаг 3 — впереди</span></div>
+      <div class="stat"><b>887</b><span>тестов</span></div>
+      <div class="stat"><b>11 850</b><span>файлов на 4 открытых репозиториях, ноль падений</span></div>
+      <div class="stat"><b>17 988</b><span>файлов .cs в АС CF, 491 проект</span></div>
+    </div>
+    <p class="hint">→ / ← — листать · P — печать в PDF · T — тема</p>
+  </div>
+</section>
+
+<!-- ═══ 02 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Постановка">
+  <div class="eyebrow"><b>Постановка</b> зачем это вообще <span>02</span></div>
+  <div class="stack">
+    <h2>Три способа документировать большой проект, и почему нужен четвёртый</h2>
+    <div class="cols c-3">
+      <div class="card card--warn">
+        <h3>Писать руками</h3>
+        <p class="small">Документ устаревает в момент мержа PR, который его не открывал.
+          На 491 проекте никто не удержит соответствие, и через год документации
+          не доверяют — а значит, её не читают.</p>
+      </div>
+      <div class="card card--warn">
+        <h3>Сгенерировать целиком</h3>
+        <p class="small">DocFX и подобные пересказывают сигнатуры. Получается зеркало кода:
+          формально полное, практически бесполезное — на вопрос «зачем этот сервис»
+          оно не отвечает.</p>
+      </div>
+      <div class="card card--warn">
+        <h3>Отдать всё LLM</h3>
+        <p class="small">Недетерминированно и невоспроизводимо: два прогона дают разное,
+          ревьюить нечего, а на каждом прогоне агент обходит всё дерево заново —
+          это тысячи документов и соответствующий счёт.</p>
+      </div>
+    </div>
+    <div class="cols c-2a">
+      <div class="card">
+        <h3>Требования постановки</h3>
+        <ul class="ticks">
+          <li>документация <strong>генерируется из кода</strong>, а не пишется отдельно от него;</li>
+          <li>имеет <strong>понятную структуру</strong>, одинаковую для всех сущностей одного вида;</li>
+          <li><strong>описывает, а не пересказывает</strong> код;</li>
+          <li>содержит <strong>ссылки до конкретной реализации</strong> — файл и строки.</li>
+        </ul>
+      </div>
+      <div class="stack">
+        <div class="thesis">Решение «этот класс — контроллер» принимает <em>правило из YAML</em>.
+          Решение «что этот контроллер делает» принимает <em>агент</em>.</div>
+        <p class="small">Отсюда всё остальное. Структура, пути, состав документов и признак
+          «устарел ли документ» считаются детерминированно и проверяются побайтовым
+          сравнением. Агенту остаётся ровно то, что нельзя вычислить, — смысл.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 03 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Архитектура">
+  <div class="eyebrow"><b>Архитектура</b> три шага и граница <span>03</span></div>
+  <div class="stack">
+    <h2>Пайплайн: чистая функция, идемпотентная запись, агент</h2>
+    <div class="pipe">
+      <div class="band band--det"><span>детерминированно · правила</span></div>
+      <div class="pbox">
+        <span class="n">Шаг 1 · закончен</span>
+        <b>docpipe scan</b>
+        <em>обход исходников, разбор C# через tree-sitter, классификация правилами</em>
+      </div>
+      <div class="pout"><code>doc-tree.json</code><span>манифест: что документировать и где это лежит</span></div>
+
+      <div class="pbox">
+        <span class="n">Шаг 2 · закончен</span>
+        <b>docpipe materialize</b>
+        <em>создание и обновление .md по манифесту, статусы, приёмка</em>
+      </div>
+      <div class="pout"><code>docs/**/*.md</code><span>документы с зонами: служебной, генерируемой, авторской</span></div>
+
+      <div class="band band--agent"><span>агент</span></div>
+      <div class="pbox">
+        <span class="n">Шаг 3 · не начат</span>
+        <b>агент + tools</b>
+        <em>читает код по ссылкам из манифеста и наполняет секции</em>
+      </div>
+      <div class="pout"><code>наполненные документы</code><span>текст, который человек ревьюит в PR</span></div>
+    </div>
+    <div class="cols c-3">
+      <div class="card card--det">
+        <h3>Шаг 1 — без сайд-эффектов</h3>
+        <p class="small">Не создаёт каталогов, не пишет <code>.md</code>, не вызывает LLM,
+          не читает существующую документацию. Один вход — один манифест, побайтово
+          воспроизводимый.</p>
+      </div>
+      <div class="card card--det">
+        <h3>Шаг 2 — никогда не удаляет</h3>
+        <p class="small">Затирает только то, что принадлежит инструменту. Авторский текст,
+          чужие ключи front matter и всё остальное в теле переживают любой прогон.
+          Ни один сценарий не удаляет файл.</p>
+      </div>
+      <div class="card card--agent">
+        <h3>Шаг 3 — единственный недетерминированный</h3>
+        <p class="small">Работает по очереди, которую выдаёт шаг 2, а не по всему дереву.
+          Что именно устарело — уже посчитано, агенту не нужно это выяснять.</p>
+      </div>
+    </div>
+    <p class="small">Отдельно от трёх шагов стоит <strong>бизнес-слой</strong>: процессы и сущности,
+      которые из кода не выводятся и пишутся аналитиками. Он связан с технической
+      документацией по якорю, а не по имени класса — слайд 10.</p>
+  </div>
+</section>
+
+<!-- ═══ 04 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Архитектура">
+  <div class="eyebrow"><b>Воркфлоу</b> как это будет работать в CI <span>04</span></div>
+  <div class="stack">
+    <h2>Цикл обновления: от мержа кода до принятого документа</h2>
+    <div class="cols c-2a">
+      <div class="card">
+        <h3>Что происходит после изменения кода</h3>
+        <ol class="steps">
+          <li><b>Разработчик мержит PR.</b> Документацию он не трогал.</li>
+          <li><code>docpipe scan</code> — новый манифест. Он детерминирован, поэтому
+            коммитится и читается в диффе как обычный файл.</li>
+          <li><code>docpipe diff old new</code> — что изменилось:
+            <code>added</code>, <code>removed</code>, <code>reclassified</code>,
+            <code>moved</code>, <code>signature_changed</code>. На узел — одно, самое существенное.</li>
+          <li><code>docpipe materialize</code> — новые скелеты, автоперенос переехавших
+            документов, пересборка генерируемых блоков. Авторский текст не тронут.</li>
+          <li><code>docs status --format json</code> — <strong>очередь для агента</strong>:
+            по каждому документу решение <code>write</code> / <code>review</code> / <code>skip</code>
+            и причина.</li>
+          <li><b>Агент шага 3</b> наполняет только секции. Front matter не трогает.</li>
+          <li><code>docs accept</code> — зафиксировать соответствие коду: хэши берутся
+            из манифеста, а не из документа.</li>
+          <li><b>PR с документацией → ревью человеком → мерж.</b> Агент не мержит сам.</li>
+        </ol>
+      </div>
+      <div class="stack">
+        <div class="card card--det">
+          <h3>Ворота в CI</h3>
+          <pre>docpipe docs status manifest.json \
+    --fail-on broken \
+    --fail-on stale</pre>
+          <p class="small" style="margin-top:.6rem">Код возврата 1 — сборка красная.
+            Значение вне перечня статусов — ошибка, а не пустой фильтр: опечатка
+            <code>--fail-on statle</code> иначе дала бы вечно зелёную проверку.</p>
+        </div>
+        <div class="card">
+          <h3>Почему это дёшево</h3>
+          <p class="small"><code>signature_hash</code> не включает номера строк и пути.
+            Переформатирование файла не создаёт работы. На большом проекте это разница
+            между «агент обходит 4000 документов» и «агент обходит 30».</p>
+          <p class="small">Прогон шага 1 — <strong>десятки секунд</strong>: ABP целиком
+            (671 проект, 3,9 ГБ) — 9,7 с, с тёплым кэшем 2,8 с. Ожидание по АС CF —
+            около 11 с при <code>--jobs 4</code>.</p>
+        </div>
+        <div class="card card--warn">
+          <h3>Чего в цикле нет намеренно</h3>
+          <p class="small">Автомержа документации, генерации индексов «для людей»
+            и правки кода агентом. Документация лежит в репозитории набором
+            <code>.md</code>; навигацию даёт файловое дерево и поиск.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 05 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Шаги">
+  <div class="eyebrow"><b>Шаг 1</b> docpipe scan <span>05</span></div>
+  <div class="stack">
+    <h2>Из исходников — в манифест, без сборки решения</h2>
+    <div class="cols c-2b">
+      <div class="stack">
+        <div class="card card--flat">
+          <h3>Поток данных</h3>
+          <pre class="plain">  <b>discovery</b>  обход ФС, ignore-правила, scope
+      │
+      ├─▶ <b>csproj / sln</b>  ──▶ граф модулей: TFM, ссылки
+      │
+      └─▶ <b>cache</b> ──промах──▶ <b>parser</b> ──▶ FileParseResult
+             │                        │
+             └──попадание─────────────┤
+                                      ▼
+                                  <b>resolve</b> ──▶ индекс символов
+                                      │        + замыкание наследования
+                                      ▼
+              endpoints ──▶       <b>classify</b>   ◀── rules/dotnet.yaml
+                     di ──▶           │
+                                      ▼
+                                    <b>tree</b>  ──▶ узлы, пути, связи
+                                      │
+                                      ▼
+                                    <b>emit</b>  ──▶ <u>doc-tree.json</u>
+                                                 <i>doc-tree.run.json</i></pre>
+        </div>
+        <p class="small">Дорог только разбор. Классификации нужен не весь манифест,
+          а <strong>индекс символов всего решения</strong> — он на порядки меньше и кэшируется.
+          Отсюда главное свойство: можно перепарсить один модуль, а классификацию
+          прогнать по полному графу и получить тот же результат, что даёт полный скан.</p>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h3>tree-sitter, а не Roslyn</h3>
+          <div class="tw"><table>
+            <tr><th></th><th>tree-sitter</th><th>Roslyn</th></tr>
+            <tr><td>Зависимости</td><td>pip wheel</td><td>.NET SDK + restore</td></tr>
+            <tr><td>Сырой checkout</td><td>работает</td><td>нужна сборка</td></tr>
+            <tr><td>Скорость</td><td>секунды</td><td>минуты</td></tr>
+            <tr><td>Сломанный код</td><td>переживает</td><td>нет</td></tr>
+            <tr><td>Семантика</td><td>нет</td><td>полная</td></tr>
+          </table></div>
+          <p class="small" style="margin-top:.7rem">Семантика для <strong>структуры</strong> почти не нужна:
+            классификация идёт по атрибутам, базовым типам и конвенциям имён — это синтаксис.
+            Цепочки наследования внутри решения достраиваются по индексу символов.</p>
+        </div>
+        <div class="card card--det">
+          <h3>Два режима, и оба честны</h3>
+          <p class="small"><strong>Инкрементальный</strong> (по умолчанию): хэшируются все файлы,
+            перепарсиваются изменённые. Результат <em>по построению</em> совпадает с полным сканом.</p>
+          <p class="small"><strong>Скоуп</strong> (<code>--scope</code>): ABP — 2,1 с вместо 10,2 с.
+            Изменение <em>вне</em> скоупа он не увидит, поэтому манифест помечен
+            <code>partial</code>, а источником истины в CI остаётся полный прогон.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 06 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Шаги">
+  <div class="eyebrow"><b>Шаг 1</b> манифест <span>06</span></div>
+  <div class="stack">
+    <h2>Узел — это один тип и один будущий документ</h2>
+    <div class="cols c-2b">
+      <div class="stack">
+        <pre>{
+  "<b>id</b>": "type:src/…/Sample.Pricing.Api.csproj#…PricingController`0",
+  "<b>kind</b>": "controller",  "template": "controller",
+  "<b>doc_path</b>": "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md",
+  "<b>matched_rules</b>": ["controller.aspnet"],       <i>// все совпавшие, для аудита</i>
+  "<b>signature_hash</b>": "sha256:0e29455f…",         <i>// контракт</i>
+  "<b>impl_hash</b>":      "sha256:74ba5471…",         <i>// тело</i>
+  "symbol": { "fqn": …, "sources": [ … ], "members": [ … ] },
+  "endpoints":    [ {"http_method": "GET", "route": "api/v1/Pricing/{id:guid}",
+                     "member": "GetAsync", "line": 18} ],
+  "dependencies": [ {"target": "…IPricingService", "via": "constructor",
+                     "confidence": "high"} ]
+}</pre>
+        <div class="cols c-2">
+          <div class="card card--det">
+            <h3>doc-tree.json — манифест</h3>
+            <p class="small">Ни времени, ни хоста, ни абсолютных путей.
+              Два прогона дают побайтово одинаковый файл, поэтому тест на детерминизм —
+              обычный <code>diff</code>, без логики «сравнить, игнорируя поля».</p>
+          </div>
+          <div class="card">
+            <h3>doc-tree.run.json — сидкар</h3>
+            <p class="small">Всё недетерминированное: время, хост, длительность,
+              счётчики и <code>parse_error_files</code> — единственный признак того,
+              что тип исчез при разборе.</p>
+          </div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h3>Идентичность</h3>
+          <p class="small"><strong>Узел — не файл и не проект.</strong> <code>partial</code>-класс
+            из трёх файлов даёт один узел; файл с пятью классами — до пяти.</p>
+          <p class="small"><code>id</code> = <strong>модуль + FQN + арность дженерика</strong>.
+            Одного FQN мало: на ABP — 255 коллизий на 9075 объявлений. Имена проектов
+            тоже не уникальны (39 повторов), поэтому идентификатор модуля строится
+            от пути, а не от имени.</p>
+        </div>
+        <div class="card card--det">
+          <h3>Два хэша — два уровня приоритета</h3>
+          <div class="tw"><table>
+            <tr><th class="k">хэш</th><th>что ловит</th><th>решение</th></tr>
+            <tr><td class="k">signature_hash</td><td>сменился публичный контракт</td><td><span class="tag tag--warn">write</span></td></tr>
+            <tr><td class="k">impl_hash</td><td>переписано тело при том же контракте</td><td><span class="tag">review</span></td></tr>
+          </table></div>
+          <p class="small" style="margin-top:.7rem">Ни один из них не включает номера строк
+            и пути. Иначе переформатирование файла заставило бы агента перегенерировать
+            документ впустую — и вся экономия пропала бы.</p>
+        </div>
+        <div class="card card--flat">
+          <h3>Ссылки до реализации</h3>
+          <p class="small"><code>symbol.sources[]</code> — список: путь плюс строки, у каждого
+            члена свой <code>line</code>, у эндпоинта тоже. Это и закрывает требование
+            постановки о ссылках на конкретное место в коде.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 07 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Шаги">
+  <div class="eyebrow"><b>Шаг 2</b> materialize · зоны документа <span>07</span></div>
+  <div class="stack">
+    <h2>Документ принадлежит двум авторам сразу</h2>
+    <div class="cols c-2b">
+      <div class="doc">
+        <div class="zone zone--tool">
+          <div class="zone-label"><b>инструмент</b> · перезаписывается всегда</div>
+          <pre>---
+docpipe:
+  schema: materialize/1
+  node_id: type:src/…#…PricingController`0
+  kind: controller     template: controller
+  module: Sample.Pricing.Api
+  signature_hash: sha256:0e29455f…
+  impl_hash:      sha256:74ba5471…
+  sources:
+  - path: src/…/Controllers/PricingController.cs
+    start: 8   end: 26</pre>
+        </div>
+        <div class="zone zone--state">
+          <div class="zone-label"><b>docs accept</b> · только приёмка</div>
+          <pre>docpipe_state:
+  accepted: null
+  review: null
+---</pre>
+        </div>
+        <div class="zone zone--gen">
+          <div class="zone-label"><b>инструмент</b> · пересобирается всегда</div>
+          <pre>&lt;!-- docpipe:generated:start --&gt;
+<b>### HTTP-эндпоинты</b>
+| Метод | Маршрут              | Член              | Строка |
+| GET   | api/v1/Pricing/{id}  | GetAsync          | 18     |
+<b>### Зависимости</b>
+| IPricingService | constructor | <u>PricingService</u> — реализация |
+&lt;!-- docpipe:generated:end --&gt;</pre>
+        </div>
+        <div class="zone zone--author">
+          <div class="zone-label"><b>агент и человек</b> · не затирается никогда</div>
+          <pre>## Назначение
+
+&lt;!-- docpipe:section:start purpose --&gt;
+&lt;!-- Зачем этот контроллер существует. 2–5 предложений. --&gt;
+&lt;!-- docpipe:section:end purpose --&gt;</pre>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card card--det">
+          <h3>Инвариант, на котором всё стоит</h3>
+          <pre class="plain"><b>assemble(parse_document(t)) == t</b>   <i>байт в байт</i></pre>
+          <p class="small" style="margin-top:.6rem">Разбор документа обратим. Поэтому
+            «затереть только своё» — не аккуратность реализации, а проверяемое свойство.</p>
+        </div>
+        <div class="card">
+          <h3>Правило записи</h3>
+          <div class="tw"><table>
+            <tr><th>зона</th><th>при materialize</th></tr>
+            <tr><td class="k">docpipe:</td><td>перезаписывается</td></tr>
+            <tr><td class="k">docpipe_state:</td><td>сохраняется</td></tr>
+            <tr><td class="k">чужие ключи front matter</td><td>сохраняются</td></tr>
+            <tr><td class="k">generated-блок</td><td>пересобирается</td></tr>
+            <tr><td class="k">section-блоки</td><td><strong>никогда не затираются</strong></td></tr>
+            <tr><td class="k">всё прочее в теле</td><td>сохраняется дословно</td></tr>
+          </table></div>
+        </div>
+        <div class="card card--warn">
+          <h3>Две вещи, которые ломаются молча</h3>
+          <p class="small"><strong>Подсказки в шаблонах — только HTML-комментарии.</strong>
+            «Секция пуста» = «после удаления комментариев ничего не осталось».
+            Обычный текст сделал бы каждый новый документ уже написанным, и агент
+            обошёл бы всё дерево впустую.</p>
+          <p class="small"><strong>Сравнение «писать или нет» — по нормализованному тексту.</strong>
+            Иначе на репозитории с <code>core.autocrlf=true</code> каждый документ
+            оказался бы изменённым при каждом прогоне.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 08 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Шаги">
+  <div class="eyebrow"><b>Шаг 2</b> статусы, приёмка, переносы <span>08</span></div>
+  <div class="stack">
+    <h2>«Что делать с этим документом» — вычисляется, а не решается агентом</h2>
+    <div class="cols c-2a">
+      <div class="card">
+        <h3>Статус описывает содержимое, решение — что делать</h3>
+        <div class="tw"><table>
+          <tr><th>условие</th><th>статус</th><th>решение</th></tr>
+          <tr><td>файла нет</td><td class="k">missing</td><td><span class="tag tag--warn">write</span></td></tr>
+          <tr><td>есть пустые секции</td><td class="k">empty</td><td><span class="tag tag--warn">write</span></td></tr>
+          <tr><td><code>signature_hash</code> ≠ принятого</td><td class="k">stale</td><td><span class="tag tag--warn">write</span></td></tr>
+          <tr><td>приёмки не было, а текст есть</td><td class="k">undeclared</td><td><span class="tag">review</span></td></tr>
+          <tr><td>документ перенесён</td><td class="k">relocated</td><td><span class="tag">review</span></td></tr>
+          <tr><td>принятый <code>kind</code> ≠ текущего</td><td class="k">drifted</td><td><span class="tag">review</span></td></tr>
+          <tr><td><code>impl_hash</code> ≠ принятого</td><td class="k">drifted</td><td><span class="tag">review</span></td></tr>
+          <tr><td>иначе</td><td class="k">current</td><td><span class="tag tag--det">skip</span></td></tr>
+        </table></div>
+        <p class="tiny" style="margin-top:.6rem">Плюс два статуса не про содержимое:
+          <code>broken</code> — структуру прочитать не удалось, файл не тронут;
+          <code>orphan</code> — узла с таким <code>node_id</code> в манифесте нет.
+          Порядок фиксирован, первое сработавшее выигрывает.</p>
+      </div>
+      <div class="stack">
+        <div class="card card--det">
+          <h3>Автоперенос: код переехал, текст остался</h3>
+          <div class="tw"><table>
+            <tr><th>уверенность</th><th>признак</th><th>действие</th></tr>
+            <tr><td class="k">exact</td><td><code>node_id</code> совпал</td><td>перенос</td></tr>
+            <tr><td class="k">high</td><td>пересеклись источники или совпал <code>impl_hash</code>, пара единственная</td><td>перенос</td></tr>
+            <tr><td class="k">probable</td><td>кандидатов несколько</td><td><code>docs adopt</code> вручную</td></tr>
+            <tr><td class="k">—</td><td>признаков нет</td><td>остаётся <code>orphan</code></td></tr>
+          </table></div>
+          <p class="tiny" style="margin-top:.6rem">Ссылки на переехавший документ из других
+            документов чинятся сами: генерируемые блоки пересобираются в том же прогоне.</p>
+        </div>
+        <div class="card card--warn">
+          <h3>Два правила приёмки, которые неочевидны</h3>
+          <p class="small"><code>accept</code> берёт хэши <strong>из манифеста</strong>, а не из
+            front matter: тот — зеркало и мог отстать. Приняв его значение, документ навсегда
+            остался бы <code>current</code>, будучи <code>stale</code>.</p>
+          <p class="small">Приёмка идёт через <strong>тот же план и ту же запись</strong>, что и
+            обычный прогон. Отдельный путь записи — это вторая реализация слияния зон,
+            и она разойдётся с первой на первом же документе с чужими ключами.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 09 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Шаги">
+  <div class="eyebrow"><b>Шаг 3</b> агент · не начат <span>09</span></div>
+  <div class="stack">
+    <h2>Что уже готово к приходу агента</h2>
+    <div class="cols c-2b">
+      <div class="stack">
+        <div class="card card--agent">
+          <h3>Вход агента — это JSON, а не дерево каталогов</h3>
+          <pre>{ "action": "<b>write</b>",
+  "doc_path": "docs/modules/Sample.Common/controllers/base-api-controller.md",
+  "kind": "controller",
+  "node_id": "type:src/Sample.Common/Sample.Common.csproj#…BaseApiController`0",
+  "<b>reason</b>": "документ не наполнен: purpose, api, behaviour, collaboration, notes",
+  "<b>empty_sections</b>": ["purpose", "api", "behaviour", "collaboration", "notes"],
+  "<b>sources</b>": [ { "path": "…/BaseApiController.cs", "start": 6, "end": 10 } ],
+  "<b>example_ref</b>": "templates/examples/controller.md",
+  "changes": { "members_added": [], "members_removed": [], "kind_changed": null },
+  "broken_links": [] }</pre>
+          <p class="small" style="margin-top:.7rem">Реальный вывод <code>docs status --format json</code>
+            на тестовом решении. Агенту не нужно выяснять, что устарело, — это уже посчитано.
+            Он получает и <strong>причину</strong>, и <strong>перечень изменившихся членов</strong>,
+            и <strong>образец нужной глубины</strong>.</p>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h3>Шаблоны</h3>
+          <p class="small">Семь скелетов — <code>controller</code>, <code>service</code>,
+            <code>provider</code>, <code>workflow</code>, <code>repository</code>,
+            <code>ignite-service</code>, <code>ignite-compute</code> — и четыре заполненных
+            образца, показывающих глубину и стиль.</p>
+          <p class="small">Имена скелетов сверяются с набором правил тестом: добавить вид
+            сущности — значит дописать правило <strong>и</strong> завести скелет, иначе прогон
+            упадёт с явной ошибкой вместо молчаливой потери документов.</p>
+        </div>
+        <div class="card card--det">
+          <h3>Правила работы агента</h3>
+          <ul class="ticks">
+            <li>пишет <strong>только внутри секций</strong>, front matter не трогает;</li>
+            <li>идёт по очереди <code>write</code> → <code>review</code>, а не по всему дереву;</li>
+            <li>результат фиксируется <code>docs accept</code> — иначе документ остаётся
+              <code>undeclared</code> и попадёт в очередь снова.</li>
+          </ul>
+        </div>
+        <div class="card card--warn">
+          <h3>Что нужно измерить до начала</h3>
+          <p class="small"><strong>Покрытие XML-doc.</strong> Разброс между проектами огромный:
+            ABP 3,8 %, eShopOnWeb 6,5 %, semantic-kernel 52,5 % (и 93,4 % по типам, попавшим
+            в дерево). Если в АС CF как в semantic-kernel — агенту есть с чего начинать;
+            если как в ABP — описания придётся выводить из структуры кода.</p>
+          <p class="small">Плюс средний размер типа: от него зависит, сколько контекста
+            агент читает на один документ.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 10 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Бизнес-слой">
+  <div class="eyebrow"><b>Бизнес-слой</b> B01–B04 из B11 <span>10</span></div>
+  <div class="stack">
+    <h2>Точки входа АС CF объявлены не в коде</h2>
+    <div class="cols c-2b">
+      <div class="stack">
+        <div class="card card--warn">
+          <p class="small" style="margin:0"><strong>Разведка боевого репозитория, 29.07.2026.</strong>
+            Джобы, workflow и обработчики событий диспетчеризуются по данным: универсальный
+            раннер получает имя типа или идентификатор из строки XML.
+            <code>WorkflowRequestRunner.StartWorkflow(request.WorkflowId, …)</code> — литерала
+            конкретного workflow в C# <strong>не существует структурно</strong>.</p>
+          <p class="small" style="margin:.6rem 0 0"><strong>Граф триггеров не восстанавливается
+            статическим анализом — ни tree-sitter, ни Roslyn.</strong> Этой информации в коде нет.
+            Реализация, считающая пустой литеральный поиск ошибкой, даст вечно красный линт
+            по всем 45 workflow.</p>
+        </div>
+        <div class="card card--flat">
+          <h3>Цепочка одного процесса, разобранная до конца</h3>
+          <div class="chain">
+            <div class="link"><div class="who">реестр XML</div><div class="what">
+              <b>Cashflow.Structure.xml</b><em>список UserTasks, событие ItemAdded, атрибут <code>Class=</code></em></div></div>
+            <div class="link"><div class="who">обработчик</div><div class="what">
+              <b>UserTasksAddedTriggerTwinMLWorkflowEventReceiver</b><em>создаёт WorkflowRequest { WorkflowId, WorkflowVersion }</em></div></div>
+            <div class="link"><div class="who">диспетчер</div><div class="what">
+              <b>WorkflowRequestRunner.StartWorkflow(…)</b><em>один универсальный раннер на все workflow</em></div></div>
+            <div class="link"><div class="who">workflow</div><div class="what">
+              <b>TwinMLWorkflow@2</b><em>шаги из JSON: CollectClientIds… → IndividualThresholds → …</em></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="thesis">Стрелка одна: <em>техника ссылается на бизнес</em>.
+          Бизнес-документ не знает ни <code>node_id</code>, ни <code>doc_path</code>, ни FQN —
+          и потому рефакторинг физически не может его сломать.</div>
+        <div class="card">
+          <h3>Якорь — то, что обязан знать вызывающий</h3>
+          <div class="tw"><table>
+            <tr><th>уровень</th><th>якорь</th><th>ломается от</th></tr>
+            <tr><td class="k">1</td><td>имя grid-сервиса, <code>JOBTITLE</code>, <code>Id@Version</code> workflow, «список + EventType», HTTP-маршрут</td><td>изменения самого контракта — а это бизнес-событие</td></tr>
+            <tr><td class="k">2</td><td>namespace или каталог</td><td>реорганизации пространства имён</td></tr>
+            <tr><td class="k">3</td><td>идентичность типа (FQN, <code>node_id</code>)</td><td>почти всего</td></tr>
+          </table></div>
+          <p class="tiny" style="margin-top:.6rem">Если это можно переименовать, не сломав
+            никого снаружи, — это не якорь.</p>
+        </div>
+        <div class="card card--det">
+          <h3><code>business_hash</code> не содержит имён C#-типов</h3>
+          <p class="small">Переименование класса шага хэш не меняет; добавление шага — меняет.
+            Единственное исключение — имена методов grid-сервиса: их вызывают по имени
+            через прокси, поэтому они и есть контракт.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 11 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Предпосылки">
+  <div class="eyebrow"><b>Предпосылки</b> что заложено в шаги <span>11</span></div>
+  <div class="stack">
+    <h2>Восемь посылок, из которых выведено всё остальное</h2>
+    <div class="cols c-2">
+      <dl class="defs">
+        <dt>1 · Детерминизм — проверяемое свойство, а не пожелание</dt>
+        <dd>Каждый список сортируется явным <code>sorted()</code> с явным ключом; порядок обхода ФС
+          никогда не источник порядка; коллизии разводятся хэшем ключа, а не порядком вставки.
+          В манифесте нет ни времени, ни хоста, ни абсолютных путей — они в сидкаре.
+          <strong>Тест на воспроизводимость — побайтовый diff.</strong></dd>
+
+        <dt>2 · Классификация — данные, а не код</dt>
+        <dd>Новый вид сущности = правило в YAML + шаблон. Код не трогается. Опечатка в предикате
+          роняет загрузку сразу, а не молча не срабатывает. При равном приоритете побеждает
+          лексикографически меньший <code>id</code> — перестановка строк в файле не меняет манифест.</dd>
+
+        <dt>3 · Документ принадлежит двум авторам</dt>
+        <dd>Инструмент затирает только то, что сам породил. Всё остальное — секции, чужие ключи
+          front matter, произвольный текст в теле — переживает любой прогон. Проверяется
+          инвариантом обратимости разбора.</dd>
+
+        <dt>4 · Идентичность кода нестабильна, контракт — стабилен</dt>
+        <dd><code>doc_path</code> меняется даже при неизменном коде: достаточно поправить
+          <code>rules.yaml</code>, и тип переклассифицируется. Поэтому бизнес-слой якорится
+          на строку, которую знает вызывающий, а не на имя класса.</dd>
+      </dl>
+      <dl class="defs">
+        <dt>5 · Полнота недостижима, честность обязательна</dt>
+        <dd>Динамические DI-регистрации синтаксически не видны; внешние типы не резолвятся;
+          скоуп-режим слеп к изменениям вне скоупа. Каждое ограничение выражено в данных:
+          <code>confidence</code> у зависимостей, <code>partial</code> у манифеста,
+          <code>parse_error_files</code> в сидкаре.</dd>
+
+        <dt>6 · Всё, что мешает надёжно прочитать состояние, — отказ, а не самолечение</dt>
+        <dd>Единственный экземпляр принятых хэшей живёт в самом документе. Испорченный документ
+          не переписывается даже тогда, когда узел на его пути выглядит «без файла».</dd>
+
+        <dt>7 · Инструмент видит репозиторий, а не боевую БД</dt>
+        <dd>Флаги <code>IsActive</code>, <code>Override</code>, <code>JOBDISABLED</code> не читаются
+          намеренно: это политика поставки и состояние БД, а не бизнес-смысл. Прочитанный флаг
+          рано или поздно кто-нибудь примет за факт.</dd>
+
+        <dt>8 · Реализовывать будет агент послабее</dt>
+        <dd>Поэтому каждая найденная ловушка попадает в план с объяснением, а не обходится молча.
+          План и журнал — часть продукта, а не сопровождающая записка.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 12 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Предпосылки">
+  <div class="eyebrow"><b>Проверено</b> ловушки на реальном коде <span>12</span></div>
+  <div class="stack">
+    <h2>Каждая однажды прошла бы все критерии приёмки и сломалась бы в проде</h2>
+    <div class="cols c-3">
+      <div class="card card--warn">
+        <h3>Разбор проектов</h3>
+        <p class="small"><strong>.csproj сохранены с BOM.</strong> В ABP — с BOM и 72 % файлов
+          <code>.cs</code>. <code>read_text(encoding="utf-8")</code> роняет <code>ET.fromstring</code>:
+          читать байтами.</p>
+        <p class="small"><strong>TargetFramework обычно не объявлен.</strong> В eShopOnWeb — 0 из 10:
+          значение приходит из <code>Directory.Build.props</code> выше по дереву.</p>
+        <p class="small"><strong>Имена проектов не уникальны</strong> — в ABP 39 повторов.
+          Идентификаторы строятся от путей.</p>
+        <p class="small"><strong><code>Include</code> собран из подстановок MSBuild.</strong>
+          Склейка с каталогом проекта даёт выдуманный путь, который выглядит настоящим.</p>
+      </div>
+      <div class="card card--warn">
+        <h3>Разбор C#</h3>
+        <p class="small"><strong><code>#if</code> внутри выражения рвёт разбор</strong> — и вместе
+          с атрибутом ломается объявление: остаток файла переразбирается как top-level statements,
+          и тип исчезает из вывода <em>целиком</em>. Доля растёт с числом целевых платформ:
+          0 % → 0,5 % (ABP) → 2,2 % → <strong>8,7 %</strong> (OpenTelemetry).
+          Единственный признак — <code>parse_errors &gt; 0</code> при пустом списке объявлений.</p>
+        <p class="small"><strong><code>#if</code> — контейнер, <code>#region</code> — плоский маркер.</strong>
+          Реализация, перебирающая прямых детей тела, потеряет члены молча.</p>
+        <p class="small"><strong>Модификаторы и атрибуты — потомки узла, XML-doc — предшествующий сосед.</strong></p>
+        <p class="small"><strong><code>Program.cs</code> — top-level statements</strong>, без класса
+          и метода: искать DI-регистрации нужно по всему дереву файла.</p>
+      </div>
+      <div class="card card--warn">
+        <h3>Классификация и объём</h3>
+        <p class="small"><strong><code>fnmatch</code> не понимает <code>**</code></strong> как «ноль или
+          больше сегментов»: <code>**/obj/**</code> не ловит <code>obj/x.cs</code> в корне.</p>
+        <p class="small"><strong>Правило «тесты по имени типа» отсекает ноль узлов.</strong>
+          Шум идёт из вспомогательных типов <em>внутри</em> тестовых проектов —
+          <code>AuditTestController</code>, <code>…PermissionDefinitionProvider</code>.
+          На ABP это <strong>104 узла из 828</strong>, и убирает их только <code>path_glob</code>.</p>
+        <p class="small"><strong>Регистрация маркерным интерфейсом не видна как регистрация.</strong>
+          В ABP через <code>ITransientDependency</code> проходит <strong>997 типов</strong>,
+          а вызовов <code>services.Add*</code> там всего 182.</p>
+        <p class="small"><strong>Одноимённые типы — норма.</strong> На ABP суффиксом-хэшем
+          разведены 315 узлов из 828.</p>
+      </div>
+    </div>
+    <p class="small">Проверочная база: eShopOnWeb, ABP, OpenTelemetry, semantic-kernel —
+      <strong>11 850 файлов, 941 проект, ноль падений</strong>. Каждая ловушка воспроизведена
+      в <code>tests/fixtures/WildSolution/</code>, чтобы её нельзя было потерять при рефакторинге.</p>
+  </div>
+</section>
+
+<!-- ═══ 13 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Настройка">
+  <div class="eyebrow"><b>Настройка</b> четыре файла <span>13</span></div>
+  <div class="stack">
+    <h2>Что настраивается в репозитории АС CF</h2>
+    <div class="tw">
+      <table>
+        <tr>
+          <th class="k">файл</th><th>на какой вопрос отвечает</th><th>кто ведёт</th>
+          <th>переносится между проектами</th><th>что будет при ошибке</th>
+        </tr>
+        <tr>
+          <td class="k">docpipe.yaml</td>
+          <td><strong>что документировать и где искать код.</strong> <code>enrolled</code>,
+            <code>exclude</code>, <code>domains</code>, пути к правилам, шаблонам, кэшу и манифесту</td>
+          <td>инженер пайплайна</td>
+          <td><span class="tag tag--warn">нет</span> своё для каждого репозитория</td>
+          <td>обход заходит в чужое дерево; документируется всё подряд либо, наоборот, рвётся
+            граф наследования</td>
+        </tr>
+        <tr>
+          <td class="k">rules.yaml</td>
+          <td><strong>что считать контроллером, сервисом, воркфлоу.</strong> Секция
+            <code>exclude</code> и правила <code>when → kind + template + priority</code></td>
+          <td>архитектор вместе с инженером</td>
+          <td><span class="tag tag--det">да</span> словарь сущностей, а не раскладка</td>
+          <td><code>unclassified</code> не падает — словарь проекта не описан; либо шум
+            в дереве из вспомогательных типов</td>
+        </tr>
+        <tr>
+          <td class="k">ownership.yaml</td>
+          <td><strong>кому принадлежит документ.</strong> Правила по узлу — по путям,
+            модулю, домену, namespace, FQN</td>
+          <td>тимлиды</td>
+          <td><span class="tag tag--warn">нет</span> отражает орг-структуру</td>
+          <td>у всех документов <code>team: null</code>, и <code>--team</code> ничего
+            не отбирает — это видно, но неудобно</td>
+        </tr>
+        <tr>
+          <td class="k">registries.yaml</td>
+          <td><strong>где объявлены точки входа платформы.</strong> Четыре XML-реестра
+            АС CF: grid-сервисы, джобы, workflow, структура списков</td>
+          <td>инженер вместе с аналитиком</td>
+          <td><span class="tag">частично</span> механика общая, пути свои</td>
+          <td>фантомные записи (<code>.//add</code> ловит интерцепторы) либо потерянные —
+            и то и другое выглядит как рабочая конфигурация</td>
+        </tr>
+      </table>
+    </div>
+    <div class="cols c-3">
+      <div class="card card--det">
+        <h3>Общее для всех четырёх</h3>
+        <p class="small">Это <strong>данные, а не код</strong>. Добавить вид сущности, команду
+          или реестр — значит дописать YAML. Один и тот же движок условий обслуживает
+          <code>rules.yaml</code> и <code>ownership.yaml</code>, поэтому диагностика опечаток
+          одна на всех.</p>
+      </div>
+      <div class="card">
+        <h3>Правила только положительные</h3>
+        <p class="small">Отрицаний нет намеренно: более специфичное выражается более высоким
+          приоритетом, а не исключением из общего. Набор с отрицаниями превращается
+          в систему уравнений, которую нельзя прочитать построчно.</p>
+      </div>
+      <div class="card card--warn">
+        <h3>Конфигурация не подхватывается сама</h3>
+        <p class="small">Путь всегда задаётся флагом <code>--config</code>. Конфигурация,
+          молча не применившаяся, — худший вид ошибки: тот, который выглядит как успех.
+          Поэтому в поставке есть <code>run.sh</code>, подставляющий все пути.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 14 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Настройка">
+  <div class="eyebrow"><b>Настройка</b> docpipe.yaml и rules.yaml <span>14</span></div>
+  <div class="stack">
+    <h2>Три похожих механизма исключения — и цена ошибки между ними</h2>
+    <div class="cols c-2b">
+      <div class="stack">
+        <div class="card">
+          <div class="tw"><table>
+            <tr><th>механизм</th><th>что делает</th><th>символ в индексе</th></tr>
+            <tr><td class="k">enrolled<br><span class="tiny">docpipe.yaml</span></td><td>что документируем</td><td><span class="tag tag--det">остаётся</span></td></tr>
+            <tr><td class="k">exclude<br><span class="tiny">rules.yaml</span></td><td>что не документируем, но читаем</td><td><span class="tag tag--det">остаётся</span></td></tr>
+            <tr><td class="k">exclude<br><span class="tiny">docpipe.yaml</span></td><td>куда не заходим вовсе</td><td><span class="tag tag--warn">исчезает</span></td></tr>
+          </table></div>
+          <p class="small" style="margin-top:.7rem">Для тестов и вспомогательного кода правильный
+            инструмент — первые два: <strong>неenrolled ≠ неразобранный</strong>, символы тестовых
+            проектов нужны графу наследования. Третий — только для постороннего кода внутри
+            репозитория: самого инструмента, вендоренных зависимостей, выгрузок.</p>
+        </div>
+        <div class="card card--warn">
+          <h3>Две ловушки конфигурации</h3>
+          <p class="small"><strong>Шаблон обязан заканчиваться на <code>/**</code>.</strong>
+            <code>"docs"</code> совпадёт с самим каталогом, но не с файлами под ним, —
+            и будет выглядеть работающим.</p>
+          <p class="small"><strong>Заданные шаблоны складываются со встроенными</strong>
+            (<code>**/obj/**</code>, <code>**/bin/**</code>, <code>**/*.g.cs</code>), а не замещают их:
+            иначе одна строка вернула бы <code>obj/</code> в документацию.</p>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card card--det">
+          <h3>Правило классификации</h3>
+          <pre>- id: ignite.service
+  kind: ignite_service        <i># попадёт в doc_path</i>
+  template: ignite-service    <i># скелет документа</i>
+  priority: 95
+  when:
+    all:
+      - type_kind: ["class", "record"]
+      - <b>inherits</b>: ["Apache.Ignite.Core.Services.IService"]</pre>
+          <p class="small" style="margin-top:.7rem">Десять предикатов:
+            <code>attribute</code>, <code>base_type</code>, <code>inherits</code>,
+            <code>name_suffix</code>, <code>name_regex</code>, <code>namespace_regex</code>,
+            <code>path_glob</code>, <code>type_kind</code>, <code>modifier</code>,
+            <code>has_member_with_attribute</code> — комбинируются через
+            <code>any</code>/<code>all</code> любой вложенности.</p>
+        </div>
+        <div class="card">
+          <h3>Что важно знать, когда пишешь правила</h3>
+          <ul class="ticks">
+            <li><code>inherits</code> сильнее <code>base_type</code>: он смотрит на всё замыкание
+              наследования и срабатывает через ваш промежуточный базовый класс из другого проекта;</li>
+            <li>приоритеты решают, <code>matched_rules</code> объясняет — в узел пишутся
+              <strong>все</strong> совпавшие правила;</li>
+            <li>начинать с самого частого: одно правило на <code>ITransientDependency</code>
+              покрыло бы 997 типов ABP — больше, чем весь набор по умолчанию;</li>
+            <li>набор по умолчанию покрывает <strong>1–9 %</strong> типов. Это исходное состояние,
+              а не дефект: словарь «контроллер / сервис / провайдер» описывает прикладной код,
+              и его нужно заменить словарём проекта.</li>
+          </ul>
+        </div>
+        <div class="card card--flat">
+          <h3>Порядок настройки</h3>
+          <pre class="plain"><b>./run.sh stats</b>   <i>ничего не пишет, печатает пять срезов</i>
+   ↓  взять самое частое из «Окончания имён» и «Базовые типы»
+<b>дописать одно правило</b>  →  <b>./run.sh scan</b>  →  повторять,
+   пока unclassified перестанет заметно падать</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 15 ═══════════════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Настройка">
+  <div class="eyebrow"><b>АС CF</b> что известно и что осталось <span>15</span></div>
+  <div class="stack">
+    <h2>Состояние настройки на боевом репозитории</h2>
+    <div class="cols c-3">
+      <div class="card">
+        <h3>Разведка, 27–29.07.2026</h3>
+        <div class="tw"><table>
+          <tr><td>файлов .cs / проектов</td><td class="n">17 988 / 491</td></tr>
+          <tr><td>формат решения</td><td class="n">.sln, 1</td></tr>
+          <tr><td>дубли имён проектов</td><td class="n">нет</td></tr>
+          <tr><td><code>Compile Include</code></td><td class="n">1 проект</td></tr>
+          <tr><td>подстановки MSBuild в TFM</td><td class="n">0</td></tr>
+          <tr><td>файлов с <code>#if</code></td><td class="n">13 · 0,07 %</td></tr>
+          <tr><td>маркерные интерфейсы DI</td><td class="n">нет</td></tr>
+          <tr><td>типы <code>*Test</code>/<code>*Tests</code></td><td class="n">~30, все настоящие</td></tr>
+        </table></div>
+        <p class="tiny" style="margin-top:.6rem">Вдвое крупнее ABP — самый большой репозиторий,
+          на котором инструмент применялся. Ожидание по времени: ~11 с при <code>--jobs 4</code>,
+          ~450 МБ памяти.</p>
+      </div>
+      <div class="card">
+        <h3>Четыре реестра точек входа</h3>
+        <div class="tw"><table>
+          <tr><th>что объявляет</th><th class="k">якорь</th></tr>
+          <tr><td>grid-сервисы кластера и их команды<br><span class="tiny">services.config</span></td><td class="k">@name</td></tr>
+          <tr><td>джобы Quartz и расписания<br><span class="tiny">Items_Basic.xml</span></td><td class="k">JOBTITLE</td></tr>
+          <tr><td>workflow и их шаги<br><span class="tiny">Items-Workflows.xml → JSON</span></td><td class="k">Id@Version</td></tr>
+          <tr><td>списки, поля, связи, обработчики событий<br><span class="tiny">Cashflow.Structure.xml</span></td><td class="k">список + EventType</td></tr>
+        </table></div>
+        <p class="tiny" style="margin-top:.6rem"><code>Cashflow.Structure.xml</code> несёт готовый
+          глоссарий: <code>DisplayName</code> по-русски у каждого списка и каждого поля.
+          Топики Kafka — источник не найден, ведутся вручную.</p>
+      </div>
+      <div class="stack">
+        <div class="card card--det">
+          <h3>Сделано</h3>
+          <ul class="ticks done">
+            <li>инструмент установлен внутрь репозитория, <code>docs/**</code> исключён из обхода;</li>
+            <li>решено, что делать с <code>^.*Tests?$</code>: правило оставлено, пути сужены
+              до <code>*.Tests</code> — <code>StressTest/</code> не должен пропасть;</li>
+            <li>найдены четыре реестра, ловушки их разбора описаны.</li>
+          </ul>
+        </div>
+        <div class="card card--warn">
+          <h3>Осталось</h3>
+          <ul class="ticks todo">
+            <li><code>enrolled</code> по реальной раскладке, а не <code>src/**</code> вслепую —
+              на 491 проекте один лишний глоб втягивает сотню типов;</li>
+            <li>проверить имена интерфейсов GridGain: правила <code>ignite.*</code> написаны
+              по Apache Ignite, а namespace-ы коммерческой сборки могут отличаться;</li>
+            <li>добавить <code>**/artifacts/**</code>: вывод сборки лежит там, а не в
+              <code>bin/</code> и <code>obj/</code> проектов;</li>
+            <li><code>materialize --dry-run</code> — первая честная оценка объёма документации;</li>
+            <li>завести <code>ownership.yaml</code> и довести <code>docs owners --lint</code>
+              до приемлемого остатка;</li>
+            <li>подтвердить с владельцами, какие версии workflow активны — из репозитория
+              это не выводится.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="thesis">Дальше: <em>шаг 3</em> — агент наполнения, <em>B05–B11</em> — разрешение якорей,
+      линт и обратные ссылки, затем <em>парсеры Python и TypeScript</em> рядом с .NET:
+      <code>resolve</code>, <code>classify</code>, <code>tree</code> и <code>emit</code>
+      переиспользуются как есть.</div>
+  </div>
+</section>
+
+<footer class="hud">
+  <span class="hud-section" id="section">Обзор</span>
+  <nav class="hud-dots" id="dots" aria-label="Слайды"></nav>
+  <span class="hud-count" id="count">01 / 15</span>
+  <button class="hud-btn" id="prev" type="button" aria-label="Предыдущий слайд">←</button>
+  <button class="hud-btn" id="next" type="button" aria-label="Следующий слайд">→</button>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var slides  = Array.prototype.slice.call(document.querySelectorAll(".slide"));
+  var rail    = document.getElementById("rail");
+  var count   = document.getElementById("count");
+  var section = document.getElementById("section");
+  var dots    = document.getElementById("dots");
+  var current = 0;
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+
+  slides.forEach(function (slide, i) {
+    var b = document.createElement("button");
+    b.className = "dot";
+    b.type = "button";
+    b.title = pad(i + 1) + " · " + (slide.dataset.section || "");
+    b.setAttribute("aria-label", "Слайд " + (i + 1));
+    b.addEventListener("click", function () { show(i); });
+    dots.appendChild(b);
+  });
+  var dotEls = Array.prototype.slice.call(dots.children);
+
+  function show(i) {
+    current = Math.max(0, Math.min(slides.length - 1, i));
+    slides.forEach(function (s, n) { s.classList.toggle("is-active", n === current); });
+    dotEls.forEach(function (d, n) { d.setAttribute("aria-current", n === current ? "true" : "false"); });
+    rail.style.width = ((current + 1) / slides.length * 100) + "%";
+    count.textContent = pad(current + 1) + " / " + pad(slides.length);
+    section.textContent = slides[current].dataset.section || "";
+    if (history.replaceState) { history.replaceState(null, "", "#" + (current + 1)); }
+    window.scrollTo(0, 0);
+  }
+
+  document.getElementById("prev").addEventListener("click", function () { show(current - 1); });
+  document.getElementById("next").addEventListener("click", function () { show(current + 1); });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) { return; }
+    switch (e.key) {
+      case "ArrowRight": case "PageDown": case " ": show(current + 1); e.preventDefault(); break;
+      case "ArrowLeft":  case "PageUp":          show(current - 1); e.preventDefault(); break;
+      case "Home": show(0); e.preventDefault(); break;
+      case "End":  show(slides.length - 1); e.preventDefault(); break;
+      case "p": case "P": window.print(); break;
+      case "t": case "T":
+        var root = document.documentElement;
+        var dark = root.getAttribute("data-theme") === "dark" ||
+                   (!root.getAttribute("data-theme") &&
+                    window.matchMedia("(prefers-color-scheme: dark)").matches);
+        root.setAttribute("data-theme", dark ? "light" : "dark");
+        break;
+    }
+  });
+
+  var start = parseInt((location.hash || "").slice(1), 10);
+  show(isNaN(start) ? 0 : start - 1);
+})();
+</script>
+</body>
+</html>

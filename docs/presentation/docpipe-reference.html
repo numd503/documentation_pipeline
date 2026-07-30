@@ -1,0 +1,1405 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>docpipe — справочник: архитектура, настройка, CLI</title>
+<style>
+/* ────────────────────────────────────────────────────────────────────────────
+   Токены. Цвет здесь несёт смысл, а не украшает:
+     --sig  синька  — то, что делает инструмент детерминированно;
+     --auth охра    — то, что пишет человек или агент;
+     --red  сурик   — ловушка, отказ, требующее внимания.
+   Тема переопределяется только на уровне токенов.
+   ──────────────────────────────────────────────────────────────────────── */
+:root {
+  --paper:   #e9ecf2;
+  --sheet:   #f8fafc;
+  --sheet-2: #dee3ed;
+  --ink:     #101728;
+  --ink-2:   #4d5872;
+  --ink-3:   #7b869d;
+  --rule:    rgba(16, 23, 40, .16);
+  --rule-2:  rgba(16, 23, 40, .38);
+  --sig:     #1442c8;
+  --sig-bg:  rgba(20, 66, 200, .09);
+  --auth:    #91600b;
+  --auth-bg: rgba(145, 96, 11, .11);
+  --red:     #ad3520;
+  --red-bg:  rgba(173, 53, 32, .09);
+
+  --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Liberation Sans", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper:   #0b1120;
+    --sheet:   #121a2b;
+    --sheet-2: #1a2335;
+    --ink:     #e6ebf5;
+    --ink-2:   #9ba6be;
+    --ink-3:   #6d7890;
+    --rule:    rgba(230, 235, 245, .17);
+    --rule-2:  rgba(230, 235, 245, .36);
+    --sig:     #74a3ff;
+    --sig-bg:  rgba(116, 163, 255, .13);
+    --auth:    #e3ad57;
+    --auth-bg: rgba(227, 173, 87, .13);
+    --red:     #f27f61;
+    --red-bg:  rgba(242, 127, 97, .13);
+  }
+}
+:root[data-theme="dark"] {
+  --paper:   #0b1120;
+  --sheet:   #121a2b;
+  --sheet-2: #1a2335;
+  --ink:     #e6ebf5;
+  --ink-2:   #9ba6be;
+  --ink-3:   #6d7890;
+  --rule:    rgba(230, 235, 245, .17);
+  --rule-2:  rgba(230, 235, 245, .36);
+  --sig:     #74a3ff;
+  --sig-bg:  rgba(116, 163, 255, .13);
+  --auth:    #e3ad57;
+  --auth-bg: rgba(227, 173, 87, .13);
+  --red:     #f27f61;
+  --red-bg:  rgba(242, 127, 97, .13);
+}
+:root[data-theme="light"] {
+  --paper:   #e9ecf2;
+  --sheet:   #f8fafc;
+  --sheet-2: #dee3ed;
+  --ink:     #101728;
+  --ink-2:   #4d5872;
+  --ink-3:   #7b869d;
+  --rule:    rgba(16, 23, 40, .16);
+  --rule-2:  rgba(16, 23, 40, .38);
+  --sig:     #1442c8;
+  --sig-bg:  rgba(20, 66, 200, .09);
+  --auth:    #91600b;
+  --auth-bg: rgba(145, 96, 11, .11);
+  --red:     #ad3520;
+  --red-bg:  rgba(173, 53, 32, .09);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+/* Размер шрифта считается и от ширины, и от ВЫСОТЫ окна: слайд обязан помещаться
+   целиком. На ноутбуке 1440×900 высота — ограничение, а не ширина, и без второго
+   слагаемого нижние строки таблиц уезжают под HUD. */
+html { font-size: clamp(11px, min(.58vw + 8.6px, 1.44vh + 1.5px), 17px); -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  line-height: 1.5;
+  font-feature-settings: "kern" 1;
+}
+
+/* ── Навигация ──────────────────────────────────────────────────────────── */
+.rail { position: fixed; inset: 0 0 auto 0; height: 2px; z-index: 40; background: var(--rule); }
+.rail-fill { height: 100%; width: 0; background: var(--sig); transition: width .28s ease; }
+
+.hud {
+  position: fixed; inset: auto 0 0 0; z-index: 40;
+  display: flex; align-items: center; gap: 1.1rem;
+  padding: .5rem clamp(1rem, 3vw, 2.4rem);
+  border-top: 1px solid var(--rule);
+  background: var(--paper);
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(8px);
+  font-family: var(--mono); font-size: .68rem; letter-spacing: .05em; color: var(--ink-3);
+}
+.hud-section { text-transform: uppercase; white-space: nowrap; }
+.hud-dots { display: flex; gap: .26rem; margin-inline: auto; flex-wrap: wrap; }
+.dot { width: 1rem; height: 1rem; padding: 0; border: 0; background: none; cursor: pointer; position: relative; }
+.dot::after {
+  content: ""; position: absolute; inset: 50% 0 auto 0; height: 2px;
+  background: var(--rule-2); transform: translateY(-50%);
+  transition: background .2s ease, height .2s ease;
+}
+.dot[aria-current="true"]::after { background: var(--sig); height: 5px; }
+.dot:hover::after { background: var(--ink-2); }
+.hud-count { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--ink-2); }
+.hud-btn {
+  font: inherit; color: var(--ink-2); background: none; cursor: pointer;
+  border: 1px solid var(--rule); border-radius: 3px; padding: .1rem .5rem;
+}
+.hud-btn:hover { border-color: var(--rule-2); color: var(--ink); }
+:focus-visible { outline: 2px solid var(--sig); outline-offset: 2px; }
+
+/* ── Слайд ──────────────────────────────────────────────────────────────── */
+.slide { display: none; }
+.slide.is-active {
+  display: grid; grid-template-rows: auto 1fr; gap: 1.1rem;
+  min-height: 100vh; min-height: 100dvh;
+  padding: 2.3rem clamp(1.2rem, 4vw, 4.6rem) 3.1rem;
+  align-content: start;
+  animation: rise .3s ease both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .slide.is-active { animation: none; }
+  .rail-fill { transition: none; }
+}
+
+.eyebrow {
+  font-family: var(--mono); font-size: .66rem; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--ink-3);
+  display: flex; align-items: baseline; gap: .7rem;
+  border-bottom: 1px solid var(--rule); padding-bottom: .45rem;
+}
+.eyebrow b { color: var(--sig); font-weight: 600; }
+.eyebrow i { font-style: normal; }
+.eyebrow .idx { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+h1, h2 { font-weight: 700; letter-spacing: -.025em; text-wrap: balance; margin: .45rem 0 0; }
+h1 { font-size: clamp(2.2rem, 4.4vw, 3.9rem); line-height: 1.04; }
+h2 { font-size: clamp(1.3rem, 2vw, 1.9rem); line-height: 1.14; }
+.lede { font-size: .95rem; color: var(--ink-2); max-width: 82ch; margin: .55rem 0 0; }
+p { margin: 0 0 .6rem; } p:last-child { margin-bottom: 0; }
+strong { font-weight: 650; color: var(--ink); }
+code {
+  font-family: var(--mono); font-size: .86em; color: var(--ink);
+  background: var(--sheet-2); padding: .05em .3em; border-radius: 2px;
+}
+.small { font-size: .8rem; color: var(--ink-2); }
+.tiny { font-size: .72rem; color: var(--ink-3); }
+.sig-t { color: var(--sig); } .auth-t { color: var(--auth); } .red-t { color: var(--red); }
+
+/* ── Раскладки ──────────────────────────────────────────────────────────── */
+.body { display: grid; gap: .85rem; align-content: start; }
+.cols { display: grid; gap: .85rem; align-content: start; }
+.c-2  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.c-3  { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.c-2a { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); }
+.c-2b { grid-template-columns: minmax(0, 1fr) minmax(0, 1.45fr); }
+.stack { display: grid; gap: .75rem; align-content: start; }
+@media (max-width: 940px) { .c-2, .c-3, .c-2a, .c-2b { grid-template-columns: minmax(0, 1fr); } }
+
+/* ── Рамка: подпись верхом на линейке, как в help самого docpipe ────────── */
+.frame {
+  position: relative; border: 1px solid var(--rule); border-radius: 5px;
+  padding: 1.15rem 1rem .95rem; background: var(--sheet);
+  display: grid; gap: .6rem; align-content: start;
+}
+.frame::before {
+  content: attr(data-label);
+  position: absolute; top: 0; left: .85rem; transform: translateY(-50%);
+  background: var(--paper); padding: 0 .45rem;
+  font-family: var(--mono); font-size: .6rem; letter-spacing: .15em;
+  text-transform: uppercase; color: var(--ink-3); white-space: nowrap;
+}
+.frame--sig  { border-color: color-mix(in srgb, var(--sig) 42%, var(--rule)); }
+.frame--sig::before  { color: var(--sig); }
+.frame--auth { border-color: color-mix(in srgb, var(--auth) 42%, var(--rule)); }
+.frame--auth::before { color: var(--auth); }
+.frame--red  { border-color: color-mix(in srgb, var(--red) 45%, var(--rule)); background: var(--red-bg); }
+.frame--red::before  { color: var(--red); }
+.frame--bare { background: none; }
+
+/* ── Полоса «вход ▸ шаг ▸ выход» ────────────────────────────────────────── */
+.io { display: grid; grid-template-columns: minmax(0,1fr) 1.4rem minmax(0,1.05fr) 1.4rem minmax(0,1fr); align-items: stretch; gap: 0; }
+/* Рамки полосы тянутся до высоты самой высокой, поэтому содержимое короткой
+   центрируется: прижатое к верху оно читается как «здесь чего-то не хватает». */
+.io > .frame { border-radius: 5px; align-content: center; }
+.io-arrow {
+  display: grid; place-items: center; font-family: var(--mono);
+  font-size: .95rem; color: var(--sig);
+}
+@media (max-width: 940px) {
+  .io { grid-template-columns: minmax(0,1fr); }
+  .io-arrow { height: 1.6rem; transform: rotate(90deg); }
+}
+
+/* ── Списки ─────────────────────────────────────────────────────────────── */
+ul.ticks { list-style: none; margin: 0; padding: 0; display: grid; gap: .38rem; }
+ul.ticks li { position: relative; padding-left: 1.2rem; font-size: .84rem; color: var(--ink-2); }
+ul.ticks li::before {
+  content: "▸"; position: absolute; left: 0; top: -.02em;
+  font-family: var(--mono); color: var(--sig); font-size: .8em;
+}
+ul.ticks strong { color: var(--ink); }
+ul.ticks.files li::before  { content: "·"; color: var(--ink-3); font-size: 1.1em; }
+ul.ticks.warn li::before   { content: "×"; color: var(--red); }
+ul.ticks.author li::before { content: "▸"; color: var(--auth); }
+
+ol.steps { list-style: none; margin: 0; padding: 0; counter-reset: st; display: grid; gap: .45rem; }
+ol.steps li { counter-increment: st; position: relative; padding-left: 2rem; font-size: .84rem; color: var(--ink-2); }
+ol.steps li::before {
+  content: counter(st, decimal-leading-zero); position: absolute; left: 0; top: .1em;
+  font-family: var(--mono); font-size: .7rem; color: var(--sig); font-variant-numeric: tabular-nums;
+}
+ol.steps strong { color: var(--ink); }
+
+/* ── Таблицы ────────────────────────────────────────────────────────────── */
+.tw { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .8rem; font-variant-numeric: tabular-nums; }
+th {
+  text-align: left; font-family: var(--mono); font-weight: 600; font-size: .62rem;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3);
+  border-bottom: 1px solid var(--rule-2); padding: 0 .7rem .35rem 0; vertical-align: bottom;
+}
+td { padding: .38rem .7rem .38rem 0; border-bottom: 1px solid var(--rule); vertical-align: top; color: var(--ink-2); }
+td:first-child { color: var(--ink); }
+tr:last-child td { border-bottom: 0; }
+td.k, th.k { font-family: var(--mono); font-size: .74rem; white-space: nowrap; }
+
+/* ── Код и YAML ─────────────────────────────────────────────────────────── */
+pre {
+  margin: 0; overflow-x: auto; font-family: var(--mono);
+  font-size: .72rem; line-height: 1.62; color: var(--ink-2);
+  background: var(--sheet); border: 1px solid var(--rule); border-radius: 4px;
+  padding: .7rem .8rem; tab-size: 2;
+}
+pre b { color: var(--ink); font-weight: 600; }
+pre i { color: var(--ink-3); font-style: normal; }
+pre u { color: var(--sig); text-decoration: none; }
+pre s { color: var(--red); text-decoration: none; }
+pre em { color: var(--auth); font-style: normal; }
+pre.bare { background: none; border: 0; padding: 0; }
+.frame > pre { background: none; border: 0; padding: 0; }
+
+/* ── Справочник команд ──────────────────────────────────────────────────── */
+.cmd {
+  font-family: var(--mono); font-size: .84rem; color: var(--ink);
+  padding-bottom: .3rem; border-bottom: 1px solid var(--rule);
+  display: flex; flex-wrap: wrap; gap: .45rem; align-items: baseline;
+}
+.cmd b { font-weight: 600; }
+.cmd i { font-style: normal; color: var(--ink-3); font-size: .78rem; }
+.cmd .note { margin-left: auto; font-size: .66rem; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); }
+.what { font-size: .82rem; color: var(--ink-2); }
+
+.opts { display: grid; gap: .22rem; }
+.opt { display: grid; grid-template-columns: .75rem minmax(0, 11.5rem) minmax(0, 1fr); gap: .45rem; align-items: baseline; }
+.opt::before {
+  content: "*"; font-family: var(--mono); font-size: .7rem; color: var(--red); visibility: hidden; line-height: 1;
+}
+.opt.req::before { visibility: visible; }
+.opt code { background: none; padding: 0; font-size: .74rem; color: var(--ink); white-space: nowrap; }
+.opt code em { font-style: normal; color: var(--ink-3); }
+.opt span { font-size: .76rem; color: var(--ink-2); }
+@media (max-width: 640px) { .opt { grid-template-columns: .75rem minmax(0,1fr); } .opt span { grid-column: 2; } }
+
+/* ── Метки состояний ────────────────────────────────────────────────────── */
+.st {
+  display: inline-block; font-family: var(--mono); font-size: .64rem;
+  letter-spacing: .06em; padding: .05rem .4rem; border-radius: 2px;
+  border: 1px solid currentColor; white-space: nowrap;
+}
+.st--write  { color: var(--auth); background: var(--auth-bg); }
+.st--review { color: var(--red);  background: var(--red-bg); }
+.st--skip   { color: var(--ink-3); }
+.st--sig    { color: var(--sig);  background: var(--sig-bg); }
+
+/* ── Титул ──────────────────────────────────────────────────────────────── */
+.title-slide.is-active { align-content: center; grid-template-rows: auto; gap: 0; }
+.title-wrap { display: grid; gap: 1.3rem; max-width: 78rem; width: 100%; }
+.title-mark { font-family: var(--mono); font-size: .68rem; letter-spacing: .3em; text-transform: uppercase; color: var(--ink-3); }
+.title-slide h1 { margin: 0; }
+.flow {
+  display: flex; flex-wrap: wrap; gap: .5rem .55rem; align-items: center;
+  font-family: var(--mono); font-size: .78rem; color: var(--ink-2);
+  border-top: 1px solid var(--rule-2); border-bottom: 1px solid var(--rule-2);
+  padding: .7rem 0;
+}
+.flow b { color: var(--sig); font-weight: 600; }
+.flow em { font-style: normal; color: var(--auth); }
+.flow span { color: var(--ink-3); }
+.toc { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: .28rem 2.2rem; }
+.toc a {
+  display: grid; grid-template-columns: 1.9rem 1fr; gap: .5rem;
+  font-size: .82rem; color: var(--ink-2); text-decoration: none;
+  padding: .16rem 0; border-bottom: 1px solid transparent;
+}
+.toc a:hover { color: var(--ink); border-bottom-color: var(--rule); }
+.toc a b { font-family: var(--mono); font-size: .7rem; font-weight: 400; color: var(--sig); font-variant-numeric: tabular-nums; }
+.hint { font-family: var(--mono); font-size: .68rem; color: var(--ink-3); letter-spacing: .04em; }
+@media (max-width: 700px) { .toc { grid-template-columns: minmax(0,1fr); } }
+
+/* ── Печать ─────────────────────────────────────────────────────────────── */
+@media print {
+  /* Альбомная ориентация — не вкусовщина: в книжной ширина страницы уходит
+     под 940px, многоколоночные раскладки схлопываются в столбик, и слайд
+     разъезжается на две страницы. Один слайд обязан быть одной страницей. */
+  @page { size: landscape; margin: 8mm; }
+  :root { --paper: #fff; --sheet: #fff; --sheet-2: #f0f2f6; }
+  html { font-size: 10px; }
+  body { background: #fff; }
+  .rail, .hud { display: none !important; }
+  /* Оба селектора нужны: у `.slide.is-active` специфичность выше, и без него
+     активный слайд сохранил бы экранные `min-height: 100vh` и отступы. */
+  .slide, .slide.is-active {
+    display: grid !important; min-height: auto; break-after: page;
+    padding: 0; gap: .7rem; animation: none;
+  }
+  .slide.title-slide, .slide.title-slide.is-active { align-content: start; padding-top: 2rem; }
+  .slide:last-child { break-after: auto; }
+  .frame::before { background: #fff; }
+  /* Раскладки задаются заново: ширина листа за вычетом полей уходит под порог
+     мобильной медиа-запроса, и без этого каждый слайд схлопнулся бы в столбик
+     и занял две страницы. Блок идёт последним, поэтому он и выигрывает. */
+  .c-2  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .c-3  { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .c-2a { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); }
+  .c-2b { grid-template-columns: minmax(0, 1fr) minmax(0, 1.45fr); }
+  .io   { grid-template-columns: minmax(0,1fr) 1.2rem minmax(0,1.05fr) 1.2rem minmax(0,1fr); }
+  .io-arrow { height: auto; transform: none; }
+  .toc  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .opt  { grid-template-columns: .75rem minmax(0, 11.5rem) minmax(0, 1fr); }
+  .opt span { grid-column: auto; }
+}
+</style>
+</head>
+<body>
+
+<div class="rail"><div class="rail-fill" id="rail"></div></div>
+
+<!-- ═══ 01 · титул ═══════════════════════════════════════════════════════ -->
+<section class="slide title-slide is-active" data-section="Обзор">
+  <div class="title-wrap">
+    <div class="title-mark">docpipe · справочник</div>
+    <h1>Архитектура, настройка<br>и командный интерфейс</h1>
+    <div class="flow">
+      <span>исходники .cs</span> <b>▸</b> <b>scan</b> <b>▸</b> <span>doc-tree.json</span>
+      <b>▸</b> <b>materialize</b> <b>▸</b> <span>docs/**/*.md</span>
+      <b>▸</b> <em>агент</em> <b>▸</b> <span>наполненные документы</span>
+    </div>
+    <p class="lede">Инструмент решает, <strong>что</strong> документировать, и создаёт под это документы.
+      <span class="sig-t">Синим</span> — то, что делается детерминированно и повторяемо;
+      <span class="auth-t">охрой</span> — то, что пишет человек или агент. Этой границей устроено всё остальное.</p>
+    <nav class="toc">
+      <a href="#2"><b>02</b><span>Общая архитектура: три шага и бизнес-слой</span></a>
+      <a href="#3"><b>03</b><span>Шаг 1 — <code>scan</code>: вход, устройство, выход</span></a>
+      <a href="#4"><b>04</b><span>Шаг 2 — <code>materialize</code> и <code>docs</code></span></a>
+      <a href="#5"><b>05</b><span>Бизнес-слой — <code>anchors</code> и <code>business</code></span></a>
+      <a href="#6"><b>06</b><span>Пять настроечных файлов и их зоны</span></a>
+      <a href="#7"><b>07</b><span>Пример настройки: <code>docpipe.yaml</code></span></a>
+      <a href="#8"><b>08</b><span>Пример: правила, владение, реестры</span></a>
+      <a href="#9"><b>09</b><span>CLI: манифест</span></a>
+      <a href="#10"><b>10</b><span>CLI: документы</span></a>
+      <a href="#11"><b>11</b><span>CLI: бизнес-каталог</span></a>
+      <a href="#12"><b>12</b><span>Онбординг: установка и первый прогон</span></a>
+      <a href="#13"><b>13</b><span>Настройка под свой репозиторий</span></a>
+    </nav>
+    <div class="hint">← → слайды &nbsp;·&nbsp; T тема &nbsp;·&nbsp; P печать</div>
+  </div>
+</section>
+
+<!-- ═══ 02 · общая архитектура ═══════════════════════════════════════════ -->
+<section class="slide" data-section="Архитектура">
+  <header>
+    <div class="eyebrow"><b>Архитектура</b><i>общая схема</i><span class="idx">02 / 13</span></div>
+    <h2>Три шага, один манифест и отдельный бизнес-слой</h2>
+    <p class="lede">Граница проходит по одной линии: <strong>классификация — правила, описание — агент</strong>.
+      Решение «этот класс — контроллер» принимает YAML. Решение «что этот контроллер делает» принимает агент.</p>
+  </header>
+  <div class="body">
+    <div class="io">
+      <div class="frame frame--bare" data-label="вход">
+        <ul class="ticks files">
+          <li><code>*.sln</code>, <code>*.slnx</code>, <code>*.csproj</code>, <code>*.cs</code></li>
+          <li><code>docpipe.yaml</code> — где искать</li>
+          <li><code>rules/dotnet.yaml</code> — что считать чем</li>
+          <li><code>templates/</code> — из чего состоит документ</li>
+          <li><code>ownership.yaml</code> — чей документ</li>
+          <li><code>registries.yaml</code> — где точки входа</li>
+        </ul>
+      </div>
+      <div class="io-arrow">▸</div>
+      <div class="stack">
+        <div class="frame frame--sig" data-label="шаг 1 · детерминированно">
+          <div class="cmd"><b>docpipe scan</b></div>
+          <div class="what">Разбор C# через tree-sitter, классификация правилами, дерево документов.
+            Один вход — побайтово один выход.</div>
+        </div>
+        <div class="frame frame--sig" data-label="шаг 2 · идемпотентно">
+          <div class="cmd"><b>docpipe materialize</b> <i>· docs status · docs accept</i></div>
+          <div class="what">Скелеты документов, генерируемые блоки, статусы и приёмка.
+            Авторский текст не затрагивается никогда.</div>
+        </div>
+        <div class="frame frame--auth" data-label="шаг 3 · не начат">
+          <div class="cmd"><b>агент наполнения</b></div>
+          <div class="what">Пишет текст в пустые секции по <code>docs status --action write</code>.
+            Отдельного плана пока нет.</div>
+        </div>
+      </div>
+      <div class="io-arrow">▸</div>
+      <div class="frame frame--bare" data-label="выход">
+        <ul class="ticks">
+          <li><code>doc-tree.json</code> — манифест, коммитится</li>
+          <li><code>doc-tree.run.json</code> — сидкар прогона</li>
+          <li><code>docs/**/*.md</code> — документы со скелетами</li>
+          <li><code>business/**/*.md</code> — каталог процессов</li>
+          <li>коды возврата для CI</li>
+        </ul>
+      </div>
+    </div>
+    <div class="cols c-2a">
+      <div class="frame frame--auth" data-label="бизнес-слой — рядом, а не внутри">
+        <p class="small">Процессы и сущности из кода не выводятся: их пишут аналитики. Связь с техникой держится
+          на <strong>якоре</strong> — строке, которую обязан знать вызывающий: имя grid-сервиса,
+          <code>JOBTITLE</code> джоба, <code>Id@Version</code> workflow, пара «список + <code>EventType</code>», HTTP-маршрут.</p>
+        <pre class="bare">реестры платформы <u>──▶</u> якоря <u>──┐</u>
+                                  <u>├──▶</u> <em>бизнес-документы</em> <u>◀──▶</u> технические
+каталог аналитика <u>──▶</u> процессы <u>──┘</u>        <i>связь по якорю, не по коду</i></pre>
+        <p class="small"><strong>Стрелка одна: техника ссылается на бизнес.</strong> Бизнес-документ не знает
+          ни <code>node_id</code>, ни <code>doc_path</code>, ни FQN — поэтому рефакторинг физически не может его сломать.</p>
+      </div>
+      <div class="frame" data-label="состояние">
+        <table>
+          <tr><td class="k"><span class="st st--sig">готово</span></td><td>Шаг 1, T00–T26 — <code>scan</code></td></tr>
+          <tr><td class="k"><span class="st st--sig">готово</span></td><td>Шаг 2, M01–M12 — <code>materialize</code>, <code>docs</code></td></tr>
+          <tr><td class="k"><span class="st st--sig">готово</span></td><td>Бизнес-слой, B01–B11 — <code>anchors</code>, <code>business</code></td></tr>
+          <tr><td class="k"><span class="st st--skip">нет</span></td><td>Шаг 3 — наполнение агентом</td></tr>
+        </table>
+        <p class="tiny">Скоуп текущей версии — только .NET (C#). .NET SDK не требуется: разбор идёт
+          через tree-sitter, без сборки решения.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 03 · шаг 1 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Шаг 1">
+  <header>
+    <div class="eyebrow"><b>Шаг 1</b><i>docpipe scan</i><span class="idx">03 / 13</span></div>
+    <h2>Из исходников — в манифест, без сборки решения</h2>
+    <p class="lede">Чистая функция от кода и правил. В выходе нет ни времени, ни имени машины, ни абсолютных путей:
+      всё недетерминированное вынесено в сидкар, поэтому манифест можно коммитить и читать в диффе.</p>
+  </header>
+  <div class="body">
+    <div class="io">
+      <div class="frame" data-label="вход">
+        <ul class="ticks files">
+          <li><strong>Дерево исходников</strong> — <code>--root</code></li>
+          <li><code>docpipe.yaml</code> — <code>enrolled</code>, <code>exclude</code>, <code>domains</code></li>
+          <li><code>rules/dotnet.yaml</code> — отсев и правила видов</li>
+          <li><code>.docpipe/cache</code> — разобранные файлы</li>
+        </ul>
+        <p class="tiny">Решения и файлы решения читаются, но <code>TargetFramework</code> часто приходит
+          из <code>Directory.Build.props</code> выше по дереву; <code>.csproj</code> читаются байтами — BOM встречается часто.</p>
+      </div>
+      <div class="io-arrow">▸</div>
+      <div class="frame frame--sig" data-label="что происходит внутри">
+        <ol class="steps">
+          <li><strong>discovery</strong> — обход, решения, <code>.csproj</code>, исключения</li>
+          <li><strong>parser</strong> — tree-sitter, символы, базы, атрибуты, XML-doc</li>
+          <li><strong>index</strong> — ключ символа: модуль + FQN + арность дженерика</li>
+          <li><strong>classify</strong> — отсев с причиной, затем правила по <code>priority</code></li>
+          <li><strong>tree</strong> — <code>doc_path</code>, домены, разрешение коллизий по хэшу</li>
+          <li><strong>emit</strong> — сортировка всего явным <code>key</code>, запись</li>
+        </ol>
+      </div>
+      <div class="io-arrow">▸</div>
+      <div class="frame" data-label="выход">
+        <pre class="bare"><b>doc-tree.json</b>  <i>детерминированный</i>
+  schema_version, ruleset_version
+  parser: {tree_sitter, grammar}
+  <u>modules[]</u> id, domain, enrolled,
+          target_frameworks,
+          project_references
+  <u>nodes[]</u>   id, kind, doc_path,
+          matched_rules[], endpoints[],
+          dependencies[], symbol{…}
+          <u>signature_hash</u> — контракт
+          <u>impl_hash</u>      — тело
+
+<b>doc-tree.run.json</b>  <i>сидкар</i>
+  generated_at, host, duration
+  stats{symbols, documented,
+        not_documented, undecided}
+  <s>parse_error_files[]</s></pre>
+      </div>
+    </div>
+    <div class="cols c-3">
+      <div class="frame frame--bare" data-label="ключевое свойство">
+        <p class="small"><strong>Хэшей два, и это два уровня приоритета.</strong> <code>signature_hash</code> —
+          контракт, без номеров строк и путей: переформатирование файла не создаёт работы.
+          <code>impl_hash</code> — тело: «переписано при том же контракте».</p>
+      </div>
+      <div class="frame frame--bare" data-label="классификация">
+        <p class="small">Три исхода на каждый символ: <code>&lt;kind&gt;</code> — правило сработало,
+          <code>not_documented</code> — отсев <strong>с обязательной причиной</strong>,
+          <code>undecided</code> — решения нет. К нулю обязано идти только последнее.</p>
+      </div>
+      <div class="frame frame--red" data-label="о чём знать заранее">
+        <p class="small"><code>parse_error_files</code> в сидкаре — файлы, где разбор дал ошибки и <strong>ни одного</strong>
+          типа. Обычно это <code>#if</code> внутри выражения: тип исчезает из вывода целиком, и больше этот случай
+          ничем не виден. Ловит его <code>validate</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 04 · шаг 2 ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-section="Шаг 2">
+  <header>
+    <div class="eyebrow"><b>Шаг 2</b><i>docpipe materialize · docs</i><span class="idx">04 / 13</span></div>
+    <h2>Документ принадлежит двум авторам сразу</h2>
+    <p class="lede">Инструмент пересобирает свои зоны и не трогает чужие. Инвариант, на котором это стоит:
+      <code>assemble(parse_document(t)) == t</code> байт в байт.</p>
+  </header>
+  <div class="body">
+    <div class="io">
+      <div class="frame" data-label="вход">
+        <ul class="ticks files">
+          <li><code>doc-tree.json</code> — манифест шага 1</li>
+          <li><code>templates/</code> — 7 скелетов + <code>default.md</code></li>
+          <li><code>ownership.yaml</code> — команда документа</li>
+          <li><strong>существующее дерево</strong> <code>docs/</code></li>
+        </ul>
+        <p class="tiny">Без <code>ownership.yaml</code> у всех документов <code>team: null</code> — это видимый факт,
+          а не отсутствие строки.</p>
+      </div>
+      <div class="io-arrow">▸</div>
+      <div class="frame frame--sig" data-label="две фазы строго">
+        <ol class="steps">
+          <li><strong>План</strong> — что создать, что обновить, что перенести</li>
+          <li><strong>Проверка</strong> — блокирующие ошибки собираются целиком</li>
+          <li><strong>Запись</strong> — сравнение по нормализованному тексту; без изменений файл не открывается на запись вовсе</li>
+        </ol>
+        <p class="tiny">При блокирующей ошибке не записывается <strong>ничего</strong>: половина обновлённого
+          дерева хуже необновлённого, потому что о ней никто не узнает. Инструмент не удаляет никогда.</p>
+      </div>
+      <div class="io-arrow">▸</div>
+      <div class="frame" data-label="выход · зоны документа">
+        <pre class="bare"><i>---</i>
+<u>docpipe:</u>        <i>проекция манифеста,</i>
+  node_id       <i>перезаписывается всегда</i>
+  doc_path  kind  template
+  signature_hash  impl_hash
+<u>docpipe_state:</u>  <i>пишет только</i> docs accept
+  accepted  review
+<i>---</i>
+<em># PricingController</em>
+
+<u>&lt;!-- docpipe:generated:start --&gt;</u>
+  <i>шапка, исходники, эндпоинты, зависимости, XML-doc</i>
+<u>&lt;!-- docpipe:generated:end --&gt;</u>
+
+<em>## Назначение</em>
+<em>&lt;!-- docpipe:section:start purpose --&gt;</em>
+  <i>авторский текст — не затирается никогда</i>
+<em>&lt;!-- docpipe:section:end purpose --&gt;</em></pre>
+      </div>
+    </div>
+    <div class="cols c-2b">
+      <div class="frame" data-label="статус и решение · первое сработавшее выигрывает">
+        <div class="tw"><table>
+          <tr><th>Условие</th><th class="k">Статус</th><th class="k">Решение</th></tr>
+          <tr><td>файла нет</td><td class="k"><code>missing</code></td><td><span class="st st--write">write</span></td></tr>
+          <tr><td>есть пустые секции</td><td class="k"><code>empty</code></td><td><span class="st st--write">write</span></td></tr>
+          <tr><td><code>signature_hash</code> ≠ принятого</td><td class="k"><code>stale</code></td><td><span class="st st--write">write</span></td></tr>
+          <tr><td>приёмки не было, а текст есть</td><td class="k"><code>undeclared</code></td><td><span class="st st--review">review</span></td></tr>
+          <tr><td>документ перенесён</td><td class="k"><code>relocated</code></td><td><span class="st st--review">review</span></td></tr>
+          <tr><td>принятый <code>kind</code> ≠ текущего</td><td class="k"><code>drifted</code></td><td><span class="st st--review">review</span></td></tr>
+          <tr><td><code>impl_hash</code> ≠ принятого</td><td class="k"><code>drifted</code></td><td><span class="st st--review">review</span></td></tr>
+          <tr><td>иначе</td><td class="k"><code>current</code></td><td><span class="st st--skip">skip</span></td></tr>
+        </table></div>
+      </div>
+      <div class="stack">
+        <div class="frame frame--bare" data-label="автоперенос">
+          <p class="small">Переезд — это когда изменился <strong>код</strong> и пересчитался <code>doc_path</code>,
+            а файл с текстом остался на старом месте. Совпал <code>node_id</code> или <code>impl_hash</code>
+            при единственной паре — перенос; кандидатов несколько — решает человек командой <code>docs adopt</code>.</p>
+          <p class="tiny"><code>broken</code> и <code>orphan</code> — не про содержимое: первый значит
+            «структуру не прочитать, файл не тронут», второй — «узла с таким <code>node_id</code> в манифесте нет».</p>
+        </div>
+        <div class="frame frame--red" data-label="почему приёмка отдельной командой">
+          <p class="small"><code>docs accept</code> — <strong>единственный писатель</strong> принятого состояния,
+            и хэши он берёт из манифеста, а не из front matter документа. Тот — зеркало и мог отстать; приняв его
+            значение, документ навсегда остался бы <code>current</code>, будучи <code>stale</code>.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 05 · бизнес-слой ═════════════════════════════════════════════════ -->
+<section class="slide" data-section="Бизнес-слой">
+  <header>
+    <div class="eyebrow"><b>Бизнес-слой</b><i>docpipe anchors · business</i><span class="idx">05 / 13</span></div>
+    <h2>Точки входа объявлены не в коде, а в реестрах платформы</h2>
+    <p class="lede">Джобы, workflow и обработчики событий диспетчеризуются по данным: раннер получает имя типа
+      из строки XML. Литерала конкретного workflow в C# <strong>не существует структурно</strong> — граф триггеров
+      статическим анализом не восстанавливается, поэтому источник истины о точках входа — реестры.</p>
+  </header>
+  <div class="body">
+    <div class="io">
+      <div class="frame" data-label="вход">
+        <ul class="ticks files">
+          <li><code>registries.yaml</code> — описание реестров: путь, <code>item_xpath</code>, поля</li>
+          <li><strong>сами реестры</strong> — XML платформы</li>
+          <li><code>doc-tree.json</code> — чтобы найти реализацию</li>
+        </ul>
+        <ul class="ticks author">
+          <li><code>business/**/*.md</code> — каталог аналитика:<br><code>bp.</code> процесс · <code>be.</code> сущность · <code>cap.</code> возможность</li>
+        </ul>
+      </div>
+      <div class="io-arrow">▸</div>
+      <div class="frame frame--sig" data-label="что происходит">
+        <ol class="steps">
+          <li><strong>Инвентаризация</strong> — из реестров читаются якоря: <code>grid_service</code>, <code>job</code>,
+            <code>workflow</code>, <code>workflow_step</code>, <code>list_event</code>, <code>http</code>…</li>
+          <li><strong>Разрешение</strong> — якорь → запись реестра → тип → узел документации.
+            Словари видов сводит мост <code>resolve.REGISTRY_KIND</code>: аналитик пишет <code>table</code>,
+            реестр объявляет <code>list</code>.</li>
+          <li><strong><code>business_hash</code></strong> — по разрешённым фактам, <strong>без имён C#-типов</strong>.
+            Переименование класса шага хэш не меняет, добавление шага — меняет.</li>
+          <li><strong>Сборка</strong> — генерируемый блок и обратные ссылки в технических документах</li>
+        </ol>
+      </div>
+      <div class="io-arrow">▸</div>
+      <div class="frame" data-label="выход">
+        <ul class="ticks">
+          <li>Инвентарь точек входа — <code>anchors list</code></li>
+          <li>Генерируемые блоки бизнес-документов: точки входа, реализация, участники, данные</li>
+          <li>Статусы и <code>docpipe_state</code> с принятым хэшем</li>
+          <li>Отчёт линта: что сломано и сколько ещё писать</li>
+        </ul>
+        <p class="tiny">Статусов <code>missing</code> и <code>orphan</code> здесь нет: документ — и есть файл.
+          О ненаписанном сообщает отчёт о непокрытых точках входа, он считается по реестрам.</p>
+      </div>
+    </div>
+    <div class="cols c-2">
+      <div class="frame" data-label="статус и решение">
+        <div class="tw"><table>
+          <tr><th>Условие</th><th class="k">Статус</th><th class="k">Решение</th></tr>
+          <tr><td>документ не разбирается</td><td class="k"><code>broken</code></td><td><span class="st st--review">review</span></td></tr>
+          <tr><td>есть пустые секции</td><td class="k"><code>empty</code></td><td><span class="st st--write">write</span></td></tr>
+          <tr><td>якорь не разрешается, <code>verify ≠ false</code></td><td class="k"><code>broken</code></td><td><span class="st st--review">review</span></td></tr>
+          <tr><td>приёмки не было, а текст есть</td><td class="k"><code>undeclared</code></td><td><span class="st st--review">review</span></td></tr>
+          <tr><td><code>business_hash</code> ≠ принятого</td><td class="k"><code>drifted</code></td><td><span class="st st--review">review</span></td></tr>
+          <tr><td>иначе</td><td class="k"><code>current</code></td><td><span class="st st--skip">skip</span></td></tr>
+        </table></div>
+      </div>
+      <div class="frame frame--red" data-label="что роняет линт, а что нет">
+        <p class="small"><strong>Находка роняет прогон, только если её может починить автор документа.</strong>
+          Непокрытые точки входа и записи реестров без узла — состояние работы, а не дефект: они печатаются всегда,
+          но кода возврата не меняют, пока не названы в <code>--fail-on</code>.</p>
+        <p class="small">Требование покрытия 100 % не ставится и не должно: у большей части кода бизнес-смысла нет,
+          а линт, красный с первого дня, выключат на второй — и вместе с ним пропадут шесть работающих проверок.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 06 · настроечные файлы ═══════════════════════════════════════════ -->
+<section class="slide" data-section="Настройка">
+  <header>
+    <div class="eyebrow"><b>Настройка</b><i>пять файлов</i><span class="idx">06 / 13</span></div>
+    <h2>Что где настраивается и почему это разные файлы</h2>
+    <p class="lede">Файлы разделены не по удобству, а по <strong>скорости изменения и владельцу</strong>.
+      Словарь сущностей переносится между проектами, пути — нет, орг-структура меняется чаще кода.</p>
+  </header>
+  <div class="body">
+    <div class="frame" data-label="зоны ответственности">
+      <div class="tw"><table>
+        <tr><th class="k">Файл</th><th>Отвечает на вопрос</th><th>Кто ведёт</th><th>Переносится<br>в другой проект</th><th class="k">Как задаётся</th></tr>
+        <tr>
+          <td class="k"><code>docpipe.yaml</code></td>
+          <td>Где искать код, куда писать результат</td>
+          <td>Владелец пайплайна</td>
+          <td>Нет — свой у каждого репозитория</td>
+          <td class="k"><code>--config</code></td>
+        </tr>
+        <tr>
+          <td class="k"><code>rules/dotnet.yaml</code></td>
+          <td>Что считать сущностью какого вида и что не документировать</td>
+          <td>Архитектор</td>
+          <td><strong>Да</strong> — это словарь платформы</td>
+          <td class="k"><code>--rules</code> · ключ <code>rules</code></td>
+        </tr>
+        <tr>
+          <td class="k"><code>templates/</code></td>
+          <td>Из чего состоит документ каждого вида</td>
+          <td>Архитектор, техписатель</td>
+          <td><strong>Да</strong></td>
+          <td class="k"><code>--templates</code> · ключ <code>templates</code></td>
+        </tr>
+        <tr>
+          <td class="k"><code>ownership.yaml</code></td>
+          <td>Чей это документ</td>
+          <td>Тимлиды</td>
+          <td>Нет — орг-структура</td>
+          <td class="k"><code>--ownership</code> · ключ <code>ownership</code></td>
+        </tr>
+        <tr>
+          <td class="k"><code>registries.yaml</code></td>
+          <td>Где объявлены точки входа платформы</td>
+          <td>Команда платформы</td>
+          <td>Нет — пути и XPath платформы</td>
+          <td class="k"><code>--registries</code> · ключ <code>registries</code></td>
+        </tr>
+      </table></div>
+      <p class="tiny">Флаг важнее ключа в конфигурации — но только тогда, когда флаг действительно задан.
+        Значения по умолчанию: <code>rules/dotnet.yaml</code>, <code>templates</code>, <code>docs</code>,
+        <code>business</code>, <code>artifacts/doc-tree.json</code>, <code>.docpipe/cache</code>.</p>
+    </div>
+    <div class="cols c-2b">
+      <div class="frame frame--red" data-label="три похожих механизма — и цена ошибки между ними">
+        <div class="tw"><table>
+          <tr><th class="k">Механизм</th><th>Смысл</th><th>Что будет, если перепутать</th></tr>
+          <tr>
+            <td class="k"><code>enrolled</code><br><span class="tiny">docpipe.yaml</span></td>
+            <td><strong>Что документируем.</strong> Список только положительный, отрицаний нет</td>
+            <td>Тестовые проекты всё равно разбираются — их символы нужны графу наследования</td>
+          </tr>
+          <tr>
+            <td class="k"><code>exclude</code><br><span class="tiny">rules/dotnet.yaml</span></td>
+            <td><strong>Что не документируем, но читаем.</strong> Каждое решение с <code>reason</code></td>
+            <td>Отсев без причины запрещён на уровне загрузки: иначе «не документируем 4820» — снова безымянное число</td>
+          </tr>
+          <tr>
+            <td class="k"><code>exclude</code><br><span class="tiny">docpipe.yaml</span></td>
+            <td><strong>Куда не заходим вовсе.</strong> Файл не читается и символов не даёт</td>
+            <td>Наследование через такой файл <strong>рвётся</strong>. Нужно ровно для чужого кода внутри репозитория</td>
+          </tr>
+        </table></div>
+      </div>
+      <div class="stack">
+        <div class="frame frame--red" data-label="две ловушки, которые выглядят как работающая настройка">
+          <ul class="ticks warn">
+            <li><code>docpipe.yaml</code> <strong>не подхватывается автоматически</strong> — путь всегда задаётся
+              флагом <code>--config</code>. Без флага конфигурация молча не применяется, а это худший вид ошибки:
+              тот, который выглядит как успех.</li>
+            <li>Шаблон в <code>exclude</code> обязан заканчиваться на <code>/**</code>. <code>"docs"</code> совпадёт
+              только с самим каталогом, но не с файлами под ним — и будет выглядеть работающим.</li>
+          </ul>
+        </div>
+        <div class="frame frame--bare" data-label="что складывается, а что замещает">
+          <p class="small"><code>exclude</code> в <code>docpipe.yaml</code> <strong>складывается</strong> со встроенными
+            <code>**/obj/**</code>, <code>**/bin/**</code>, <code>**/*.g.cs</code>. <code>docs_scan_exclude</code> —
+            со встроенными <code>**/.venv/**</code>, <code>**/node_modules/**</code>, <code>**/.git/**</code>.
+            Ничто из этого не замещает список по умолчанию.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 07 · пример: docpipe.yaml ════════════════════════════════════════ -->
+<section class="slide" data-section="Настройка">
+  <header>
+    <div class="eyebrow"><b>Пример</b><i>docpipe.yaml — где искать код</i><span class="idx">07 / 13</span></div>
+    <h2>Один файл на репозиторий, двенадцать ключей</h2>
+    <p class="lede">Копируется из <code>docpipe.example.yaml</code> и правится под проект. Ниже — полный набор
+      с тем, что стоит поменять первым.</p>
+  </header>
+  <div class="body">
+    <div class="cols c-2b">
+      <div class="frame frame--sig" data-label="docpipe.yaml">
+<pre><i># ── шаг 1: где искать код ────────────────────────────</i>
+<b>enrolled:</b>                  <i># что документируем</i>
+  - "src/**"
+  <i># - "modules/*/src/**"</i>
+
+<b>exclude:</b>                   <i># куда не заходим вовсе</i>
+  - "docs/**"                <s># обязательно с /**</s>
+  - "third_party/**"
+
+<b>domains:</b>                   <i># смысловая группировка модулей</i>
+  "src/Cf.Pricing.*/**": "pricing"
+  "src/Cf.Risk.*/**":    "risk"
+  "src/Cf.Common.*/**":  "platform"
+
+<b>rules:</b>      "rules/dotnet.yaml"
+<b>out:</b>        "artifacts/doc-tree.json"   <i># путь от cwd</i>
+<b>cache_dir:</b>  ".docpipe/cache"            <i># путь от --root</i>
+
+<i># ── шаг 2: документы ─────────────────────────────────</i>
+<b>templates:</b>  "templates"
+<b>ownership:</b>  "ownership.yaml"
+<b>docs_root:</b>  "docs"
+<b>docs_scan_exclude:</b> []
+
+<i># ── бизнес-слой ──────────────────────────────────────</i>
+<b>registries:</b>    "registries.yaml"
+<b>business_root:</b> "business"</pre>
+      </div>
+      <div class="stack">
+        <div class="frame" data-label="что менять первым">
+          <ol class="steps">
+            <li><strong><code>enrolled</code></strong> — без него в документацию попадёт всё, включая тесты
+              и вспомогательные проекты. Начинать с одного модуля: <code>"src/Cf.Pricing.*/**"</code></li>
+            <li><strong><code>exclude</code></strong> — если инструмент лежит внутри сканируемого дерева
+              или в репозитории есть вендоренные зависимости</li>
+            <li><strong><code>domains</code></strong> — когда модулей больше нескольких десятков.
+              Без совпадения доменом становится имя модуля</li>
+            <li><strong><code>ownership</code></strong> — когда документов больше, чем одна команда может прочитать</li>
+          </ol>
+        </div>
+        <div class="frame frame--red" data-label="порядок ключей domains">
+          <p class="small">Проверяется <strong>первый совпавший глоб в лексикографическом порядке ключей</strong>,
+            а не в порядке записи в файле: перестановка строк не должна менять манифест.</p>
+        </div>
+        <div class="frame frame--bare" data-label="проверить, что применилось">
+<pre class="bare">uv run docpipe scan --root . \
+  <u>--config</u> docpipe.yaml <u>--stats</u>
+
+<i># --stats ничего не пишет: показывает
+# счётчики решений и подсказки по правилам</i></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 08 · пример: правила, владение, реестры ══════════════════════════ -->
+<section class="slide" data-section="Настройка">
+  <header>
+    <div class="eyebrow"><b>Пример</b><i>правила · владение · реестры</i><span class="idx">08 / 13</span></div>
+    <h2>Один синтаксис условий на три файла</h2>
+    <p class="lede">У правил классификации и правил владения <strong>общий движок</strong>: одни предикаты,
+      одна диагностика опечаток. Правила только положительные — более специфичное выражается более высоким
+      <code>priority</code>, а не исключением из общего.</p>
+  </header>
+  <div class="body">
+    <div class="cols c-3">
+      <div class="frame frame--sig" data-label="rules/dotnet.yaml — словарь сущностей">
+<pre><b>exclude:</b>
+  <b>require_public:</b> true   <i># не поле-правило:</i>
+                       <i># отрицаний в движке нет</i>
+  <b>rules:</b>
+    - <b>id:</b> data.contracts
+      <b>reason:</b> <s>"Контракт передачи данных:</s>
+<s>        смысл в вызывающем коде"</s>
+      <b>priority:</b> 50
+      <b>when:</b>
+        <b>name_regex:</b>
+          - "^.*Dto$"
+          - "^.*Request$"
+
+<b>rules:</b>
+  - <b>id:</b> ignite.service
+    <b>kind:</b>     ignite_service
+    <b>template:</b> ignite-service   <u># файл</u>
+    <b>priority:</b> 95
+    <b>when:</b>
+      <b>all:</b>
+        - <b>type_kind:</b> ["class", "record"]
+        - <b>inherits:</b>  ["IService"]</pre>
+        <p class="tiny"><code>template</code> обязан совпадать с именем скелета в <code>templates/</code> —
+          иначе прогон падает с явной ошибкой вместо молчаливой потери документов.</p>
+      </div>
+      <div class="frame frame--auth" data-label="ownership.yaml — чей документ">
+<pre><b>teams:</b>
+  - <b>id:</b> pricing
+    <b>title:</b> Ценообразование
+
+<b>rules:</b>
+  <i># 10 — проект целиком</i>
+  - <b>id:</b> pricing.modules
+    <b>team:</b> pricing
+    <b>priority:</b> 10
+    <b>when:</b>
+      <b>module_glob:</b> ["src/Cf.Pricing.*/**"]
+
+  <i># 50 — шэренный проект по каталогам</i>
+  - <b>id:</b> risk.shared-folders
+    <b>team:</b> risk
+    <b>priority:</b> 50
+    <b>when:</b>
+      <b>path_glob:</b> ["src/Cf.Shared/Risk/**"]
+
+  <i># 80 — namespace внутри чужого каталога</i>
+  <i># 100 — точечная передача одного типа</i></pre>
+        <p class="tiny">Владелец определяется по <strong>узлу</strong>, а не по модулю: «команда = проект»
+          разбивается о шэренный <code>.csproj</code> — ровно ту ситуацию, ради которой владение и заводится.
+          Слои с шагом 10/50/80/100 — чтобы вставка уровня не требовала перенумерации.</p>
+      </div>
+      <div class="frame frame--auth" data-label="registries.yaml — где точки входа">
+<pre><b>registries:</b>
+  - <b>id:</b> grid-services
+    <b>kind:</b> grid_service
+    <b>path:</b> …/services.config
+    <b>format:</b> xml
+    <b>item_xpath:</b> <u>"./dotNetServices/add"</u>
+    <b>fields:</b>
+      <b>ref:</b>       "@name"      <u># якорь</u>
+      <b>impl_fqn:</b>  "@class"
+      <b>assembly:</b>  "@assembly"
+      <b>team:</b>      "@team"
+
+  - <b>id:</b> jobs
+    <b>kind:</b> job
+    <b>paths:</b> ["…/Items*.xml"]
+    <b>item_xpath:</b> "./Lists/List[@InnerName=
+      'JOBS']/Items/Item[@KeyField='JOBTITLE']"
+    <b>fields:</b>
+      <b>ref:</b>           "@KeyValue"   <u># якорь</u>
+      <b>contract_fqn:</b>  "@JOBCLASS"
+      <b>schedule_raw:</b>  "@JOBSCHEDULE"</pre>
+        <p class="tiny">Якорь — <code>@name</code>, а не <code>@class</code>: имя сервиса не выводится из класса
+          и переименованием класса не меняется. <code>item_xpath</code> берёт <strong>только прямых детей</strong>:
+          обход по <code>.//add</code> подобрал бы интерцепторы как сервисы.</p>
+      </div>
+    </div>
+    <div class="frame frame--red" data-label="чего из реестров не читается — и это решение, а не упущение">
+      <p class="small">Флаги состояния — <code>Override</code>, <code>IsActive</code>, <code>JOBDISABLED</code> —
+        описывают политику поставки и состояние боевой БД, а не бизнес-смысл. Инструмент видит репозиторий и состояния
+        БД не знает <strong>никогда</strong>, поэтому «джоб выключен» или «версия активна» он сказать не может,
+        а прочитанный флаг рано или поздно кто-нибудь прочтёт как факт. Читается то, что описывает контракт:
+        идентификатор, класс, сборка, команда, расписание, заголовок, версия.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 09 · CLI I ═══════════════════════════════════════════════════════ -->
+<section class="slide" data-section="CLI">
+  <header>
+    <div class="eyebrow"><b>CLI · 1 из 3</b><i>манифест</i><span class="idx">09 / 13</span></div>
+    <h2>Построить дерево и понять, что в нём осталось нерешённым</h2>
+    <p class="lede"><span class="red-t">*</span> — обязательный параметр.
+      Коды возврата: <strong>0</strong> — успех, <strong>1</strong> — проверка не прошла или отказ,
+      <strong>2</strong> — ошибка пользователя.</p>
+  </header>
+  <div class="body">
+    <div class="cols c-2">
+      <div class="frame frame--sig" data-label="основная команда">
+        <div class="cmd"><b>docpipe scan</b><i>[OPTIONS]</i><span class="note">пишет 2 файла</span></div>
+        <div class="what">Строит дерево документации по исходникам .NET: детерминированный манифест
+          и сидкар <code>&lt;out&gt;.run.json</code> с метаданными прогона.</div>
+        <div class="opts">
+          <div class="opt req"><code>--root <em>&lt;path&gt;</em></code><span>Корень репозитория с исходниками.</span></div>
+          <div class="opt"><code>--config <em>&lt;path&gt;</em></code><span>Файл конфигурации <code>docpipe.yaml</code>. Автоматически не подхватывается.</span></div>
+          <div class="opt"><code>--rules <em>&lt;path&gt;</em></code><span>Набор правил классификации.</span></div>
+          <div class="opt"><code>--out <em>&lt;path&gt;</em></code><span>Куда записать манифест. Без флага — <code>out</code> из конфигурации.</span></div>
+          <div class="opt"><code>--jobs <em>&lt;int&gt;</em></code><span>Число процессов для разбора. По умолчанию 1.</span></div>
+          <div class="opt"><code>--no-cache</code><span>Не использовать кэш разобранных файлов.</span></div>
+          <div class="opt"><code>--scope <em>&lt;str&gt;</em></code><span>Перестроить только эти каталоги. Можно повторять.</span></div>
+          <div class="opt"><code>--from-manifest <em>&lt;path&gt;</em></code><span>Манифест, из которого брать узлы вне скоупа.</span></div>
+          <div class="opt"><code>--stats</code><span>Показать счётчики и подсказки по правилам, не писать файлы.</span></div>
+          <div class="opt"><code>--top <em>&lt;int&gt;</em></code><span>Сколько строк в каждом срезе <code>--stats</code>. По умолчанию 15.</span></div>
+          <div class="opt"><code>--dry-run</code><span>Показать дифф против существующего <code>--out</code>, не писать.</span></div>
+          <div class="opt"><code>--fail-on-undecided</code><span>Код 1, если про какой-то символ решение не принято. Для CI.</span></div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="frame" data-label="отладка набора правил">
+          <div class="cmd"><b>docpipe symbols</b><i>[OPTIONS]</i><span class="note">ничего не пишет</span></div>
+          <div class="what">Показывает сами символы, а не счётчики: что именно осталось без решения и по чему для него
+            писать предикат — замыкание наследования, атрибуты, публичные члены, путь. Идёт через кэш, поэтому её зовут в цикле.</div>
+          <div class="opts">
+            <div class="opt req"><code>--root <em>&lt;path&gt;</em></code><span>Корень репозитория.</span></div>
+            <div class="opt"><code>--state <em>&lt;str&gt;</em></code><span><code>undecided</code> (по умолчанию), <code>not_documented</code>, <code>documented</code>, <code>not_enrolled</code>, <code>interface_covered</code>, <code>any</code>.</span></div>
+            <div class="opt"><code>--module <em>&lt;str&gt;</em></code><span>Подстрока пути <code>.csproj</code>; с <code>*</code> — глоб, как в <code>enrolled</code>.</span></div>
+            <div class="opt"><code>--namespace <em>&lt;str&gt;</em></code><span>Начало namespace.</span></div>
+            <div class="opt"><code>--rule <em>&lt;str&gt;</em></code><span>Только символы, к которым причастно это правило.</span></div>
+            <div class="opt"><code>--kind <em>&lt;str&gt;</em></code><span>Только этот вид сущности.</span></div>
+            <div class="opt"><code>--limit <em>&lt;int&gt;</em></code><span>Не больше N; 0 — все.</span></div>
+            <div class="opt"><code>--format <em>&lt;str&gt;</em></code><span><code>text</code> или <code>json</code>. Плюс <code>--config</code>, <code>--rules</code>, <code>--jobs</code>, <code>--no-cache</code>.</span></div>
+          </div>
+        </div>
+        <div class="frame" data-label="работа с готовым манифестом">
+          <div class="cmd"><b>docpipe stats</b> <i>MANIFEST</i></div>
+          <div class="what">Состав готового манифеста. Состояний решений здесь нет: в манифест попадают только узлы.
+            Нерешённое показывает <code>scan --stats</code>.</div>
+          <div class="cmd"><b>docpipe diff</b> <i>OLD NEW [--format text|json]</i><span class="note">всегда код 0</span></div>
+          <div class="what">Что изменилось между двумя манифестами. Наличие изменений — не ошибка: по её выводу
+            решают, что перегенерировать.</div>
+          <div class="cmd"><b>docpipe validate</b> <i>MANIFEST</i></div>
+          <div class="what">Схема плюс инварианты, которые схема не покрывает. Каждый однажды нарушался на реальном
+            коде и приводил к молчаливой потере документов.</div>
+          <div class="cmd"><b>docpipe schema</b> <i>[--out &lt;path&gt;]</i> &nbsp;·&nbsp; <b>docpipe version</b></div>
+          <div class="what">Схема генерируется из моделей: разойтись с кодом она не может по построению.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 10 · CLI II ══════════════════════════════════════════════════════ -->
+<section class="slide" data-section="CLI">
+  <header>
+    <div class="eyebrow"><b>CLI · 2 из 3</b><i>документы</i><span class="idx">10 / 13</span></div>
+    <h2>Создать документы, узнать что с ними делать, зафиксировать соответствие</h2>
+    <p class="lede">Общие для всей группы: <code>--root</code> (по умолчанию <code>.</code>), <code>--config</code>,
+      <code>--templates</code>, <code>--ownership</code>. Каждый флаг важнее ключа в конфигурации — но только когда задан.</p>
+  </header>
+  <div class="body">
+    <div class="cols c-2">
+      <div class="stack">
+        <div class="frame frame--sig" data-label="создать и обновить">
+          <div class="cmd"><b>docpipe materialize</b> <i>MANIFEST</i><span class="note">пишет</span></div>
+          <div class="what">Создаёт или обновляет документы по манифесту. План → проверка → запись;
+            при блокирующей ошибке не записывается ничего.</div>
+          <div class="opts">
+            <div class="opt"><code>--root <em>&lt;path&gt;</em></code><span>Корень репозитория с документацией.</span></div>
+            <div class="opt"><code>--templates <em>&lt;path&gt;</em></code><span>Каталог шаблонов.</span></div>
+            <div class="opt"><code>--ownership <em>&lt;path&gt;</em></code><span>Правила владения.</span></div>
+            <div class="opt"><code>--team <em>&lt;str&gt;</em></code><span>Только узлы этих команд; можно повторять.</span></div>
+            <div class="opt"><code>--dry-run</code><span>Показать план, ничего не писать.</span></div>
+            <div class="opt"><code>--force</code><span>Пересоздать испорченные документы.</span></div>
+          </div>
+        </div>
+        <div class="frame" data-label="что делать с каждым документом">
+          <div class="cmd"><b>docpipe docs status</b> <i>MANIFEST [PATH...]</i><span class="note">ничего не пишет</span></div>
+          <div class="what">Отвечает на вопрос «писать, проверить или не трогать». Соблазн «заодно починить
+            front matter» превращает информационную команду в изменяющую, и её перестают гонять в CI.</div>
+          <div class="opts">
+            <div class="opt"><code>--action <em>&lt;str&gt;</em></code><span>Только эти решения: <span class="st st--write">write</span> <span class="st st--review">review</span> <span class="st st--skip">skip</span></span></div>
+            <div class="opt"><code>--fail-on <em>&lt;str&gt;</em></code><span>Код 1 при встрече статуса; можно повторять: <code>broken</code>, <code>stale</code>, <code>drifted</code>, <code>empty</code>, <code>missing</code>, <code>orphan</code>…</span></div>
+            <div class="opt"><code>--team <em>&lt;str&gt;</em></code><span>Только эти команды; можно повторять.</span></div>
+            <div class="opt"><code>--format <em>&lt;str&gt;</em></code><span><code>text</code> или <code>json</code>.</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="frame frame--sig" data-label="зафиксировать соответствие коду">
+          <div class="cmd"><b>docpipe docs accept</b> <i>MANIFEST [PATH...]</i><span class="note">пишет состояние</span></div>
+          <div class="what">Единственный писатель принятого состояния. Хэши берутся из манифеста, а не из front
+            matter документа: тот — зеркало и мог отстать. Приёмка идёт через тот же план и ту же запись, что
+            и <code>materialize</code>.</div>
+          <div class="opts">
+            <div class="opt"><code>--node <em>&lt;str&gt;</em></code><span>Идентификатор узла; можно повторять.</span></div>
+            <div class="opt"><code>--team <em>&lt;str&gt;</em></code><span>Только эти команды.</span></div>
+            <div class="opt"><code>--all</code><span>Все документы дерева.</span></div>
+            <div class="opt"><code>--force</code><span>Принять и пустые документы.</span></div>
+            <div class="opt"><code>--dry-run</code><span>Показать, не писать.</span></div>
+          </div>
+        </div>
+        <div class="frame" data-label="перенос и владение">
+          <div class="cmd"><b>docpipe docs adopt</b> <i>MANIFEST</i> <b>--from</b> <i>P</i> <b>--to</b> <i>P</i></div>
+          <div class="what">Перенести документ вручную. Нужен там, где автоперенос отказался: кандидатов
+            оказалось несколько, и выбор за человеком. Отметку о пересмотре ставить не требуется — обычная
+            логика статусов пометит документ сама.</div>
+          <div class="opts">
+            <div class="opt req"><code>--from <em>&lt;str&gt;</em></code><span>Откуда переносить.</span></div>
+            <div class="opt req"><code>--to <em>&lt;str&gt;</em></code><span>Куда переносить.</span></div>
+            <div class="opt"><code>--dry-run</code><span>Показать, не писать.</span></div>
+          </div>
+          <div class="cmd"><b>docpipe docs owners</b> <i>MANIFEST</i></div>
+          <div class="what">Кто владеет документами и что не так с правилами владения.</div>
+          <div class="opts">
+            <div class="opt"><code>--explain <em>&lt;str&gt;</em></code><span>Идентификатор узла или путь документа — почему именно эта команда.</span></div>
+            <div class="opt"><code>--lint</code><span>Диагностика набора: правила без узлов, ничьи по приоритету, типы в каталогах разных команд.</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 11 · CLI III ═════════════════════════════════════════════════════ -->
+<section class="slide" data-section="CLI">
+  <header>
+    <div class="eyebrow"><b>CLI · 3 из 3</b><i>бизнес-каталог</i><span class="idx">11 / 13</span></div>
+    <h2>Точки входа, каталог процессов и его связь с кодом</h2>
+    <p class="lede">Ключи <code>registries</code> и <code>business_root</code> в <code>docpipe.yaml</code> избавляют
+      от повторения путей во всех этих командах.</p>
+  </header>
+  <div class="body">
+    <div class="cols c-2">
+      <div class="stack">
+        <div class="frame" data-label="инвентаризация точек входа">
+          <div class="cmd"><b>docpipe anchors list</b> <i>MANIFEST</i><span class="note">всегда код 0</span></div>
+          <div class="what">Что вообще есть в системе как точка входа. Неразрешённая ссылка на тип — находка,
+            а не ошибка: «не найден среди узлов» и «типа нет» — разные вещи, и по манифесту их не различить.</div>
+          <div class="opts">
+            <div class="opt req"><code>--registries <em>&lt;path&gt;</em></code><span>Описание реестров.</span></div>
+            <div class="opt"><code>--root <em>&lt;path&gt;</em></code><span>Корень репозитория: пути реестров от него.</span></div>
+            <div class="opt"><code>--kind <em>&lt;str&gt;</em></code><span>Только эти виды; можно повторять.</span></div>
+            <div class="opt"><code>--team <em>&lt;str&gt;</em></code><span>Только эти команды; можно повторять.</span></div>
+            <div class="opt"><code>--format <em>&lt;str&gt;</em></code><span><code>text</code> или <code>json</code>.</span></div>
+          </div>
+          <div class="cmd"><b>docpipe anchors explain</b> <i>MANIFEST REF</i></div>
+          <div class="what">Всё, что известно про один якорь. Ищется и по <code>ref</code>, и по строке показа;
+            строка показа при этом <strong>не разбирается</strong> на части: <code>JOBTITLE</code> содержит
+            пробелы и двоеточия, а заголовок workflow — кириллицу.</div>
+        </div>
+        <div class="frame frame--auth" data-label="завести документ">
+          <div class="cmd"><b>docpipe business new</b> <i>ID</i> <b>--title</b> <i>"…"</i></div>
+          <div class="what">Скелет бизнес-документа. Вид берётся из префикса идентификатора и параметром
+            не задаётся: второй источник истины про вид разошёлся бы с первым.</div>
+          <div class="opts">
+            <div class="opt req"><code>--title <em>&lt;str&gt;</em></code><span>Заголовок документа.</span></div>
+            <div class="opt"><code>--business-root <em>&lt;str&gt;</em></code><span>Каталог бизнес-документов.</span></div>
+            <div class="opt"><code>--templates <em>&lt;path&gt;</em></code><span>Каталог скелетов бизнес-документов.</span></div>
+          </div>
+          <pre class="bare"><b>bp.</b><i>&lt;домен&gt;.&lt;имя&gt;</i>  → процесс     → business/<u>processes</u>/
+<b>be.</b><i>&lt;домен&gt;.&lt;имя&gt;</i>  → сущность    → business/<u>entities</u>/
+<b>cap.</b><i>&lt;имя&gt;</i>         → возможность → business/<u>capabilities</u>/</pre>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="frame frame--sig" data-label="собрать, проверить, принять">
+          <div class="cmd"><b>docpipe business build</b> <i>MANIFEST</i><span class="note">пишет</span></div>
+          <div class="what">Пересобирает генерируемые блоки. Идемпотентно: сравнение по тексту, документ
+            без изменений не открывается на запись вовсе.</div>
+          <div class="cmd"><b>docpipe business status</b> <i>MANIFEST [PATH...]</i><span class="note">ничего не пишет</span></div>
+          <div class="what">Что делать с каждым бизнес-документом: <code>--action</code>, <code>--team</code>,
+            <code>--fail-on</code>, <code>--format</code>.</div>
+          <div class="cmd"><b>docpipe business accept</b> <i>MANIFEST [PATH...]</i><span class="note">пишет состояние</span></div>
+          <div class="what">Хэш и факты берутся из свежего разрешения, а не из документа. Зеркала текущего
+            <code>business_hash</code> во front matter нет намеренно: второй источник обязан отстать.</div>
+          <div class="opts">
+            <div class="opt"><code>--registries <em>&lt;path&gt;</em></code><span>Описание реестров; обычно берётся из конфигурации.</span></div>
+            <div class="opt"><code>--business-root <em>&lt;str&gt;</em></code><span>Каталог бизнес-документов.</span></div>
+            <div class="opt"><code>--all</code><span>Весь каталог. Плюс <code>--force</code>, <code>--dry-run</code>, <code>--ownership</code>.</span></div>
+          </div>
+        </div>
+        <div class="frame" data-label="линт: восемь проверок фиксированным порядком">
+          <div class="cmd"><b>docpipe business lint</b> <i>MANIFEST</i> <b>--fail-on</b> <i>CHECK</i></div>
+          <div class="tw"><table>
+            <tr><th class="k">Проверка</th><th>О чём</th><th class="k">Код 1</th></tr>
+            <tr><td class="k"><code>unresolved</code></td><td>Якорь не разрешается; перечислены пробованные ступени</td><td class="k"><span class="st st--review">да</span></td></tr>
+            <tr><td class="k"><code>no-entry</code></td><td>Процесс без <code>entry</code></td><td class="k"><span class="st st--review">да</span></td></tr>
+            <tr><td class="k"><code>ambiguous-version</code></td><td>Workflow без <code>version</code> при нескольких версиях</td><td class="k"><span class="st st--review">да</span></td></tr>
+            <tr><td class="k"><code>unknown-capability</code></td><td>Ссылка на необъявленную возможность</td><td class="k"><span class="st st--review">да</span></td></tr>
+            <tr><td class="k"><code>team-mismatch</code></td><td><code>@team</code> реестра против <code>ownership.yaml</code></td><td class="k"><span class="st st--review">да</span></td></tr>
+            <tr><td class="k"><code>catalog</code></td><td>Дубли и формат идентификаторов</td><td class="k"><span class="st st--review">да</span></td></tr>
+            <tr><td class="k"><code>registry-unlinked</code></td><td>Запись реестра ссылается на тип, не найденный среди узлов</td><td class="k"><span class="st st--skip">нет</span></td></tr>
+            <tr><td class="k"><code>uncovered</code></td><td>Точки входа без единого документа — <strong>главный отчёт</strong></td><td class="k"><span class="st st--skip">нет</span></td></tr>
+          </table></div>
+          <p class="tiny"><code>--fail-on</code> со значением вне перечня — код <strong>2</strong>, а не пустой фильтр:
+            опечатка в CI иначе дала бы вечно зелёную проверку.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 12 · онбординг ═══════════════════════════════════════════════════ -->
+<section class="slide" data-section="Онбординг">
+  <header>
+    <div class="eyebrow"><b>Онбординг</b><i>установка и первый прогон</i><span class="idx">12 / 13</span></div>
+    <h2>Двадцать минут от клона до дерева документов</h2>
+    <p class="lede">Нужны <code>uv</code> и Python 3.12. <strong>.NET SDK не требуется</strong>: C# разбирается
+      через tree-sitter, без сборки проекта — достаточно, чтобы исходники лежали на диске.</p>
+  </header>
+  <div class="body">
+    <div class="cols c-2b">
+      <div class="stack">
+        <div class="frame frame--sig" data-label="1 · окружение">
+<pre><b>uv sync</b>                  <i># venv 3.12, uv.lock зафиксирован</i>
+<b>uv run docpipe --help</b></pre>
+        </div>
+        <div class="frame frame--sig" data-label="2 · прогон на тестовом решении из репозитория">
+<pre><i># ничего настраивать не надо — фикстура самодостаточна</i>
+<b>uv run docpipe scan</b> --root tests/fixtures/SampleSolution \
+                    --out /tmp/dt.json
+<b>uv run docpipe materialize</b> /tmp/dt.json --root /tmp/docs
+<b>uv run docpipe docs status</b> /tmp/dt.json --root /tmp/docs
+
+<i># посмотреть, что получилось</i>
+jq '.nodes[].doc_path' /tmp/dt.json
+cat /tmp/dt.run.json          <i># статистика прогона</i></pre>
+        </div>
+        <div class="frame frame--auth" data-label="3 · свой репозиторий">
+<pre><b>uv run docpipe scan</b> --root /путь/к/репозиторию \
+                    --out artifacts/doc-tree.json
+
+<i>Модулей: 671, узлов: 828. Записано: artifacts/doc-tree.json
+и artifacts/doc-tree.run.json</i>
+<s>Внимание: 1 файлов разобраны с ошибками и не дали ни одного
+типа — см. parse_error_files в сидкаре.</s></pre>
+          <p class="tiny">Пока без <code>--config</code> прогон идёт по умолчанию: <code>enrolled: ["**"]</code>,
+            то есть «документируем всё». Это нормальная стартовая точка — цифры покажут, что настраивать.</p>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="frame" data-label="что появилось на диске">
+          <div class="tw"><table>
+            <tr><th class="k">Файл</th><th>Что в нём</th></tr>
+            <tr><td class="k"><code>doc-tree.json</code></td><td>Манифест. Ни времени, ни имени машины, ни абсолютных путей — коммитится и читается в диффе</td></tr>
+            <tr><td class="k"><code>doc-tree.run.json</code></td><td>Сидкар: время, хост, длительность, счётчики решений, <code>parse_error_files</code></td></tr>
+            <tr><td class="k"><code>.docpipe/cache</code></td><td>Разобранные файлы. Стоит добавить в <code>.gitignore</code> сканируемого репозитория</td></tr>
+            <tr><td class="k"><code>docs/**/*.md</code></td><td>Появляется после <code>materialize</code>: скелеты с генерируемым блоком и пустыми авторскими секциями</td></tr>
+          </table></div>
+        </div>
+        <div class="frame" data-label="как читать первый вывод">
+          <ul class="ticks">
+            <li><strong><code>undecided</code></strong> — про символ решения нет. Единственное число, которое обязано
+              идти к нулю, и единственное, по которому видно, что настройка закончена.</li>
+            <li><strong><code>not_documented</code></strong> — посмотрели и решили не документировать. У каждого
+              решения есть <code>reason</code>, и отчёт показывает, сколько отсеяло какое.</li>
+            <li><strong><code>documented</code></strong> — стало узлом и получило <code>doc_path</code>.</li>
+          </ul>
+          <p class="small">Пока «не решено» смешано с «решено не документировать», отчёт не может отличить
+            «ещё не смотрели» от «посмотрели и решили», и появление нового типа в репозитории в большой цифре
+            не выделяется.</p>
+        </div>
+        <div class="frame frame--bare" data-label="куда смотреть дальше">
+          <ul class="ticks files">
+            <li><code>README.md</code> — «Настройка под конкретный проект», пошагово</li>
+            <li><code>docs/manifest.md</code>, <code>docs/materialize.md</code>, <code>docs/business-layer.md</code> — что лежит в выходе каждого шага</li>
+            <li><code>business.example/</code> — образец каталога процессов</li>
+            <li><code>CASHFLOW.md</code> — чек-лист настройки на боевом репозитории АС CF</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 13 · настройка под свой репозиторий ══════════════════════════════ -->
+<section class="slide" data-section="Онбординг">
+  <header>
+    <div class="eyebrow"><b>Онбординг</b><i>настройка под свой репозиторий</i><span class="idx">13 / 13</span></div>
+    <h2>Шесть шагов до нуля нерешённых символов</h2>
+    <p class="lede">Порядок важен: сначала посмотреть на цифры, потом записать решения, и только потом
+      включать проверку в CI. Каждый шаг проверяется одной командой.</p>
+  </header>
+  <div class="body">
+    <div class="cols c-2a">
+      <div class="frame frame--sig" data-label="цикл настройки">
+        <div class="tw"><table>
+          <tr><th class="k">Шаг</th><th>Что делать</th><th class="k">Чем проверить</th></tr>
+          <tr>
+            <td class="k">0</td>
+            <td>Прогнать <strong>как есть</strong> и посмотреть на состояние решений — сколько символов,
+              сколько нерешённых</td>
+            <td class="k"><code>scan --stats</code></td>
+          </tr>
+          <tr>
+            <td class="k">1</td>
+            <td>Посмотреть, <strong>за что зацепиться</strong>: какие базовые типы, атрибуты и суффиксы
+              повторяются в нерешённых</td>
+            <td class="k"><code>symbols --state undecided</code></td>
+          </tr>
+          <tr>
+            <td class="k">2</td>
+            <td>Записать решения <strong>«не документируем»</strong> в <code>exclude</code> набора правил —
+              каждое с <code>reason</code></td>
+            <td class="k"><code>symbols --state not_documented</code></td>
+          </tr>
+          <tr>
+            <td class="k">3</td>
+            <td><strong>Enrollment</strong>: что вообще входит в документацию. Список только положительный,
+              тестовые проекты перечислять не нужно</td>
+            <td class="k"><code>stats</code></td>
+          </tr>
+          <tr>
+            <td class="k">4</td>
+            <td><strong>Правила</strong>: словарь сущностей проекта. Новое правило — это <code>kind</code>,
+              <code>template</code> и скелет в <code>templates/</code></td>
+            <td class="k"><code>symbols --rule ID</code></td>
+          </tr>
+          <tr>
+            <td class="k">5</td>
+            <td><strong>Домены</strong> и <strong>владение</strong>: как сгруппировать модули и кому принадлежат документы</td>
+            <td class="k"><code>docs owners --lint</code></td>
+          </tr>
+          <tr>
+            <td class="k">6</td>
+            <td>Довести <code>undecided</code> до нуля и <strong>закрепить в CI</strong></td>
+            <td class="k"><code>--fail-on-undecided</code></td>
+          </tr>
+        </table></div>
+      </div>
+      <div class="stack">
+        <div class="frame frame--sig" data-label="что ставить в CI">
+<pre><i># манифест: решение принято про каждый символ</i>
+docpipe <b>scan</b> --root . --config docpipe.yaml \
+        --out artifacts/doc-tree.json <u>--fail-on-undecided</u>
+
+<i># инварианты, которые схема не покрывает</i>
+docpipe <b>validate</b> artifacts/doc-tree.json
+
+<i># документы: битые и отставшие от контракта</i>
+docpipe <b>docs status</b> artifacts/doc-tree.json \
+        <u>--fail-on</u> broken <u>--fail-on</u> stale
+
+<i># бизнес-каталог: дефекты, которые чинит автор</i>
+docpipe <b>business lint</b> artifacts/doc-tree.json \
+        --config docpipe.yaml</pre>
+          <p class="tiny">Манифест детерминирован — его стоит коммитить: тогда <code>docpipe diff</code>
+            в PR показывает, что изменилось в структуре документации, ещё до того, как кто-то откроет документы.</p>
+        </div>
+        <div class="frame frame--red" data-label="что проверить в своём репозитории заранее">
+          <ul class="ticks warn">
+            <li><strong>Общий код по ссылке на файл</strong>, а не отдельным проектом: такие файлы не принадлежат
+              ни одному модулю и в документацию не попадают. На OpenTelemetry и semantic-kernel это 5 % типов.</li>
+            <li><strong>Подстановки MSBuild в путях.</strong> Ссылки между проектами дорезолвливаются по имени
+              файла, а <code>TargetFramework</code> через цепочку <code>props</code> достать нечем.</li>
+            <li><strong>Плотность условной компиляции.</strong> Чем больше целевых платформ, тем чаще
+              <code>#if</code> стоит внутри выражения и молча уносит тип целиком.</li>
+            <li><strong>«Тест» как бизнес-понятие.</strong> В финансовом моделировании <code>StressTest</code>
+              и <code>BackTest</code> — настоящие сущности, а правило отсева тестов их выкинет.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="hud">
+  <span class="hud-section" id="section">Обзор</span>
+  <nav class="hud-dots" id="dots" aria-label="Слайды"></nav>
+  <span class="hud-count" id="count">01 / 13</span>
+  <button class="hud-btn" id="prev" type="button" aria-label="Предыдущий слайд">←</button>
+  <button class="hud-btn" id="next" type="button" aria-label="Следующий слайд">→</button>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var slides  = Array.prototype.slice.call(document.querySelectorAll(".slide"));
+  var rail    = document.getElementById("rail");
+  var count   = document.getElementById("count");
+  var section = document.getElementById("section");
+  var dots    = document.getElementById("dots");
+  var current = 0;
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+
+  slides.forEach(function (slide, i) {
+    var b = document.createElement("button");
+    b.className = "dot";
+    b.type = "button";
+    b.title = pad(i + 1) + " · " + (slide.dataset.section || "");
+    b.setAttribute("aria-label", "Слайд " + (i + 1));
+    b.addEventListener("click", function () { show(i); });
+    dots.appendChild(b);
+  });
+  var dotEls = Array.prototype.slice.call(dots.children);
+
+  function show(i) {
+    current = Math.max(0, Math.min(slides.length - 1, i));
+    slides.forEach(function (s, n) { s.classList.toggle("is-active", n === current); });
+    dotEls.forEach(function (d, n) { d.setAttribute("aria-current", n === current ? "true" : "false"); });
+    rail.style.width = ((current + 1) / slides.length * 100) + "%";
+    count.textContent = pad(current + 1) + " / " + pad(slides.length);
+    section.textContent = slides[current].dataset.section || "";
+    if (history.replaceState) { history.replaceState(null, "", "#" + (current + 1)); }
+    window.scrollTo(0, 0);
+  }
+
+  // Оглавление на титуле ведёт на слайды, а не на якоря в документе.
+  document.querySelectorAll(".toc a").forEach(function (a) {
+    a.addEventListener("click", function (e) {
+      e.preventDefault();
+      show(parseInt(a.getAttribute("href").slice(1), 10) - 1);
+    });
+  });
+
+  document.getElementById("prev").addEventListener("click", function () { show(current - 1); });
+  document.getElementById("next").addEventListener("click", function () { show(current + 1); });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) { return; }
+    switch (e.key) {
+      case "ArrowRight": case "PageDown": case " ": show(current + 1); e.preventDefault(); break;
+      case "ArrowLeft":  case "PageUp":          show(current - 1); e.preventDefault(); break;
+      case "Home": show(0); e.preventDefault(); break;
+      case "End":  show(slides.length - 1); e.preventDefault(); break;
+      case "p": case "P": window.print(); break;
+      case "t": case "T":
+        var root = document.documentElement;
+        var dark = root.getAttribute("data-theme") === "dark" ||
+                   (!root.getAttribute("data-theme") &&
+                    window.matchMedia("(prefers-color-scheme: dark)").matches);
+        root.setAttribute("data-theme", dark ? "light" : "dark");
+        break;
+    }
+  });
+
+  var start = parseInt((location.hash || "").slice(1), 10);
+  show(isNaN(start) ? 0 : start - 1);
+})();
+</script>
+</body>
+</html>
