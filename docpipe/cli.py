@@ -1,17 +1,22 @@
 """Точка входа командной строки."""
 
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from docpipe import __version__
+from docpipe.business import Catalog, doc_path_for, load_catalog
 from docpipe.business import build_context as build_resolve_context
-from docpipe.business import load_catalog
+from docpipe.business.build import compose
+from docpipe.business.catalog import ID_RE
 from docpipe.business.lint import CHECKS as LINT_CHECKS
 from docpipe.business.lint import format_report as format_lint_report
 from docpipe.business.lint import lint as lint_catalog
+from docpipe.business.model import KIND_BY_PREFIX
+from docpipe.business.resolve import ResolveContext
 from docpipe.classify import load_ruleset
 from docpipe.config import load_config
 from docpipe.diff import diff_manifests, format_changes
@@ -19,7 +24,7 @@ from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.explain import ANY, format_selection, select, selection_json
 from docpipe.hashing import stable_json_dumps
-from docpipe.materialize.apply import apply_plan, format_result
+from docpipe.materialize.apply import apply_plan, format_result, write_atomic
 from docpipe.materialize.build import build_context
 from docpipe.materialize.ownership import (
     Ownership,
@@ -917,6 +922,178 @@ business_app = typer.Typer(
 )
 app.add_typer(business_app, name="business")
 
+BUSINESS_TEMPLATES = "templates/business"
+
+
+def _business_template(directory: Path, kind: str) -> str:
+    path = directory / f"{kind}.md"
+    try:
+        return path.read_bytes().decode("utf-8-sig")
+    except OSError as exc:
+        typer.echo(f"Скелет не найден: {path}", err=True)
+        raise typer.Exit(code=2) from exc
+
+
+@business_app.command("new")
+def business_new(
+    doc_id: Annotated[str, typer.Argument(help="Идентификатор: bp.<домен>.<имя>.")],
+    title: Annotated[str, typer.Option("--title", help="Заголовок документа.")],
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
+    business_root: Annotated[
+        str | None, typer.Option("--business-root", help="Каталог бизнес-документов.")
+    ] = None,
+    templates_dir: Annotated[
+        Path | None, typer.Option("--templates", help="Каталог скелетов бизнес-документов.")
+    ] = None,
+) -> None:
+    """Создать скелет бизнес-документа.
+
+    Вид документа берётся из префикса идентификатора и параметром не задаётся:
+    второй источник истины про вид разошёлся бы с первым, и документ уехал бы
+    не в тот каталог.
+    """
+    settings = load_config(config)
+    if not ID_RE.match(doc_id):
+        typer.echo(
+            f"Идентификатор {doc_id!r} не по образцу `(bp|be|cap).<домен>.<имя>`"
+            " строчными латинскими",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    where = business_root or settings.business_root
+    kind = KIND_BY_PREFIX[doc_id.split(".", 1)[0]]
+    path = root / doc_path_for(doc_id, where)
+
+    # Повторный вызов — отказ, а не перезапись: документ уже могли наполнить,
+    # и «создать заново» здесь означало бы стереть чужую работу.
+    if path.exists():
+        typer.echo(f"Документ уже существует: {path}", err=True)
+        raise typer.Exit(code=1)
+
+    template = _business_template(templates_dir or Path(BUSINESS_TEMPLATES), kind)
+    head = (
+        "---\ndocpipe:\n"
+        f"  schema: business/1\n  id: {doc_id}\n  kind: {kind}\n"
+        f"  title: {title}\n  status: draft\n  entry: []\n"
+        "docpipe_state:\n  accepted: null\n  review: null\n---\n\n"
+    )
+    write_atomic(path, head + template.replace("{{ title }}", title))
+    typer.echo(f"Создано: {path}")
+
+
+@business_app.command("build")
+def business_build(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    registries_file: Annotated[
+        Path | None, typer.Option("--registries", help="Описание реестров.")
+    ] = None,
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
+    business_root: Annotated[
+        str | None, typer.Option("--business-root", help="Каталог бизнес-документов.")
+    ] = None,
+    ownership_file: Annotated[
+        Path | None, typer.Option("--ownership", help="Правила владения.")
+    ] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Ничего не писать.")] = False,
+) -> None:
+    """Пересобрать генерируемые блоки бизнес-документов.
+
+    Идемпотентно: сравнение идёт по тексту, и документ без изменений
+    не открывается на запись вовсе. Иначе на репозитории с `core.autocrlf=true`
+    каждый документ оказывался бы изменённым при каждом прогоне.
+    """
+    loaded = _business_context(
+        manifest_path, registries_file, root, config, business_root, ownership_file
+    )
+
+    written: list[str] = []
+    unchanged: list[str] = []
+    errors: list[str] = []
+
+    for doc in loaded.catalog.docs:
+        path = root / doc.doc_path
+        try:
+            existing = path.read_bytes().decode("utf-8-sig")
+        except OSError as exc:
+            errors.append(f"{doc.doc_path}: {exc}")
+            continue
+
+        text = compose(doc, loaded.ctx, existing, loaded.ownership)
+        if text == existing:
+            unchanged.append(doc.doc_path)
+            continue
+        if not dry_run:
+            write_atomic(path, text)
+        written.append(doc.doc_path)
+
+    verb = "Было бы обновлено" if dry_run else "Обновлено"
+    typer.echo(f"{verb}: {len(written)}, без изменений: {len(unchanged)}")
+    for line in sorted(written):
+        typer.echo(f"  {line}")
+    for line in sorted(loaded.catalog.errors) + sorted(errors):
+        typer.echo(f"  {line}", err=True)
+
+    if errors:
+        raise typer.Exit(code=1)
+
+
+@dataclass(frozen=True)
+class BusinessInputs:
+    """Всё, что нужно любой команде бизнес-слоя, прочитанное один раз."""
+
+    catalog: Catalog
+    anchors: list[ResolvedAnchor]
+    ctx: ResolveContext
+    ownership: Ownership | None
+    root: str
+    registry_errors: list[str]
+
+
+def _business_context(
+    manifest_path: Path,
+    registries_file: Path | None,
+    root: Path,
+    config: Path | None,
+    business_root: str | None,
+    ownership_file: Path | None,
+) -> BusinessInputs:
+    """Каталог, инвентаризация, контекст разрешения и владение.
+
+    Один сборщик на все команды бизнес-слоя. Разойдись они — `build` собирал бы
+    документ по одному набору реестров, а `status` сравнивал бы с другим,
+    и документ навсегда остался бы «изменившимся».
+    """
+    settings = load_config(config)
+    registries_path = registries_file or (
+        Path(settings.registries) if settings.registries else None
+    )
+    if registries_path is None:
+        typer.echo("Реестры не заданы: --registries или ключ `registries`", err=True)
+        raise typer.Exit(code=2)
+
+    anchors, registry_errors = _load_anchors(manifest_path, registries_path, root)
+    manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+
+    ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
+    try:
+        ownership = load_ownership(ownership_path) if ownership_path else None
+    except (OSError, ValueError) as exc:
+        typer.echo(f"{exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    where = business_root or settings.business_root
+    return BusinessInputs(
+        catalog=load_catalog(root, where),
+        anchors=anchors,
+        ctx=build_resolve_context(anchors, manifest, root=root),
+        ownership=ownership,
+        root=where,
+        registry_errors=registry_errors,
+    )
+
 
 @business_app.command("lint")
 def business_lint(
@@ -945,7 +1122,6 @@ def business_lint(
     дефект. Требование покрытия 100 % не ставится — линт, красный с первого
     дня, выключат на второй.
     """
-    settings = load_config(config)
     selected = list(fail_on or [])
 
     # Значение вне перечня — ошибка, а не пустой фильтр: опечатка
@@ -958,30 +1134,13 @@ def business_lint(
         )
         raise typer.Exit(code=2)
 
-    registries_path = registries_file or (
-        Path(settings.registries) if settings.registries else None
+    loaded = _business_context(
+        manifest_path, registries_file, root, config, business_root, ownership_file
     )
-    if registries_path is None:
-        typer.echo("Реестры не заданы: --registries или ключ `registries`", err=True)
-        raise typer.Exit(code=2)
-
-    anchors, registry_errors = _load_anchors(manifest_path, registries_path, root)
-    manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
-
-    ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
-    try:
-        ownership = load_ownership(ownership_path) if ownership_path else None
-    except (OSError, ValueError) as exc:
-        typer.echo(f"{exc}", err=True)
-        raise typer.Exit(code=2) from exc
-
-    where = business_root or settings.business_root
-    catalog = load_catalog(root, where)
-    context = build_resolve_context(anchors, manifest, root=root)
-    report = lint_catalog(catalog, anchors, context, where, ownership)
+    report = lint_catalog(loaded.catalog, loaded.anchors, loaded.ctx, loaded.root, loaded.ownership)
 
     typer.echo(format_lint_report(report, selected))
-    for error in registry_errors:
+    for error in loaded.registry_errors:
         typer.echo(f"Замечание при чтении реестров: {error}", err=True)
 
     if report.failing(selected):
