@@ -18,11 +18,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from docpipe.classify import Ruleset, classify, exclusion_of
+from docpipe.classify import ExcludeRule, Ruleset, classify, exclusion_of
 from docpipe.model import DocNode, Manifest, Symbol
 
-# Сколько строк показывать в каждом срезе по нерешённому.
-_TOP = 15
+# Сколько строк показывать в каждом срезе по нерешённому по умолчанию.
+# Переопределяется флагом `--top`: на репозитории с сотнями проектов срез
+# из пятнадцати строк выглядит полным списком, и остальное не видно.
+TOP = 15
 
 # Окончания имён, по которым в .NET обычно и опознают вид сущности.
 _SUFFIXES = (
@@ -55,14 +57,77 @@ _SUFFIXES = (
     "Strategy",
 )
 
+DOCUMENTED = "documented"
 INTERFACE_COVERED = "interface_covered"
 UNDECIDED = "undecided"
 NOT_DOCUMENTED = "not_documented"
 NOT_ENROLLED = "not_enrolled"
 
+# Человеческие названия состояний. В отчёте и в выборке символов они обязаны
+# совпадать: иначе `--state undecided` и строка «решение не принято» выглядят
+# как разные вещи, хотя это одно и то же.
+STATE_TITLES: dict[str, str] = {
+    DOCUMENTED: "документируем",
+    NOT_DOCUMENTED: "не документируем",
+    NOT_ENROLLED: "вне области",
+    INTERFACE_COVERED: "интерфейс с реализацией",
+    UNDECIDED: "решение не принято",
+}
+
 # Категории, которые не являются видами сущностей. Отделены, потому что попадают
 # в разные части отчёта: виды — в таблицу видов, эти четыре — в блок решений.
 _SPECIAL = (NOT_DOCUMENTED, UNDECIDED, INTERFACE_COVERED, NOT_ENROLLED)
+
+
+@dataclass(frozen=True)
+class Decision:
+    """Что решено про один символ.
+
+    Одна реализация на отчёт и на выборку символов. Разные означали бы, что
+    `--stats` говорит «шесть без решения», а `symbols --state undecided`
+    показывает пять или семь, — и доверять было бы нельзя ни тому, ни другому.
+    """
+
+    state: str
+    kind: str | None = None
+    exclusion: ExcludeRule | None = None
+    matched_rules: list[str] = field(default_factory=list)
+
+
+def documented_base_types(nodes: list[DocNode]) -> set[str]:
+    """FQN всех базовых типов документируемых узлов — вход для `interface_covered`."""
+    return {fqn for node in nodes if node.symbol for fqn in node.symbol.base_type_closure}
+
+
+def decide(
+    symbol: Symbol,
+    ruleset: Ruleset,
+    enrolled: set[str] | None = None,
+    documented_bases: frozenset[str] | set[str] = frozenset(),
+) -> Decision:
+    """Состояние одного символа. Порядок проверок значим и повторяться не должен.
+
+    Сначала область (`enrolled`), потом отсев, потом правила: правила к символу
+    вне области не применяются вовсе, а отсев отменяет классификацию, даже если
+    подходящее правило есть.
+    """
+    if enrolled is not None and symbol.module not in enrolled:
+        return Decision(state=NOT_ENROLLED)
+
+    if (exclusion := exclusion_of(symbol, ruleset)) is not None:
+        return Decision(state=NOT_DOCUMENTED, exclusion=exclusion)
+
+    if (classification := classify(symbol, ruleset)) is not None:
+        return Decision(
+            state=DOCUMENTED,
+            kind=classification.kind,
+            matched_rules=classification.matched_rules,
+        )
+
+    if symbol.type_kind == "interface" and symbol.fqn in documented_bases:
+        return Decision(state=INTERFACE_COVERED)
+
+    return Decision(state=UNDECIDED)
 
 
 @dataclass(frozen=True)
@@ -100,9 +165,7 @@ def collect_stats(
     (`enrolled` в `docpipe.yaml`), и правила к ним не применялись. На
     semantic-kernel это 1258 символов из 1258 — то есть весь счётчик был бы мусором.
     """
-    documented_bases = {
-        fqn for node in nodes if node.symbol for fqn in node.symbol.base_type_closure
-    }
+    documented_bases = documented_base_types(nodes)
 
     counts: Counter[str] = Counter()
     skipped: Counter[str] = Counter()
@@ -110,22 +173,13 @@ def collect_stats(
     rest: list[Symbol] = []
 
     for symbol in index.values():
-        if enrolled is not None and symbol.module not in enrolled:
-            counts[NOT_ENROLLED] += 1
-            continue
-        if (exclusion := exclusion_of(symbol, ruleset)) is not None:
-            counts[NOT_DOCUMENTED] += 1
-            skipped[exclusion.id] += 1
-            reasons[exclusion.id] = exclusion.reason
-            continue
-
-        classification = classify(symbol, ruleset)
-        if classification is not None:
-            counts[classification.kind] += 1
-        elif symbol.type_kind == "interface" and symbol.fqn in documented_bases:
-            counts[INTERFACE_COVERED] += 1
-        else:
-            counts[UNDECIDED] += 1
+        decision = decide(symbol, ruleset, enrolled, documented_bases)
+        # Документируемые считаются по видам: вид — это и есть содержание решения.
+        counts[decision.kind or decision.state] += 1
+        if decision.exclusion is not None:
+            skipped[decision.exclusion.id] += 1
+            reasons[decision.exclusion.id] = decision.exclusion.reason
+        if decision.state == UNDECIDED:
             rest.append(symbol)
 
     return Stats(
@@ -177,7 +231,16 @@ def _breakdown(symbols: list[Symbol]) -> dict[str, list[tuple[str, int]]]:
 
 
 def _top(values: Iterable[str]) -> list[tuple[str, int]]:
-    return Counter(values).most_common(_TOP)
+    """Счётчик по убыванию, при равенстве — по имени.
+
+    Явная сортировка, а не `most_common()`: тот при равных счётчиках сохраняет
+    порядок вставки, то есть порядок обхода индекса. Срез идёт человеку на глаза
+    и в журнал, и переставляться между прогонами он не должен.
+
+    Обрезка здесь не делается: сколько строк показать — вопрос вывода, и `--top`
+    иначе пришлось бы протаскивать через весь конвейер до `run()`.
+    """
+    return sorted(Counter(values).items(), key=lambda item: (-item[1], item[0]))
 
 
 # --------------------------------------------------------------------------------------
@@ -287,19 +350,28 @@ def format_skipped(stats: Stats) -> str:
     return "\n".join(lines)
 
 
-def format_breakdown(stats: Stats) -> str:
-    """Срезы по нерешённому — за что зацепиться, чтобы принять решение."""
+def format_breakdown(stats: Stats, top: int = TOP) -> str:
+    """Срезы по нерешённому — за что зацепиться, чтобы принять решение.
+
+    Обрезанный срез помечается остатком: «и ещё 476». Без этого на репозитории
+    с сотнями проектов топ-15 выглядит полным списком, и половина работы
+    остаётся невидимой.
+    """
     if not stats.breakdown:
         return ""
 
     blocks = ["Решение не принято — за что зацепиться (топ):"]
     for title, rows in stats.breakdown.items():
         blocks.append(f"\n  {title}:")
-        blocks += [f"    {count:6}  {name}" for name, count in rows]
+        blocks += [f"    {count:6}  {name}" for name, count in rows[:top]]
+        if len(rows) > top:
+            blocks.append(
+                f"    {'':6}  и ещё {plural(len(rows) - top, 'строка', 'строки', 'строк')}"
+            )
     return "\n".join(blocks)
 
 
-def format_report(stats: Stats) -> str:
+def format_report(stats: Stats, top: int = TOP) -> str:
     """Полный отчёт прогона: решения, виды, причины отсева, нерешённое.
 
     Собран здесь, а не в `cli`, чтобы порядок блоков проверялся тестом, а не
@@ -307,7 +379,7 @@ def format_report(stats: Stats) -> str:
     потом к тому, что осталось сделать.
     """
     blocks = [format_decisions(stats), format_kinds(stats), format_skipped(stats)]
-    blocks.append(format_breakdown(stats))
+    blocks.append(format_breakdown(stats, top))
     return "\n\n".join(block for block in blocks if block)
 
 

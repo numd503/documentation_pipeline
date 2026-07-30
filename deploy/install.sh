@@ -44,8 +44,8 @@ usage() {
   --relock               пересобрать лок, не задавая индекс (адрес зеркала
                          уже прописан глобально в ~/.config/uv/uv.toml)
   --no-install-project   не собирать сам пакет docpipe (не нужен hatchling).
-                         Команда вызывается как `python -m docpipe`;
-                         run.sh работает в обоих режимах
+                         Тогда команда зовётся только как `python -m docpipe`
+                         с PYTHONPATH на каталог инструмента
   --skip-sync            только скопировать файлы, окружение не поднимать
 EOF
     exit 2
@@ -136,9 +136,7 @@ keep_configured "$SOURCE/deploy/cashflow-docspipe/docpipe.yaml" \
     "$DEST/cashflow-docspipe/docpipe.yaml" "cashflow-docspipe/docpipe.yaml"
 keep_configured "$SOURCE/deploy/cashflow-docspipe/rules.yaml" \
     "$DEST/cashflow-docspipe/rules.yaml" "cashflow-docspipe/rules.yaml"
-cp "$SOURCE/deploy/cashflow-docspipe/run.sh" "$DEST/cashflow-docspipe/run.sh"
 cp "$SOURCE/deploy/cashflow-docspipe/README.md" "$DEST/cashflow-docspipe/README.md"
-chmod +x "$DEST/cashflow-docspipe/run.sh"
 
 # --- настройки uv для закрытого контура -------------------------------------
 if [ -n "$INDEX" ]; then
@@ -215,11 +213,17 @@ fi
 
 cat <<EOF
 
-Готово. Дальше:
+Готово. Дальше — задать переменные и завести алиас (одна строка, работает
+в обоих режимах установки):
 
-  cd $DEST/cashflow-docspipe
-  ./run.sh stats          # посмотреть срезы, ничего не записывая
-  ./run.sh scan           # построить манифест
+  export CF_ROOT=$TARGET_REPO
+  export DOCPIPE=$DEST
+  export BUNDLE=\$DOCPIPE/cashflow-docspipe
+  export PYTHONPATH=\$DOCPIPE
+  alias docpipe="uv run --no-sync --project \$DOCPIPE python -m docpipe"
+
+  cd \$CF_ROOT                                        # out в конфигурации от текущего каталога
+  docpipe scan --root . --config \$BUNDLE/docpipe.yaml --stats --jobs 4
 
 Настройка под проект — в $DEST/cashflow-docspipe/README.md
 EOF

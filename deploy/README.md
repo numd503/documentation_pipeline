@@ -15,7 +15,6 @@ docs/ml/docspipe/
 └── cashflow-docspipe/    всё, что настроено под АС CF
     ├── docpipe.yaml      что документируем, куда не заходим, куда пишем
     ├── rules.yaml        правила классификации под АС CF
-    ├── run.sh            запуск
     ├── artifacts/        манифест (создаётся при прогоне)
     └── .cache/           кэш разбора (создаётся при прогоне)
 ```
@@ -47,7 +46,7 @@ cd $WORK/docspipe/documentation_pipeline
 | Флаг | Когда |
 |---|---|
 | `--python 3.12.13` | доступна одна конкретная сборка Python. Скачивать интерпретатор запрещено (`python-downloads = "never"` в `uv.toml`), поэтому его надо назвать |
-| `--no-install-project` | зеркало не отдаёт `hatchling`. Тогда сам пакет не собирается, ставятся только 5 зависимостей, а команда зовётся как `python -m docpipe`. `run.sh` работает в обоих режимах |
+| `--no-install-project` | зеркало не отдаёт `hatchling`. Тогда сам пакет не собирается, ставятся только 5 зависимостей, а команда зовётся только как `python -m docpipe` с `PYTHONPATH` на каталог инструмента |
 | `--relock` | адрес зеркала уже прописан глобально в `~/.config/uv/uv.toml`, задавать его тут незачем — но лок всё равно надо пересобрать |
 
 ### `invalid peer certificate`
@@ -92,26 +91,38 @@ SSL_CERT_FILE=/путь/до/corp-root-ca.pem ./deploy/install.sh <репози�
 
 ## Запуск
 
-```bash
-cd $WORK/cfml/sbt.cms.cashflow/docs/ml/docspipe/cashflow-docspipe
+Переменные задаются один раз в сессии:
 
-./run.sh stats        # срезы для настройки правил, ничего не пишет
-./run.sh scan         # построить манифест
-./run.sh validate     # проверить построенное
+```bash
+export CF_ROOT=$WORK/cfml/sbt.cms.cashflow
+export DOCPIPE=$CF_ROOT/docs/ml/docspipe
+export BUNDLE=$DOCPIPE/cashflow-docspipe
+export PYTHONPATH=$DOCPIPE
+export OUT=$BUNDLE/artifacts/doc-tree.json
+
+alias docpipe="uv run --no-sync --project $DOCPIPE python -m docpipe"
 ```
 
-`run.sh` в сеть не ходит вообще (`uv run --no-sync`): окружение поднимает
-`install.sh`, и это его работа. Иначе каждый запуск сверялся бы с индексом и
-падал бы на машине без доступа к нему — на команде, которая с зависимостями
-ничего не делает.
+```bash
+cd $CF_ROOT     # `out` в конфигурации задан относительно текущего каталога
+
+docpipe scan --root . --config $BUNDLE/docpipe.yaml --stats     # состояние решений
+docpipe symbols --root . --config $BUNDLE/docpipe.yaml          # что осталось без решения
+docpipe scan --root . --config $BUNDLE/docpipe.yaml --jobs 4    # построить манифест
+docpipe validate $OUT                                           # проверить построенное
+```
+
+**`--no-sync` обязателен:** без него `uv run` при каждом вызове сверяется с индексом
+и на машине без доступа к нему падает — на команде, которая с зависимостями ничего
+не делает. Окружение поднимает `install.sh`, и это его работа.
+
+**`python -m docpipe`, а не консольная команда `docpipe`:** работает и когда пакет
+собран, и когда окружение поднято с `--no-install-project`. `PYTHONPATH` нужен
+для второго случая — пакет лежит в дереве, но не в `site-packages`.
 
 Всё остальное — в [`cashflow-docspipe/README.md`](cashflow-docspipe/README.md).
 
-## Вызов руками
-
-Если раскладка отличается от описанной или нужен флаг, которого нет в `run.sh`, —
-из корня репозитория АС CF, потому что пути внутри `docpipe.yaml` заданы
-относительно него:
+## Без алиаса, одной строкой
 
 ```bash
 cd $WORK/cfml/sbt.cms.cashflow

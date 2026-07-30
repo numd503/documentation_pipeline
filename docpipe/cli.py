@@ -12,6 +12,7 @@ from docpipe.config import load_config
 from docpipe.diff import diff_manifests, format_changes
 from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
+from docpipe.explain import ANY, format_selection, select, selection_json
 from docpipe.hashing import stable_json_dumps
 from docpipe.materialize.apply import apply_plan, format_result
 from docpipe.materialize.build import build_context
@@ -51,6 +52,8 @@ from docpipe.registry.anchors import (
     resolve_anchors,
 )
 from docpipe.stats import (
+    STATE_TITLES,
+    TOP,
     UNDECIDED,
     Stats,
     format_kinds,
@@ -139,6 +142,10 @@ def scan(
             help="Код 1, если про какой-то символ решение не принято. Для CI.",
         ),
     ] = False,
+    top: Annotated[
+        int,
+        typer.Option("--top", help="Сколько строк показывать в каждом срезе --stats."),
+    ] = TOP,
 ) -> None:
     """Построить дерево документации по исходникам .NET.
 
@@ -183,7 +190,7 @@ def scan(
     # `--stats` и `--dry-run` ничего не пишут: их зовут в цикле настройки правил,
     # где перезаписывать манифест на каждой итерации незачем.
     if show_stats:
-        typer.echo(format_report(result.stats))
+        typer.echo(format_report(result.stats, top))
         _check_undecided(result.stats, fail_on_undecided)
         return
 
@@ -308,6 +315,84 @@ def validate(
     if errors:
         raise typer.Exit(code=1)
     typer.echo(f"Манифест корректен: {len(manifest.modules)} модулей, {len(manifest.nodes)} узлов.")
+
+
+@app.command()
+def symbols(
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория с исходниками.")],
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    rules: Annotated[
+        Path | None, typer.Option("--rules", help="Набор правил классификации.")
+    ] = None,
+    state: Annotated[
+        str,
+        typer.Option(
+            "--state",
+            help="undecided, not_documented, documented, not_enrolled, interface_covered или any.",
+        ),
+    ] = UNDECIDED,
+    module: Annotated[
+        str, typer.Option("--module", help="Подстрока пути .csproj; с `*` — глоб, как в enrolled.")
+    ] = "",
+    namespace: Annotated[str, typer.Option("--namespace", help="Начало namespace.")] = "",
+    rule: Annotated[
+        str, typer.Option("--rule", help="Только символы, к которым причастно это правило.")
+    ] = "",
+    kind: Annotated[str, typer.Option("--kind", help="Только этот вид сущности.")] = "",
+    limit: Annotated[int, typer.Option("--limit", help="Показать не больше N; 0 — все.")] = 0,
+    jobs: Annotated[int, typer.Option("--jobs", help="Число процессов для разбора.")] = 1,
+    no_cache: Annotated[
+        bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
+    ] = False,
+    output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
+) -> None:
+    """Показать сами символы, а не счётчики: что именно осталось без решения.
+
+    Инструмент отладки набора правил на конкретном проекте. `--stats` отвечает
+    «сколько», эта команда — «что именно и по чему для него писать предикат»:
+    печатает замыкание наследования, атрибуты, публичные члены и путь.
+
+    Ничего не пишет. Прогон идёт через кэш, поэтому повторный вызов на том же
+    репозитории обходится дёшево — так и рассчитано, её зовут в цикле.
+    """
+    if not root.is_dir():
+        raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
+
+    known = {*STATE_TITLES, ANY}
+    if state not in known:
+        raise typer.BadParameter(
+            f"неизвестное состояние {state!r}; известны: {', '.join(sorted(known))}",
+            param_hint="--state",
+        )
+
+    try:
+        settings = load_config(config)
+        ruleset = load_ruleset(rules or Path(settings.rules))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    result = run_scan(
+        root, settings, ruleset, None if no_cache else root / settings.cache_dir, jobs
+    )
+    selection = select(
+        result.index,
+        result.manifest.nodes,
+        ruleset,
+        {module.csproj for module in result.manifest.modules if module.enrolled},
+        state=state,
+        module=module,
+        namespace=namespace,
+        rule=rule,
+        kind=kind,
+        limit=limit,
+    )
+
+    typer.echo(
+        selection_json(selection) if output_format == "json" else format_selection(selection)
+    )
 
 
 @app.command()
