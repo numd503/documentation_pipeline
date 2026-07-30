@@ -10,6 +10,7 @@
 """
 
 from docpipe.business.catalog import doc_path_for, load_catalog
+from docpipe.business.fingerprint import business_hash, hashed_anchors
 from docpipe.business.model import (
     ANCHOR_KINDS,
     Anchor,
@@ -18,14 +19,32 @@ from docpipe.business.model import (
     Catalog,
     Contract,
 )
+from docpipe.business.resolve import (
+    DATA_DISPATCHED,
+    REGISTRY_KIND,
+    Resolution,
+    ResolveContext,
+    build_context,
+    resolve,
+    resolve_all,
+)
 
 __all__ = [
     "ANCHOR_KINDS",
+    "DATA_DISPATCHED",
+    "REGISTRY_KIND",
     "Anchor",
     "BusinessDoc",
     "Capability",
     "Catalog",
     "Contract",
+    "ResolveContext",
+    "Resolution",
+    "build_context",
+    "business_hash",
     "doc_path_for",
+    "hashed_anchors",
     "load_catalog",
+    "resolve",
+    "resolve_all",
 ]
