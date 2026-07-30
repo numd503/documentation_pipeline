@@ -42,6 +42,14 @@ class DocpipeConfig(BaseModel):
     docs_root: str = "docs"
     docs_scan_exclude: list[str] = Field(default_factory=list)
 
+    # Бизнес-слой. `business_root` — параметр, а не константа: на АС CF
+    # артефакты инструмента лежат в `docs/ml/docspipe`, и первый каталог
+    # бизнес-документов заведут там же. Когда он понадобится другим командам,
+    # его вынесут; при параметре это правка одной строки, при константе —
+    # правка `doc_path` в каждом документе.
+    registries: str | None = None
+    business_root: str = "business"
+
 
 def load_config(path: Path | None) -> DocpipeConfig:
     """Загрузить конфигурацию; при `None` вернуть значения по умолчанию.

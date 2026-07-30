@@ -9,10 +9,13 @@
 import shutil
 from pathlib import Path
 
-from docpipe.business import build_context
+import yaml
+
+from docpipe.business import build_context, doc_path_for
 from docpipe.business.resolve import ResolveContext
 from docpipe.model import DocNode, Manifest, Member, ParserVersions, Relation, SourceSpan, Symbol
 from docpipe.registry import load_registries, read_registry, resolve_anchors
+from docpipe.registry.anchors import ResolvedAnchor
 
 REGISTRIES_ROOT = Path("tests/fixtures/registries")
 BUSINESS_ROOT = Path("tests/fixtures")
@@ -91,12 +94,18 @@ def manifest(items: list[DocNode] | None = None, ruleset_version: str = "test") 
     )
 
 
+def registry_anchors(
+    tree: Path = REGISTRIES_ROOT, resolved: Manifest | None = None
+) -> list[ResolvedAnchor]:
+    """Инвентаризация точек входа по фикстурным реестрам."""
+    specs = load_registries(tree / "registries.yaml")
+    return resolve_anchors([read_registry(spec, tree) for spec in specs], resolved or manifest())
+
+
 def context(tree: Path = REGISTRIES_ROOT, resolved: Manifest | None = None) -> ResolveContext:
     """Инвентаризация плюс манифест, свёрнутые в индексы."""
     resolved = resolved or manifest()
-    specs = load_registries(tree / "registries.yaml")
-    anchors = resolve_anchors([read_registry(spec, tree) for spec in specs], resolved)
-    return build_context(anchors, resolved, root=tree)
+    return build_context(registry_anchors(tree, resolved), resolved, root=tree)
 
 
 def registries_copy(tmp_path: Path) -> Path:
@@ -104,6 +113,49 @@ def registries_copy(tmp_path: Path) -> Path:
     destination = tmp_path / "registries"
     shutil.copytree(REGISTRIES_ROOT, destination)
     return destination
+
+
+def combined_tree(tmp_path: Path) -> Path:
+    """Корень, где реестры и бизнес-каталог лежат под одним `--root`.
+
+    В фикстурах они разнесены (`tests/fixtures/registries` и
+    `tests/fixtures/business`), потому что реестры описывают пути от своего
+    каталога. Командам же `--root` один на всё, и проверять их надо в такой
+    же раскладке, а не в удобной тестам.
+    """
+    shutil.copytree(REGISTRIES_ROOT, tmp_path, dirs_exist_ok=True)
+    shutil.copytree(BUSINESS_ROOT / "business", tmp_path / "business")
+    return tmp_path
+
+
+def business_doc(block: dict[str, object], *, filled: bool = False) -> str:
+    """Текст бизнес-документа с одной секцией.
+
+    Подсказка в пустой секции — HTML-комментарий: обычный текст сделал бы
+    `is_section_empty` ложным, и каждый новый документ выглядел бы написанным.
+    """
+    front = yaml.safe_dump({"schema": "business/1", **block}, allow_unicode=True, sort_keys=False)
+    body = "Написано." if filled else "<!-- Подсказка. -->"
+    return (
+        "---\n"
+        + "docpipe:\n"
+        + "".join(f"  {line}\n" for line in front.strip().splitlines())
+        + "docpipe_state:\n  accepted: null\n  review: null\n"
+        + "---\n\n"
+        + f"# {block.get('title', 'Документ')}\n\n"
+        + "<!-- docpipe:generated:start -->\n<!-- docpipe:generated:end -->\n\n"
+        + "## Зачем процесс существует\n\n"
+        + f"<!-- docpipe:section:start purpose -->\n{body}\n"
+        + "<!-- docpipe:section:end purpose -->\n"
+    )
+
+
+def write_doc(root: Path, business_root: str, block: dict[str, object], **kwargs: bool) -> Path:
+    """Положить документ по пути, выведенному из идентификатора."""
+    path = root / doc_path_for(str(block["id"]), business_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(business_doc(block, **kwargs), encoding="utf-8")
+    return path
 
 
 def edit(path: Path, old: str, new: str) -> None:

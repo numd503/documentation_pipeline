@@ -7,6 +7,11 @@ from typing import Annotated
 import typer
 
 from docpipe import __version__
+from docpipe.business import build_context as build_resolve_context
+from docpipe.business import load_catalog
+from docpipe.business.lint import CHECKS as LINT_CHECKS
+from docpipe.business.lint import format_report as format_lint_report
+from docpipe.business.lint import lint as lint_catalog
 from docpipe.classify import load_ruleset
 from docpipe.config import load_config
 from docpipe.diff import diff_manifests, format_changes
@@ -904,6 +909,83 @@ def anchors_explain(
         raise typer.Exit(code=1)
 
     typer.echo("\n\n".join(format_explain(anchor) for anchor in found))
+
+
+business_app = typer.Typer(
+    help="Бизнес-каталог: процессы, сущности и их связь с кодом.",
+    no_args_is_help=True,
+)
+app.add_typer(business_app, name="business")
+
+
+@business_app.command("lint")
+def business_lint(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    registries_file: Annotated[
+        Path | None, typer.Option("--registries", help="Описание реестров.")
+    ] = None,
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
+    business_root: Annotated[
+        str | None, typer.Option("--business-root", help="Каталог бизнес-документов.")
+    ] = None,
+    ownership_file: Annotated[
+        Path | None, typer.Option("--ownership", help="Правила владения.")
+    ] = None,
+    fail_on: Annotated[
+        list[str] | None,
+        typer.Option("--fail-on", help=f"Ронять на этих проверках: {', '.join(LINT_CHECKS)}."),
+    ] = None,
+) -> None:
+    """Проверить каталог: что сломано и сколько ещё писать.
+
+    Код 1 дают дефекты каталога — то, что автор документа может починить сам.
+    Непокрытые точки входа и записи реестров, не найденные среди узлов
+    документации, кода возврата не меняют: это состояние репозитория, а не
+    дефект. Требование покрытия 100 % не ставится — линт, красный с первого
+    дня, выключат на второй.
+    """
+    settings = load_config(config)
+    selected = list(fail_on or [])
+
+    # Значение вне перечня — ошибка, а не пустой фильтр: опечатка
+    # `--fail-on unresolvd` иначе дала бы вечно зелёную проверку.
+    unknown = sorted(set(selected) - set(LINT_CHECKS))
+    if unknown:
+        typer.echo(
+            f"Неизвестная проверка: {', '.join(unknown)}. Известны: {', '.join(LINT_CHECKS)}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    registries_path = registries_file or (
+        Path(settings.registries) if settings.registries else None
+    )
+    if registries_path is None:
+        typer.echo("Реестры не заданы: --registries или ключ `registries`", err=True)
+        raise typer.Exit(code=2)
+
+    anchors, registry_errors = _load_anchors(manifest_path, registries_path, root)
+    manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+
+    ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
+    try:
+        ownership = load_ownership(ownership_path) if ownership_path else None
+    except (OSError, ValueError) as exc:
+        typer.echo(f"{exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    where = business_root or settings.business_root
+    catalog = load_catalog(root, where)
+    context = build_resolve_context(anchors, manifest, root=root)
+    report = lint_catalog(catalog, anchors, context, where, ownership)
+
+    typer.echo(format_lint_report(report, selected))
+    for error in registry_errors:
+        typer.echo(f"Замечание при чтении реестров: {error}", err=True)
+
+    if report.failing(selected):
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
