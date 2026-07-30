@@ -48,7 +48,7 @@ docpipe:
   team: null
   signature_hash: sha256:0e29455f07023ae28072c3bef5b59c2725eead683869ad1b48c23170251613b4
   impl_hash: sha256:74ba5471180f9a88bdbc3e969e8ac5b8a802e1741f504714bbfbafaaf19e50c2
-  ruleset_version: 2026-07-26.1
+  ruleset_version: 2026-07-30.1
   sources:
   - path: src/Sample.Pricing.Api/Controllers/PricingController.cs
     start: 8

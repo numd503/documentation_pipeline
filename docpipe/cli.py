@@ -51,8 +51,11 @@ from docpipe.registry.anchors import (
     resolve_anchors,
 )
 from docpipe.stats import (
-    format_breakdown,
-    format_stats,
+    UNDECIDED,
+    Stats,
+    format_kinds,
+    format_report,
+    plural,
     stats_from_manifest,
     validate_manifest,
 )
@@ -129,6 +132,13 @@ def scan(
         bool,
         typer.Option("--dry-run", help="Показать дифф против существующего --out, не писать."),
     ] = False,
+    fail_on_undecided: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-undecided",
+            help="Код 1, если про какой-то символ решение не принято. Для CI.",
+        ),
+    ] = False,
 ) -> None:
     """Построить дерево документации по исходникам .NET.
 
@@ -173,8 +183,8 @@ def scan(
     # `--stats` и `--dry-run` ничего не пишут: их зовут в цикле настройки правил,
     # где перезаписывать манифест на каждой итерации незачем.
     if show_stats:
-        typer.echo(format_stats(result.stats))
-        typer.echo(format_breakdown(result.stats))
+        typer.echo(format_report(result.stats))
+        _check_undecided(result.stats, fail_on_undecided)
         return
 
     if dry_run:
@@ -184,6 +194,7 @@ def scan(
             else Manifest(ruleset_version=manifest.ruleset_version, parser=manifest.parser)
         )
         typer.echo(format_changes(diff_manifests(existing, manifest)))
+        _check_undecided(result.stats, fail_on_undecided)
         return
 
     write_manifest(manifest, destination)
@@ -209,6 +220,28 @@ def scan(
             f"Внимание: {len(meta.parse_error_files)} файлов разобраны с ошибками "
             "и не дали ни одного типа — см. parse_error_files в сидкаре."
         )
+    _check_undecided(result.stats, fail_on_undecided)
+
+
+def _check_undecided(stats: Stats, fail: bool) -> None:
+    """Отказ, если про какой-то символ решение не принято.
+
+    Смысл флага — в том, что проверка становится возможной вообще. Пока
+    «не решено» было счётчиком «неклассифицировано», он был большим всегда,
+    и появление в репозитории нового типа в нём не выделялось. Доведённое
+    до нуля «не решено» превращает такой тип в упавшую сборку.
+    """
+    undecided = stats.counts.get(UNDECIDED, 0)
+    if not fail or not undecided:
+        return
+
+    typer.echo(
+        f"Решение не принято по {plural(undecided, 'символу', 'символам', 'символам')}. "
+        "Каждый обязан быть либо классифицирован правилом, либо отсеян правилом "
+        "exclude с указанной причиной. Что именно осталось — покажет `scan --stats`.",
+        err=True,
+    )
+    raise typer.Exit(code=1)
 
 
 @app.command()
@@ -283,8 +316,9 @@ def stats(
 ) -> None:
     """Показать состав готового манифеста.
 
-    `unclassified` здесь быть не может: в манифест попадают только узлы.
-    Чтобы увидеть непокрытое, нужен `scan --stats` — он держит индекс символов.
+    Состояния решений здесь быть не может: в манифест попадают только узлы,
+    то есть то, про что решено «документируем». Чтобы увидеть нерешённое, нужен
+    `scan --stats` — он держит индекс символов целиком.
     """
     try:
         manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
@@ -292,7 +326,7 @@ def stats(
         typer.echo(f"Не удалось прочитать манифест: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    typer.echo(format_stats(stats_from_manifest(manifest), total_label="total nodes"))
+    typer.echo(format_kinds(stats_from_manifest(manifest), total_label="total nodes"))
 
 
 @app.command()

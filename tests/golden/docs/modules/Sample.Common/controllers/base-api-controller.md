@@ -15,7 +15,7 @@ docpipe:
   team: null
   signature_hash: sha256:6f76f705ad092a207f00f9c51274166f28f5b0f2d3f39fc04289f12f9ed091c9
   impl_hash: sha256:62880d6798773493d6b5d95fe9d32306084abceddc5c4c2ec4929e89732fd8c3
-  ruleset_version: 2026-07-26.1
+  ruleset_version: 2026-07-30.1
   sources:
   - path: src/Sample.Common/Web/BaseApiController.cs
     start: 6

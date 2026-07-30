@@ -9,6 +9,8 @@ from docpipe.classify import (
     Classification,
     base_type_candidates,
     classify,
+    condition_values,
+    exclusion_of,
     is_excluded,
     load_ruleset,
 )
@@ -88,7 +90,7 @@ def test_dto_is_excluded_by_name(sample_symbols: dict[str, Symbol], ruleset) -> 
 
 
 def test_program_matches_nothing(sample_symbols: dict[str, Symbol], ruleset) -> None:
-    """Не исключён, но и ни под одно правило не подходит — это `unclassified`."""
+    """Не исключён, но и ни под одно правило не подходит — решение не принято."""
     assert not is_excluded(sample_symbols["Program"], ruleset)
     assert classify(sample_symbols["Program"], ruleset) is None
 
@@ -257,13 +259,241 @@ def test_exclusion_wins_over_matching_rule(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------------------
+# Решения «не документируем»: причина, атрибуция, совместимость форм
+# --------------------------------------------------------------------------------------
+
+
+def _exclude_rule(**overrides: object) -> dict[str, object]:
+    return {"id": "r", "reason": "потому что", "when": {"type_kind": ["class"]}} | overrides
+
+
+def test_exclusion_names_the_decision_and_its_reason(tmp_path: Path) -> None:
+    """Отсев обязан быть объясним: без причины это снова безымянное число."""
+    symbol = _symbol(b"namespace N;\npublic class C { }\n")
+    ruleset = _ruleset_with(
+        {"type_kind": ["interface"]}, tmp_path, exclude={"rules": [_exclude_rule(id="generated")]}
+    )
+    decision = exclusion_of(symbol, ruleset)
+
+    assert decision is not None
+    assert (decision.id, decision.reason) == ("generated", "потому что")
+
+
+def test_attribute_can_exclude_what_no_path_pattern_catches(tmp_path: Path) -> None:
+    """Главная причина, по которой краткой формы было мало.
+
+    Генерат в АС CF опознаётся атрибутом `[GenerateCode]`, а не каталогом:
+    1478 типов, которые в краткой форме нельзя было ни классифицировать,
+    ни отсеять, и потому они оставались «неклассифицированными» навсегда.
+    """
+    symbol = _symbol(b"namespace N;\n[GenerateCode]\npublic class Srv2020Ver005 { }\n")
+    ruleset = _ruleset_with(
+        {"type_kind": ["class"]},
+        tmp_path,
+        exclude={"rules": [_exclude_rule(id="generated", when={"attribute": ["GenerateCode"]})]},
+    )
+
+    assert is_excluded(symbol, ruleset)
+
+
+def test_short_form_is_equivalent_to_rules(
+    sample_symbols: dict[str, Symbol], tmp_path: Path
+) -> None:
+    """Набор, написанный до появления причин, обязан работать без правки.
+
+    Иначе правка требует одновременной миграции развёрнутых конфигураций —
+    в том числе той, что уже лежит на боевом репозитории АС CF.
+    """
+    short_dir, spelled_dir = tmp_path / "short", tmp_path / "spelled"
+    short_dir.mkdir()
+    spelled_dir.mkdir()
+
+    short = _ruleset_with(
+        {"type_kind": ["class"]},
+        short_dir,
+        exclude={
+            "path_glob": ["**/obj/**"],
+            "name_regex": ["^.*Dto$"],
+            "type_kind_deny": ["enum"],
+            "require_public": True,
+        },
+    )
+    spelled = _ruleset_with(
+        {"type_kind": ["class"]},
+        spelled_dir,
+        exclude={
+            "require_public": True,
+            "rules": [
+                _exclude_rule(id="generated", when={"path_glob": ["**/obj/**"]}),
+                _exclude_rule(id="contracts", when={"name_regex": ["^.*Dto$"]}),
+                _exclude_rule(id="enums", when={"type_kind": ["enum"]}),
+            ],
+        },
+    )
+
+    assert {name for name, s in sample_symbols.items() if is_excluded(s, short)} == {
+        name for name, s in sample_symbols.items() if is_excluded(s, spelled)
+    }
+
+
+_REFERENCE_SET_BEFORE_MIGRATION = """
+ruleset_version: before
+exclude:
+  path_glob:
+    - "**/obj/**"
+    - "**/bin/**"
+    - "**/*.g.cs"
+    - "**/*.Designer.cs"
+    - "**/*.generated.cs"
+    - "**/Migrations/**"
+    - "**/test/**"
+    - "**/tests/**"
+    - "**/*Test/**"
+    - "**/*Tests/**"
+  name_regex:
+    - "^.*Dto$"
+    - "^.*Request$"
+    - "^.*Response$"
+    - "^.*Options$"
+    - "^.*Settings$"
+    - "^.*Tests?$"
+  type_kind_deny: ["enum"]
+  require_public: true
+rules: []
+"""
+
+
+def test_reference_set_migration_changed_nothing(
+    sample_solution: Path, wild_solution: Path, tmp_path: Path
+) -> None:
+    """Перевод эталонного набора в форму с причинами не изменил состав отсева.
+
+    Здесь проверяется сама миграция, а не механизм: слева — секция `exclude`
+    ровно в том виде, в каком она была до правки, справа — четыре решения
+    с причинами. Отличаться они обязаны только тем, что теперь видно, почему
+    символ отсеян; какие символы отсеяны — тем же.
+    """
+    before_path = tmp_path / "before.yaml"
+    before_path.write_text(_REFERENCE_SET_BEFORE_MIGRATION, encoding="utf-8")
+    before, after = load_ruleset(before_path), load_ruleset(RULES)
+
+    for root in (sample_solution, wild_solution):
+        symbols = compute_closures(index_of(root)).values()
+        assert {s.fqn for s in symbols if is_excluded(s, before)} == {
+            s.fqn for s in symbols if is_excluded(s, after)
+        }, root
+
+
+def test_short_form_reports_which_of_its_four_causes_fired(tmp_path: Path) -> None:
+    """Разбивка по причинам появляется и у краткой формы, с общими формулировками.
+
+    До этого она добывалась ручными замерами: в README есть цифры «на ABP
+    name_regex — 508 из 996», которых инструмент не показывал.
+    """
+    ruleset = _ruleset_with(
+        {"type_kind": ["class"]},
+        tmp_path,
+        exclude={"name_regex": ["^.*Dto$"], "require_public": True},
+    )
+
+    public_dto = exclusion_of(_symbol(b"namespace N;\npublic class PriceDto { }\n"), ruleset)
+    internal = exclusion_of(_symbol(b"namespace N;\ninternal class Helper { }\n"), ruleset)
+
+    assert public_dto is not None and public_dto.id == "exclude.name_regex"
+    assert internal is not None and internal.id == "exclude.require_public"
+    assert internal.reason  # причина есть даже у переключателя
+
+
+def test_written_rule_takes_attribution_from_the_short_form(tmp_path: Path) -> None:
+    """При совпадении обоих в отчёт идёт причина человека: она информативнее."""
+    symbol = _symbol(b"namespace N;\npublic class PriceDto { }\n")
+    ruleset = _ruleset_with(
+        {"type_kind": ["class"]},
+        tmp_path,
+        exclude={
+            "name_regex": ["^.*Dto$"],
+            "rules": [_exclude_rule(id="contracts", when={"name_regex": ["^Price.*$"]})],
+        },
+    )
+    decision = exclusion_of(symbol, ruleset)
+
+    assert decision is not None and decision.id == "contracts"
+
+
+def test_attribution_does_not_depend_on_order_in_the_file(tmp_path: Path) -> None:
+    """Иначе перестановка двух строк в YAML меняла бы цифры в отчёте и в CI."""
+    symbol = _symbol(b"namespace N;\npublic class C { }\n")
+    first = _exclude_rule(id="aaa", when={"type_kind": ["class"]})
+    second = _exclude_rule(id="zzz", when={"name_regex": ["^C$"]})
+
+    for order in ([first, second], [second, first]):
+        ruleset = _ruleset_with({"type_kind": ["interface"]}, tmp_path, exclude={"rules": order})
+        decision = exclusion_of(symbol, ruleset)
+        assert decision is not None and decision.id == "aaa"
+
+
+def test_exclude_rule_without_reason_fails_at_load(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="без полей"):
+        _ruleset_with(
+            {"type_kind": ["class"]}, tmp_path, exclude={"rules": [{"id": "r", "when": {}}]}
+        )
+
+
+def test_empty_exclude_condition_fails_at_load(tmp_path: Path) -> None:
+    """Правило-заглушка обнулила бы нерешённое, ничего не решив."""
+    with pytest.raises(ValueError, match="одним ключом"):
+        _ruleset_with(
+            {"type_kind": ["class"]}, tmp_path, exclude={"rules": [_exclude_rule(when={})]}
+        )
+
+
+def test_reserved_id_prefix_fails_at_load(tmp_path: Path) -> None:
+    """Иначе в таблице причин появились бы две строки с одним id."""
+    with pytest.raises(ValueError, match="зарезервирован"):
+        _ruleset_with(
+            {"type_kind": ["class"]},
+            tmp_path,
+            exclude={"rules": [_exclude_rule(id="exclude.name_regex")]},
+        )
+
+
+def test_unknown_exclude_field_fails_at_load(tmp_path: Path) -> None:
+    """Опечатка в имени поля иначе означала бы молча не работающий отсев."""
+    with pytest.raises(ValueError, match="неизвестные поля"):
+        _ruleset_with({"type_kind": ["class"]}, tmp_path, exclude={"name_regexp": ["^X$"]})
+
+
+def test_bad_regex_in_exclude_fails_at_load(tmp_path: Path) -> None:
+    """Битая регулярка обнаруживалась бы иначе посреди прогона, и не всегда."""
+    with pytest.raises(ValueError, match="неверное регулярное выражение"):
+        _ruleset_with({"type_kind": ["class"]}, tmp_path, exclude={"name_regex": ["["]})
+
+
+def test_condition_values_walks_combinators() -> None:
+    """Вопрос «отсекается ли такой путь» не должен зависеть от формы записи."""
+    flat = {"path_glob": ["a/**"]}
+    nested = {"any": [{"path_glob": ["a/**"]}, {"all": [{"path_glob": ["b/**"]}]}]}
+
+    assert condition_values(flat, "path_glob") == ["a/**"]
+    assert condition_values(nested, "path_glob") == ["a/**", "b/**"]
+    assert condition_values(nested, "name_regex") == []
+
+
+# --------------------------------------------------------------------------------------
 # Загрузка и проверка набора
 # --------------------------------------------------------------------------------------
 
 
 def test_default_ruleset_loads() -> None:
     ruleset = load_ruleset(RULES)
-    assert ruleset.ruleset_version == "2026-07-26.1"
+    assert ruleset.ruleset_version == "2026-07-30.1"
+    assert {rule.id for rule in ruleset.exclude.rules} == {
+        "generated.code",
+        "tests",
+        "data.contracts",
+        "enums",
+    }
+    assert all(rule.reason for rule in ruleset.exclude.rules)
     assert {rule.id for rule in ruleset.rules} == {
         "controller.aspnet",
         "ignite.service",
@@ -278,7 +508,7 @@ def test_default_ruleset_loads() -> None:
 def test_unknown_predicate_fails_at_load(tmp_path: Path) -> None:
     """Опечатка в предикате иначе дала бы правило, которое никогда не срабатывает.
 
-    Понять это можно было бы только по счётчику `unclassified` — то есть никак.
+    Понять это можно было бы только по счётчику «решение не принято» — то есть никак.
     """
     path = tmp_path / "r.yaml"
     path.write_text(
