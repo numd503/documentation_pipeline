@@ -9,11 +9,13 @@
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from docpipe.business import load_catalog, resolve_all
 from docpipe.business.build import backlinks, cell, generated_block, relative
 from docpipe.business.model import Anchor, BusinessDoc
 from docpipe.business.resolve import ResolveContext
+from docpipe.cli import app
 from docpipe.materialize.ownership import Ownership, load_ownership
 from tests.business_support import combined_tree, context, edit, manifest
 
@@ -244,3 +246,39 @@ def test_anchor_display_is_never_parsed_back(tree: Path) -> None:
 
     assert anchor.display == "PM: Load limits"
     assert Anchor(kind="workflow", ref="W", version="2").display == "W@2"
+
+
+# --------------------------------------------------------------------------------------
+# Сквозная проверка: шаг 2 получает бизнес-контекст (B09)
+# --------------------------------------------------------------------------------------
+
+
+def test_materialize_adds_business_context_when_catalog_is_configured(tree: Path) -> None:
+    """Раздел появляется в техническом документе, когда каталог задан
+    в конфигурации, и не появляется, когда не задан."""
+    runner = CliRunner()
+    (tree / "docpipe.yaml").write_text(
+        f"registries: {tree / 'registries.yaml'}\nbusiness_root: {BUSINESS}\n",
+        encoding="utf-8",
+    )
+    args = [
+        "materialize",
+        str(tree / "doc-tree.json"),
+        "--root",
+        str(tree),
+        "--templates",
+        "templates",
+    ]
+
+    assert runner.invoke(app, args).exit_code == 0
+    receiver = (
+        tree / "docs/modules/App/services/usertasksaddedtriggersampleworkfloweventreceiver.md"
+    )
+    assert "### Бизнес-контекст" not in receiver.read_text(encoding="utf-8")
+
+    assert runner.invoke(app, [*args, "--config", str(tree / "docpipe.yaml")]).exit_code == 0
+    text = receiver.read_text(encoding="utf-8")
+
+    assert "### Бизнес-контекст" in text
+    assert "Онлайн УФН" in text
+    assert "\\" not in text

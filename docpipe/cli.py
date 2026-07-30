@@ -1,7 +1,7 @@
 """Точка входа командной строки."""
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Annotated
 
@@ -10,7 +10,7 @@ import typer
 from docpipe import __version__
 from docpipe.business import Catalog, doc_path_for, load_catalog
 from docpipe.business import build_context as build_resolve_context
-from docpipe.business.build import compose
+from docpipe.business.build import backlinks, compose
 from docpipe.business.catalog import ID_RE
 from docpipe.business.lint import CHECKS as LINT_CHECKS
 from docpipe.business.lint import format_report as format_lint_report
@@ -18,14 +18,14 @@ from docpipe.business.lint import lint as lint_catalog
 from docpipe.business.model import KIND_BY_PREFIX
 from docpipe.business.resolve import ResolveContext
 from docpipe.classify import load_ruleset
-from docpipe.config import load_config
+from docpipe.config import DocpipeConfig, load_config
 from docpipe.diff import diff_manifests, format_changes
 from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.explain import ANY, format_selection, select, selection_json
 from docpipe.hashing import stable_json_dumps
 from docpipe.materialize.apply import apply_plan, format_result, write_atomic
-from docpipe.materialize.build import build_context
+from docpipe.materialize.build import BuildContext, build_context
 from docpipe.materialize.ownership import (
     Ownership,
     explain,
@@ -476,7 +476,12 @@ def materialize(
             raise typer.Exit(code=2)
 
     examples = frozenset(path.stem for path in (templates_path / "examples").glob("*.md"))
-    context = build_context(manifest, templates, examples, templates_path.as_posix())
+    context = _with_business_links(
+        build_context(manifest, templates, examples, templates_path.as_posix()),
+        manifest,
+        root,
+        settings,
+    )
     existing = scan_docs(root, settings.docs_root, settings.docs_scan_exclude)
     plan = build_plan(
         manifest,
@@ -561,7 +566,12 @@ def docs_status(
         raise typer.Exit(code=2) from exc
 
     examples = frozenset(path.stem for path in (templates_path / "examples").glob("*.md"))
-    context = build_context(manifest, templates, examples, templates_path.as_posix())
+    context = _with_business_links(
+        build_context(manifest, templates, examples, templates_path.as_posix()),
+        manifest,
+        root,
+        settings,
+    )
     existing = scan_docs(root, settings.docs_root, settings.docs_scan_exclude)
     plan = with_links(
         build_plan(
@@ -584,6 +594,34 @@ def docs_status(
 
     if plan.errors or (fail_on and {doc.status for doc in selected} & set(fail_on)):
         raise typer.Exit(code=1)
+
+
+def _with_business_links(
+    context: BuildContext, manifest: Manifest, root: Path, settings: DocpipeConfig
+) -> BuildContext:
+    """Досыпать в контекст шага 2 обратный индекс бизнес-каталога.
+
+    Индекс строится здесь, а не внутри `materialize`: пакет шага 2 не импортирует
+    бизнес-слой и получает готовые данные. Без заданных `registries` шаг 2
+    работает ровно как прежде — раздела «Бизнес-контекст» не появляется вовсе.
+
+    Неготовность бизнес-слоя прогон шага 2 не роняет: реестры могут быть
+    описаны раньше, чем появится первый бизнес-документ, и отказ материализовать
+    техническую документацию из-за этого был бы наказанием не за то.
+    """
+    if not settings.registries:
+        return context
+
+    try:
+        specs = load_registries(Path(settings.registries))
+        anchors = resolve_anchors([read_registry(spec, root) for spec in specs], manifest)
+        catalog = load_catalog(root, settings.business_root)
+        links = backlinks(catalog, build_resolve_context(anchors, manifest, root=root))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Бизнес-каталог не прочитан, раздел не собран: {exc}", err=True)
+        return context
+
+    return replace(context, business_root=settings.business_root, business_links=links)
 
 
 def _prepare(
@@ -609,7 +647,12 @@ def _prepare(
         raise typer.Exit(code=2) from exc
 
     examples = frozenset(path.stem for path in (templates_path / "examples").glob("*.md"))
-    context = build_context(manifest, templates, examples, templates_path.as_posix())
+    context = _with_business_links(
+        build_context(manifest, templates, examples, templates_path.as_posix()),
+        manifest,
+        root,
+        settings,
+    )
     existing = scan_docs(root, settings.docs_root, settings.docs_scan_exclude)
     plan = build_plan(
         manifest,

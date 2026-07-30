@@ -398,26 +398,37 @@ def test_missing_template_directory_is_a_user_error(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
-def test_materialize_does_not_import_dotnet() -> None:
-    """Обходом AST, а не импортом: импорт проверил бы только то, что модуль
-    загружается, а не то, что зависимости нет.
-
-    Граница нужна, чтобы шаг 2 не пришлось переписывать при появлении парсера
-    Python или TypeScript. На ней же стоит бизнес-слой.
-    """
+def _imports_of(package: str, forbidden: str) -> list[str]:
+    """Кто в пакете импортирует запрещённое. Обходом AST, а не импортом:
+    импорт проверил бы только то, что модуль загружается, а не то, что
+    зависимости нет."""
     offenders: list[str] = []
-    for path in sorted(Path("docpipe/materialize").glob("*.py")):
+    for path in sorted(Path(package).glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-                "docpipe.dotnet"
-            ):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(forbidden):
                 offenders.append(f"{path.name}: from {node.module}")
             if isinstance(node, ast.Import):
                 offenders += [
                     f"{path.name}: import {alias.name}"
                     for alias in node.names
-                    if alias.name.startswith("docpipe.dotnet")
+                    if alias.name.startswith(forbidden)
                 ]
+    return offenders
 
-    assert offenders == []
+
+def test_materialize_does_not_import_dotnet() -> None:
+    """Граница нужна, чтобы шаг 2 не пришлось переписывать при появлении парсера
+    Python или TypeScript. На ней же стоит бизнес-слой.
+    """
+    assert _imports_of("docpipe/materialize", "docpipe.dotnet") == []
+
+
+def test_materialize_does_not_import_business() -> None:
+    """Шаг 2 обязан оставаться самостоятельным: бизнес-слой необязателен,
+    и обратный индекс приходит в `BuildContext` как данные, а не импортом.
+
+    Стрелка тут та же, что во всей конструкции: техника знает о бизнесе ровно
+    столько, сколько ей передали снаружи.
+    """
+    assert _imports_of("docpipe/materialize", "docpipe.business") == []
