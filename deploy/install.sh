@@ -133,6 +133,11 @@ keep_configured "$SOURCE/deploy/cashflow-docspipe/docpipe.yaml" \
     "$DEST/cashflow-docspipe/docpipe.yaml" "cashflow-docspipe/docpipe.yaml"
 keep_configured "$SOURCE/deploy/cashflow-docspipe/rules.yaml" \
     "$DEST/cashflow-docspipe/rules.yaml" "cashflow-docspipe/rules.yaml"
+# Заготовка без команд и правил: работает, но ничего не раздаёт. Приезжает
+# вместе с путём на себя в docpipe.yaml — иначе конфигурация ссылалась бы
+# на файл, которого в поставке нет.
+keep_configured "$SOURCE/deploy/cashflow-docspipe/ownership.yaml" \
+    "$DEST/cashflow-docspipe/ownership.yaml" "cashflow-docspipe/ownership.yaml"
 cp "$SOURCE/deploy/cashflow-docspipe/README.md" "$DEST/cashflow-docspipe/README.md"
 
 # --- шаблоны документов (шаг 2) ---------------------------------------------

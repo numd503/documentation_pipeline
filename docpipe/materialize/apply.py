@@ -157,6 +157,46 @@ def apply_plan(
     return result
 
 
+DIRECTORY_LIMIT = 20
+
+
+def directory_counts(paths: list[str]) -> list[tuple[str, int]]:
+    """Сколько документов приходится на каждый каталог.
+
+    Порядок — по убыванию количества, при равенстве по имени каталога. Явный
+    ключ, а не порядок вставки: список идёт в отчёт, а отчёт читают глазами
+    и сравнивают между прогонами.
+    """
+    counts: dict[str, int] = {}
+    for path in paths:
+        directory = path.rpartition("/")[0] or "."
+        counts[directory] = counts.get(directory, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def _directory_section(title: str, paths: list[str]) -> list[str]:
+    """Раскладка по каталогам, обрезанная сверху.
+
+    Одна цифра «создано: 4820» не отвечает на первый же вопрос настройщика —
+    где это окажется. Полный список на боевом репозитории — тысячи строк,
+    поэтому показываются самые крупные каталоги, а остаток сворачивается
+    в строку: оценку объёма она даёт, а отчёт не топит.
+    """
+    if not paths:
+        return []
+
+    counts = directory_counts(paths)
+    width = max(len(directory) for directory, _ in counts[:DIRECTORY_LIMIT])
+    lines = ["", title]
+    lines += [f"  {directory:<{width}} {count:>5}" for directory, count in counts[:DIRECTORY_LIMIT]]
+
+    hidden = counts[DIRECTORY_LIMIT:]
+    if hidden:
+        documents = sum(count for _, count in hidden)
+        lines.append(f"  и ещё каталогов: {len(hidden)}, документов в них: {documents}")
+    return lines
+
+
 def format_result(plan: MaterializePlan, result: ApplyResult, dry_run: bool = False) -> str:
     """Отчёт о прогоне."""
     if plan.errors:
@@ -174,6 +214,10 @@ def format_result(plan: MaterializePlan, result: ApplyResult, dry_run: bool = Fa
     ]
     if result.refused:
         lines.append(f"  отказано:     {len(result.refused)}")
+
+    lines += _directory_section(
+        "Где было бы создано:" if dry_run else "Где создано:", result.created
+    )
 
     counts = plan.counts()
     if counts:

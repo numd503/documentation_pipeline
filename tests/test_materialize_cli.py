@@ -14,6 +14,7 @@ import pytest
 from typer.testing import CliRunner
 
 from docpipe.cli import app
+from docpipe.materialize.apply import DIRECTORY_LIMIT, _directory_section, directory_counts
 
 GOLDEN_MANIFEST = Path("tests/golden/doc-tree.json")
 GOLDEN_DOCS = Path("tests/golden/docs")
@@ -246,6 +247,41 @@ def test_dry_run_writes_nothing(tmp_path: Path) -> None:
     assert _tree(tmp_path) == {}
     assert "Что было бы сделано:" in result.stdout
     assert "создано:      6" in result.stdout
+
+
+def test_dry_run_says_where_the_documents_would_land(tmp_path: Path) -> None:
+    """Одна цифра «создано: 4820» не отвечает на первый вопрос настройщика — где.
+
+    Каталог показывается настоящий, тот самый, в который потом лягут файлы,
+    поэтому он и сверяется с деревом реального прогона, а не с константой.
+    """
+    planned = _run(tmp_path, "--dry-run")
+    _run(tmp_path)
+
+    assert "Где было бы создано:" in planned.stdout
+    for path in _tree(tmp_path / "docs"):
+        assert f"docs/{path.rpartition('/')[0]}" in planned.stdout
+
+
+def test_directory_breakdown_is_ordered_by_size_then_name() -> None:
+    """Порядок — явный ключ, а не порядок вставки: отчёт сравнивают между прогонами."""
+    counts = directory_counts(["b/x.md", "a/y.md", "a/z.md", "c/q.md"])
+
+    assert counts == [("a", 2), ("b", 1), ("c", 1)]
+
+
+def test_large_directory_breakdown_is_cut_but_still_totals(tmp_path: Path) -> None:
+    """На боевом репозитории полный список — тысячи строк, и он утопил бы отчёт.
+
+    Остаток обязан оставаться посчитанным: обрезка, теряющая документы, врёт
+    об объёме, а ради оценки объёма всё и печатается.
+    """
+    paths = [f"docs/m{index:03d}/doc.md" for index in range(DIRECTORY_LIMIT + 5)]
+
+    text = "\n".join(_directory_section("Где было бы создано:", paths))
+
+    assert text.count("\n  docs/") == DIRECTORY_LIMIT
+    assert "и ещё каталогов: 5, документов в них: 5" in text
 
 
 def test_unknown_team_is_a_user_error(tmp_path: Path) -> None:

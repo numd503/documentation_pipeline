@@ -14,6 +14,7 @@ import pytest
 
 from docpipe.classify import condition_values, load_ruleset
 from docpipe.config import DocpipeConfig, load_config
+from docpipe.materialize.ownership import load_ownership
 from docpipe.materialize.template import load_templates
 
 ROOT = Path(__file__).parent.parent
@@ -174,6 +175,7 @@ def test_bundle_ruleset_keeps_domain_entities_named_like_tests() -> None:
         "uv.toml.example",
         "cashflow-docspipe/docpipe.yaml",
         "cashflow-docspipe/rules.yaml",
+        "cashflow-docspipe/ownership.yaml",
         "cashflow-docspipe/README.md",
     ],
 )
@@ -213,7 +215,11 @@ def test_installed_tree_holds_exactly_one_ruleset(tmp_path: Path) -> None:
     installed = tmp_path / "repo" / "docs/ml/docspipe"
 
     rulesets = sorted(p.relative_to(installed).as_posix() for p in installed.rglob("*.yaml"))
-    assert rulesets == ["cashflow-docspipe/docpipe.yaml", "cashflow-docspipe/rules.yaml"]
+    assert rulesets == [
+        "cashflow-docspipe/docpipe.yaml",
+        "cashflow-docspipe/ownership.yaml",
+        "cashflow-docspipe/rules.yaml",
+    ]
     assert not (installed / "rules").exists()
 
 
@@ -232,6 +238,28 @@ def test_installed_tree_holds_the_templates(tmp_path: Path) -> None:
     declared = {rule.template for rule in load_ruleset(BUNDLE_RULES).rules if rule.template}
     assert declared <= set(installed), declared - set(installed)
     assert sorted(p.name for p in (templates / "examples").glob("*.md"))
+
+
+def test_bundle_ownership_is_an_empty_starter() -> None:
+    """Заготовка обязана грузиться и обязана быть пустой.
+
+    Выдуманные команды хуже отсутствующих: правило с несуществующим
+    `module_glob` молча не срабатывает, и «ничьих узлов 4820» уже не отличить
+    от «правило написано с опечаткой».
+    """
+    ownership = load_ownership(DEPLOY / "cashflow-docspipe" / "ownership.yaml")
+
+    assert ownership.teams == []
+    assert ownership.rules == []
+
+
+def test_bundle_config_points_at_a_shipped_ownership_file(tmp_path: Path) -> None:
+    """Ключ включён, значит файл обязан приехать: иначе каждый прогон — отказ."""
+    _install(tmp_path / "repo")
+    configured = load_config(BUNDLE_CONFIG).ownership
+
+    assert configured is not None
+    assert (tmp_path / "repo" / configured).is_file(), configured
 
 
 def test_installed_templates_are_where_the_configuration_looks(tmp_path: Path) -> None:
