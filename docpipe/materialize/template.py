@@ -21,6 +21,11 @@ from docpipe.materialize.document import (
 
 SUBSTITUTION: Final[re.Pattern[str]] = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
 
+# Скелет, применяемый к виду сущности, для которого своего скелета нет.
+# Имя фиксировано, а не задаётся в конфигурации: второй способ назвать одно
+# и то же разошёлся бы с первым, а выигрыша нет.
+DEFAULT_TEMPLATE: Final[str] = "default"
+
 # Белый список ключей подстановки. Закрыт намеренно: `{{ tema }}` иначе молча
 # осталась бы в каждом документе дерева как текст.
 ALLOWED_KEYS: Final[frozenset[str]] = frozenset(
@@ -141,3 +146,19 @@ def load_templates(directory: Path) -> dict[str, Template]:
     }
     _check(bool(templates), f"{directory}: не найдено ни одного шаблона")
     return templates
+
+
+def resolve_template(name: str, templates: Mapping[str, Template]) -> str | None:
+    """Имя скелета, который будет применён: запрошенный, `default` или ничего.
+
+    Одна функция на весь шаг 2, и это существенно. Разойдись разрешение
+    в `plan` и в `build` — документ, созданный по базовому скелету, сверялся бы
+    с другим и оставался бы `stale` навсегда, а агент шага 3 переписывал бы
+    его на каждом прогоне.
+
+    `None` — не подстановка «ничего», а отказ: базового скелета в каталоге нет.
+    Решает вызывающий, и `plan` решает отменить прогон.
+    """
+    if name in templates:
+        return name
+    return DEFAULT_TEMPLATE if DEFAULT_TEMPLATE in templates else None

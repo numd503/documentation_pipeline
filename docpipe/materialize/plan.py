@@ -37,7 +37,12 @@ from docpipe.materialize.document import (
 )
 from docpipe.materialize.model import ParsedDocument, Segment
 from docpipe.materialize.ownership import Ownership, owner_of
-from docpipe.materialize.template import Template, substitute
+from docpipe.materialize.template import (
+    DEFAULT_TEMPLATE,
+    Template,
+    resolve_template,
+    substitute,
+)
 from docpipe.model import DocNode, Manifest, SourceSpan
 
 FileAction = Literal["create", "update", "unchanged", "refuse", "relocate"]
@@ -172,6 +177,11 @@ class MaterializePlan:
     errors: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     manifest_partial: bool = False
+    # Виды сущностей, документированные базовым скелетом за неимением своего,
+    # и сколько узлов это затронуло. Подстановка обязана быть видимой числом:
+    # `template: contoller` с опечаткой — не новый вид, а ошибка, и раньше её
+    # ловил отказ прогона.
+    substituted: dict[str, int] = field(default_factory=dict)
 
     def counts(self) -> dict[str, int]:
         counted = Counter(doc.status for doc in self.documents)
@@ -577,10 +587,21 @@ def _blocking_errors(
         if len(docs) > 1:
             errors.append(f"{node_id}: один узел в нескольких файлах: {', '.join(sorted(docs))}")
 
-    missing = sorted({node.template for node in manifest.nodes if node.template not in templates})
+    # Отказ остаётся только там, где подставить нечего: без `default.md`
+    # молчаливой подстановки «ничего» быть не должно.
+    missing = sorted(
+        {
+            node.template
+            for node in manifest.nodes
+            if resolve_template(node.template, templates) is None
+        }
+    )
     if missing:
         known = ", ".join(sorted(templates)) or "(шаблонов нет)"
-        errors.append(f"нет шаблонов: {', '.join(missing)}; загружены: {known}")
+        errors.append(
+            f"нет шаблонов: {', '.join(missing)}; загружены: {known}."
+            f" Заведите `{DEFAULT_TEMPLATE}.md` — он применяется, когда своего скелета нет"
+        )
 
     return errors
 
@@ -637,13 +658,21 @@ def build_plan(
     relocations, notes = match_relocations(homeless, unplaced)
     relocated_paths = {doc.path for doc, _ in relocations.values()}
     orphan_docs = [doc for doc in unplaced if doc.node_id not in node_ids]
+    substituted: Counter[str] = Counter()
 
     for node in sorted(manifest.nodes, key=lambda item: item.doc_path):
         team = teams[node.id]
         if options.teams and team not in options.teams:
             continue
 
-        template = templates[node.template]
+        # Считается по тому, что прогон действительно делает, а не по всему
+        # манифесту: при `--team` чужие узлы не пишутся, и их подстановки
+        # в отчёте этого прогона были бы шумом.
+        resolved = resolve_template(node.template, templates)
+        assert resolved is not None  # проверено в `_blocking_errors`
+        if resolved != node.template:
+            substituted[node.template] += 1
+        template = templates[resolved]
         source = by_path.get(node.doc_path)
         moved = relocations.get(node.id)
         if source is None and moved is not None:
@@ -741,6 +770,9 @@ def build_plan(
         errors=[],
         notes=notes,
         manifest_partial=manifest.partial is not None,
+        # Явный ключ, а не порядок вставки: цифры идут в отчёт, а отчёты
+        # сравнивают между прогонами.
+        substituted=dict(sorted(substituted.items(), key=lambda item: (-item[1], item[0]))),
     )
 
 

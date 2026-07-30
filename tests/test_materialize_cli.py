@@ -6,6 +6,7 @@
 """
 
 import ast
+import json
 import os
 import stat
 from pathlib import Path
@@ -14,6 +15,8 @@ import pytest
 from typer.testing import CliRunner
 
 from docpipe.cli import app
+from docpipe.materialize.apply import DIRECTORY_LIMIT, _directory_section, directory_counts
+from docpipe.materialize.template import DEFAULT_TEMPLATE
 
 GOLDEN_MANIFEST = Path("tests/golden/doc-tree.json")
 GOLDEN_DOCS = Path("tests/golden/docs")
@@ -246,6 +249,113 @@ def test_dry_run_writes_nothing(tmp_path: Path) -> None:
     assert _tree(tmp_path) == {}
     assert "Что было бы сделано:" in result.stdout
     assert "создано:      6" in result.stdout
+
+
+def _manifest_with_unknown_template(tmp_path: Path) -> Path:
+    """Золотой манифест, в котором у одного узла вид сущности без своего скелета."""
+    manifest = json.loads(GOLDEN_MANIFEST.read_text(encoding="utf-8"))
+    manifest["nodes"][0]["template"] = "нет-такого"
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_unknown_template_does_not_cancel_the_run(tmp_path: Path) -> None:
+    """Раньше один неизвестный `template` отменял прогон целиком: ни одного файла.
+
+    На чужом репозитории это худший из ответов — первое же своё правило
+    классификации приносит новый вид сущности.
+    """
+    root = tmp_path / "repo"
+    result = runner.invoke(
+        app,
+        ["materialize", str(_manifest_with_unknown_template(tmp_path)), "--root", str(root)],
+    )
+
+    assert result.exit_code == 0
+    assert len(_tree(root / "docs")) == 6
+    assert "Своего скелета нет, применён `default`:" in result.stdout
+    assert "нет-такого" in result.stdout
+
+
+def test_document_built_from_the_default_stays_current(tmp_path: Path) -> None:
+    """Самая дорогая из ловушек: разойдись разрешение шаблона в `plan` и в `build`,
+
+    документ оказался бы `stale` навсегда, и агент шага 3 переписывал бы его
+    на каждом прогоне. Проверяется прогоном, а не чтением кода.
+    """
+    root = tmp_path / "repo"
+    manifest = _manifest_with_unknown_template(tmp_path)
+    runner.invoke(app, ["materialize", str(manifest), "--root", str(root)])
+    before = _tree(root / "docs")
+
+    again = runner.invoke(app, ["materialize", str(manifest), "--root", str(root)])
+    status = runner.invoke(app, ["docs", "status", str(manifest), "--root", str(root)])
+
+    assert _tree(root / "docs") == before
+    assert "без изменений:  6" in again.stdout
+    assert "stale" not in status.stdout
+
+
+def test_run_is_cancelled_when_there_is_nothing_to_fall_back_to(tmp_path: Path) -> None:
+    """Без `default.md` прежнее поведение сохраняется: не записано ничего."""
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    for skeleton in Path("templates").glob("*.md"):
+        if skeleton.stem != DEFAULT_TEMPLATE:
+            (templates / skeleton.name).write_bytes(skeleton.read_bytes())
+
+    root = tmp_path / "repo"
+    result = runner.invoke(
+        app,
+        [
+            "materialize",
+            str(_manifest_with_unknown_template(tmp_path)),
+            "--root",
+            str(root),
+            "--templates",
+            str(templates),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "нет шаблонов: нет-такого" in result.stdout
+    assert not root.exists()
+
+
+def test_dry_run_says_where_the_documents_would_land(tmp_path: Path) -> None:
+    """Одна цифра «создано: 4820» не отвечает на первый вопрос настройщика — где.
+
+    Каталог показывается настоящий, тот самый, в который потом лягут файлы,
+    поэтому он и сверяется с деревом реального прогона, а не с константой.
+    """
+    planned = _run(tmp_path, "--dry-run")
+    _run(tmp_path)
+
+    assert "Где было бы создано:" in planned.stdout
+    for path in _tree(tmp_path / "docs"):
+        assert f"docs/{path.rpartition('/')[0]}" in planned.stdout
+
+
+def test_directory_breakdown_is_ordered_by_size_then_name() -> None:
+    """Порядок — явный ключ, а не порядок вставки: отчёт сравнивают между прогонами."""
+    counts = directory_counts(["b/x.md", "a/y.md", "a/z.md", "c/q.md"])
+
+    assert counts == [("a", 2), ("b", 1), ("c", 1)]
+
+
+def test_large_directory_breakdown_is_cut_but_still_totals(tmp_path: Path) -> None:
+    """На боевом репозитории полный список — тысячи строк, и он утопил бы отчёт.
+
+    Остаток обязан оставаться посчитанным: обрезка, теряющая документы, врёт
+    об объёме, а ради оценки объёма всё и печатается.
+    """
+    paths = [f"docs/m{index:03d}/doc.md" for index in range(DIRECTORY_LIMIT + 5)]
+
+    text = "\n".join(_directory_section("Где было бы создано:", paths))
+
+    assert text.count("\n  docs/") == DIRECTORY_LIMIT
+    assert "и ещё каталогов: 5, документов в них: 5" in text
 
 
 def test_unknown_team_is_a_user_error(tmp_path: Path) -> None:
