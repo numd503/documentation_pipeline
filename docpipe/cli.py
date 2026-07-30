@@ -17,6 +17,12 @@ from docpipe.business.lint import format_report as format_lint_report
 from docpipe.business.lint import lint as lint_catalog
 from docpipe.business.model import KIND_BY_PREFIX
 from docpipe.business.resolve import ResolveContext
+from docpipe.business.status import ACTIONS as BUSINESS_ACTIONS
+from docpipe.business.status import STATUSES as BUSINESS_STATUSES
+from docpipe.business.status import DocumentStatus as BusinessStatus
+from docpipe.business.status import accepted_state as business_accepted_state
+from docpipe.business.status import format_statuses as format_business_statuses
+from docpipe.business.status import statuses as business_statuses
 from docpipe.classify import load_ruleset
 from docpipe.config import DocpipeConfig, load_config
 from docpipe.diff import diff_manifests, format_changes
@@ -1080,6 +1086,158 @@ def business_build(
         typer.echo(f"  {line}", err=True)
 
     if errors:
+        raise typer.Exit(code=1)
+
+
+@business_app.command("status")
+def business_status(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    paths: Annotated[list[Path] | None, typer.Argument(help="Файлы или каталоги.")] = None,
+    registries_file: Annotated[
+        Path | None, typer.Option("--registries", help="Описание реестров.")
+    ] = None,
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
+    business_root: Annotated[
+        str | None, typer.Option("--business-root", help="Каталог бизнес-документов.")
+    ] = None,
+    action: Annotated[
+        str | None, typer.Option("--action", help="Только эти решения: write, review, skip.")
+    ] = None,
+    team: Annotated[
+        str | None, typer.Option("--team", help="Только документы этой команды.")
+    ] = None,
+    fail_on: Annotated[
+        list[str] | None, typer.Option("--fail-on", help="Код 1 при этих статусах.")
+    ] = None,
+    output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
+) -> None:
+    """Что делать с каждым бизнес-документом. Ничего не пишет."""
+    loaded = _business_context(manifest_path, registries_file, root, config, business_root, None)
+    selected = list(fail_on or [])
+
+    unknown = sorted(set(selected) - set(BUSINESS_STATUSES))
+    if unknown:
+        listing = ", ".join(BUSINESS_STATUSES)
+        typer.echo(f"Неизвестный статус: {', '.join(unknown)}. Известны: {listing}", err=True)
+        raise typer.Exit(code=2)
+
+    if action and action not in BUSINESS_ACTIONS:
+        listing = ", ".join(BUSINESS_ACTIONS)
+        typer.echo(f"Неизвестное решение: {action}. Известны: {listing}", err=True)
+        raise typer.Exit(code=2)
+
+    items = business_statuses(loaded.catalog, root, loaded.ctx)
+    items = _business_filter(items, paths, root, action, team)
+
+    if output_format == "json":
+        typer.echo(stable_json_dumps([item.model_dump(mode="json") for item in items]))
+    else:
+        typer.echo(format_business_statuses(items))
+
+    if selected and any(item.status in set(selected) for item in items):
+        raise typer.Exit(code=1)
+
+
+def _business_filter(
+    items: list[BusinessStatus],
+    paths: list[Path] | None,
+    root: Path,
+    action: str | None,
+    team: str | None,
+) -> list[BusinessStatus]:
+    """Сузить выборку. Множество, с которым сравнивают, при этом не сужается:
+    статусы уже посчитаны по всему каталогу."""
+    selected = items
+    if paths:
+        wanted = [path.resolve() for path in paths]
+        selected = [
+            item
+            for item in selected
+            if any(
+                (root / item.doc_path).resolve() == path
+                or path in (root / item.doc_path).resolve().parents
+                for path in wanted
+            )
+        ]
+    if action:
+        selected = [item for item in selected if item.action == action]
+    if team:
+        selected = [item for item in selected if item.team == team]
+    return selected
+
+
+@business_app.command("accept")
+def business_accept(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    paths: Annotated[list[Path] | None, typer.Argument(help="Файлы или каталоги.")] = None,
+    registries_file: Annotated[
+        Path | None, typer.Option("--registries", help="Описание реестров.")
+    ] = None,
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
+    business_root: Annotated[
+        str | None, typer.Option("--business-root", help="Каталог бизнес-документов.")
+    ] = None,
+    ownership_file: Annotated[
+        Path | None, typer.Option("--ownership", help="Правила владения.")
+    ] = None,
+    accept_all: Annotated[bool, typer.Option("--all", help="Принять весь каталог.")] = False,
+    force: Annotated[
+        bool, typer.Option("--force", help="Принять и ненаполненный документ.")
+    ] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Ничего не писать.")] = False,
+) -> None:
+    """Зафиксировать соответствие документа реализации.
+
+    Хэш и факты берутся из свежего разрешения, а не из документа: front matter —
+    зеркало и мог отстать. Приняв его значение, документ навсегда остался бы
+    `current`, будучи `drifted`.
+    """
+    if not paths and not accept_all:
+        typer.echo("Нечего принимать: укажите пути или --all", err=True)
+        raise typer.Exit(code=2)
+
+    loaded = _business_context(
+        manifest_path, registries_file, root, config, business_root, ownership_file
+    )
+    items = _business_filter(
+        business_statuses(loaded.catalog, root, loaded.ctx), paths, root, None, None
+    )
+    by_id = loaded.catalog.by_id()
+
+    accepted: list[str] = []
+    refused: list[str] = []
+
+    for item in items:
+        # Ненаполненный документ не принимается: приёмка означает «текст сверен
+        # с реализацией», а сверять нечего. `--force` оставлен для документов,
+        # которые описаны целиком в чужой системе (`external_ref`).
+        if item.status in ("empty", "broken") and not force:
+            refused.append(f"{item.doc_path}: {item.status} — {item.reason}")
+            continue
+
+        doc = by_id[item.doc_id]
+        path = root / doc.doc_path
+        text = compose(
+            doc,
+            loaded.ctx,
+            path.read_bytes().decode("utf-8-sig"),
+            loaded.ownership,
+            state={"accepted": business_accepted_state(doc, loaded.ctx), "review": None},
+        )
+        if not dry_run:
+            write_atomic(path, text)
+        accepted.append(doc.doc_path)
+
+    verb = "Было бы принято" if dry_run else "Принято"
+    typer.echo(f"{verb}: {len(accepted)}, отказов: {len(refused)}")
+    for line in sorted(accepted):
+        typer.echo(f"  {line}")
+    for line in sorted(refused):
+        typer.echo(f"  {line}", err=True)
+
+    if refused:
         raise typer.Exit(code=1)
 
 

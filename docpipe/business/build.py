@@ -273,6 +273,7 @@ def compose(
     existing: str,
     ownership: Ownership | None = None,
     notes: list[str] | None = None,
+    state: dict[str, Any] | None = None,
 ) -> str:
     """Пересобрать документ поверх его текущего текста.
 
@@ -305,9 +306,13 @@ def compose(
         if key not in ("docpipe", "docpipe_state")
     }
 
+    # Приёмка идёт через ту же запись, что и обычная пересборка. Отдельный путь
+    # был бы второй реализацией слияния зон, и разошлись бы они на первом же
+    # документе с чужими ключами front matter.
+    #
     # Разделяющая пустая строка сюда не добавляется: она уже есть в сохранённом
     # теле документа, и вторая копилась бы при каждом прогоне.
-    head = front_matter(doc, parsed.state, preserved)
+    head = front_matter(doc, state if state is not None else parsed.state, preserved)
     return head + "".join(segment.text for segment in segments)
 
 
