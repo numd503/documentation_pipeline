@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from docpipe.materialize.plan import MaterializePlan, PlannedDoc
+from docpipe.materialize.template import DEFAULT_TEMPLATE
 
 BROKEN_SUFFIX = ".md.broken"
 
@@ -218,6 +219,14 @@ def format_result(plan: MaterializePlan, result: ApplyResult, dry_run: bool = Fa
     lines += _directory_section(
         "Где было бы создано:" if dry_run else "Где создано:", result.created
     )
+
+    if plan.substituted:
+        # Не «замечание», а отдельный раздел с числами. Подстановка — решение
+        # по умолчанию, а не покрытие: невидимая, она превращает опечатку
+        # в `template` из отказа прогона в молча документированный вид.
+        width = max(len(name) for name in plan.substituted)
+        lines += ["", f"Своего скелета нет, применён `{DEFAULT_TEMPLATE}`:"]
+        lines += [f"  {name:<{width}} {count:>5}" for name, count in plan.substituted.items()]
 
     counts = plan.counts()
     if counts:

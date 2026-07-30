@@ -13,8 +13,10 @@ import yaml
 from docpipe.materialize import is_section_empty, parse_document
 from docpipe.materialize.template import (
     ALLOWED_KEYS,
+    DEFAULT_TEMPLATE,
     TemplateError,
     load_templates,
+    resolve_template,
     substitute,
 )
 
@@ -38,11 +40,17 @@ def test_skeletons_match_rule_templates(templates: dict[str, object]) -> None:
 
     Тест читает YAML и сравнивает множества: добавить вид сущности — значит
     дописать правило И завести скелет, иначе прогон потеряет документы молча.
+
+    `default` исключается **явно**, а не ослаблением до «подмножества»:
+    он применяется там, где своего скелета нет, и объявить его в наборе правил
+    нельзя. Ослабь сравнение до `>=` — и тест перестанет ловить забытый скелет,
+    ради чего он и написан.
     """
     declared = {rule["template"] for rule in yaml.safe_load(RULES.read_text("utf-8"))["rules"]}
 
-    assert set(templates) == declared
-    assert len(templates) == 7
+    assert set(templates) - {DEFAULT_TEMPLATE} == declared
+    assert DEFAULT_TEMPLATE in templates
+    assert len(templates) == 8
 
 
 @pytest.mark.parametrize(
@@ -59,6 +67,25 @@ def test_skeletons_match_rule_templates(templates: dict[str, object]) -> None:
 )
 def test_sections(templates: dict[str, object], name: str, sections: list[str]) -> None:
     assert templates[name].sections == sections  # type: ignore[attr-defined]
+
+
+def test_default_skeleton_names_no_kind_of_entity(templates: dict[str, object]) -> None:
+    """Базовый скелет применяется к тому, о чём инструмент ничего не знает.
+
+    Упомяни он контроллер или workflow — и документ утверждал бы про сущность
+    то, чего никто не проверял.
+    """
+    text = templates[DEFAULT_TEMPLATE].text.lower()  # type: ignore[attr-defined]
+
+    for word in ("контроллер", "сервис", "workflow", "репозитор", "ignite", "провайдер"):
+        assert word not in text, word
+
+
+def test_resolution_falls_back_then_refuses(templates: dict[str, object]) -> None:
+    """Три исхода: свой скелет, базовый, отказ. Отказ — только когда базового нет."""
+    assert resolve_template("controller", templates) == "controller"  # type: ignore[arg-type]
+    assert resolve_template("нетакого", templates) == DEFAULT_TEMPLATE  # type: ignore[arg-type]
+    assert resolve_template("нетакого", {}) is None
 
 
 def test_every_skeleton_has_notes(templates: dict[str, object]) -> None:

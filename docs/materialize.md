@@ -144,6 +144,9 @@ docpipe docs owners MANIFEST [--explain NODE] [--lint]
   docs/modules/Sample.Pricing.Api/services        2
   docs/modules/Sample.Common/controllers          1
 
+Своего скелета нет, применён `default`:   # только если подстановка была
+  ignite-cache    412
+
 Состояние документов:         # статусы из плана
   missing          6
 ```
@@ -217,6 +220,13 @@ docpipe docs owners MANIFEST --ownership ownership.yaml --lint
 их имена сверяются с набором правил тестом. Четыре заполненных образца
 в `templates/examples/` показывают агенту глубину и стиль. Подробности и правила
 правки — в [`templates/README.md`](../../templates/README.md).
+
+Восьмой скелет — `default.md`. Он применяется к узлу, для которого скелета под его
+`template` нет, и в наборе правил не объявляется. Подстановка видима: прогон печатает
+раздел «Своего скелета нет, применён `default`» с перечнем видов и числом узлов.
+Без `default.md` неизвестный `template` остаётся блокирующей ошибкой — не записывается
+ничего. `template_ref` такого документа указывает на `templates/default.md`, то есть
+на применённый скелет, а `example_ref` пуст.
 
 Каталог задаётся ключом `templates` в `docpipe.yaml` или флагом `--templates`;
 по умолчанию — `templates`. **Путь отсчитывается от текущего каталога**, как `out`

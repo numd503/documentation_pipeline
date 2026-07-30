@@ -17,7 +17,7 @@ from docpipe.materialize.plan import (
     match_relocations,
     scan_docs,
 )
-from docpipe.materialize.template import load_templates
+from docpipe.materialize.template import DEFAULT_TEMPLATE, load_templates
 from docpipe.model import Manifest
 
 GOLDEN = Path("tests/golden/doc-tree.json")
@@ -427,14 +427,66 @@ def test_case_only_difference_blocks(manifest, templates, context) -> None:  # t
     assert any("различаются только регистром" in error for error in plan.errors)
 
 
-def test_missing_template_blocks(manifest, templates, context) -> None:  # type: ignore[no-untyped-def]
+def test_missing_template_blocks_only_without_the_default(manifest, templates, context) -> None:  # type: ignore[no-untyped-def]
+    """Отказ остаётся там, где подставить нечего, и только там.
+
+    Без базового скелета молчаливой подстановки «ничего» быть не должно:
+    прогон отменяется целиком, как и раньше.
+    """
     broken = manifest.model_copy(
         update={"nodes": [manifest.nodes[0].model_copy(update={"template": "нет-такого"})]}
     )
+    without_default = {name: tpl for name, tpl in templates.items() if name != DEFAULT_TEMPLATE}
 
-    plan = build_plan(broken, [], templates, context)
+    plan = build_plan(broken, [], without_default, context)
 
     assert any("нет шаблонов: нет-такого" in error for error in plan.errors)
+    assert not plan.documents
+
+
+def test_unknown_template_falls_back_to_the_default(manifest, templates, context) -> None:  # type: ignore[no-untyped-def]
+    """Узел документируется базовым скелетом, а не роняет весь прогон.
+
+    Первое же своё правило классификации на чужом репозитории приносит новый
+    `template`; отказ здесь означал бы, что дерева документации нет вовсе.
+    """
+    node = manifest.nodes[0].model_copy(update={"template": "нет-такого"})
+    changed = manifest.model_copy(update={"nodes": [node, *manifest.nodes[1:]]})
+
+    plan = build_plan(changed, [], templates, context)
+
+    assert not plan.errors
+    assert len(plan.documents) == len(manifest.nodes)
+    assert plan.substituted == {"нет-такого": 1}
+
+
+def test_substitution_is_reported_by_size_then_name(manifest, templates, context) -> None:  # type: ignore[no-untyped-def]
+    """Подстановка обязана быть видимой числом: опечатку в `template` ловил отказ.
+
+    Порядок — явный ключ: цифры идут в отчёт, а отчёты сравнивают между прогонами.
+    """
+    nodes = [
+        node.model_copy(update={"template": "яяя" if index else "ааа"})
+        for index, node in enumerate(manifest.nodes)
+    ]
+
+    plan = build_plan(manifest.model_copy(update={"nodes": nodes}), [], templates, context)
+
+    assert list(plan.substituted) == ["яяя", "ааа"]
+    assert plan.substituted["яяя"] == len(nodes) - 1
+
+
+def test_default_document_points_at_the_applied_template(manifest, templates, context) -> None:  # type: ignore[no-untyped-def]
+    """Иначе агент шага 3 пойдёт читать файл, которого нет."""
+    node = manifest.nodes[0].model_copy(update={"template": "нет-такого"})
+    changed = manifest.model_copy(update={"nodes": [node]})
+
+    plan = build_plan(changed, [], templates, context)
+    text = plan.documents[0].content or ""
+
+    assert f"template_ref: templates/{DEFAULT_TEMPLATE}.md" in text
+    assert "template: нет-такого" in text  # запрошенный вид не подменяется
+    assert "example_ref: null" in text
 
 
 def test_two_files_with_one_node_id_block(manifest, templates, context, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]

@@ -16,7 +16,7 @@ from typing import Any, Final, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-from docpipe.materialize.template import Template
+from docpipe.materialize.template import Template, resolve_template
 from docpipe.model import DocNode, Manifest, SourceSpan
 
 SCHEMA: Final[str] = "materialize/1"
@@ -133,11 +133,17 @@ def template_refs(node: DocNode, context: BuildContext) -> tuple[str, str | None
 
     Образцов четыре, а шаблонов семь: для Ignite их нет намеренно. Подставлять
     путь к несуществующему файлу нельзя — агент пошёл бы его читать.
+
+    По той же причине здесь **применённый** скелет, а не запрошенный: узел
+    с неизвестным `template` документируется базовым, и ссылка обязана вести
+    на него. Образца у базового нет: показывать глубину и стиль на неизвестном
+    виде сущности не на чем.
     """
-    example = f"{context.templates_dir}/examples/{node.template}.md"
+    applied = resolve_template(node.template, context.templates) or node.template
+    example = f"{context.templates_dir}/examples/{applied}.md"
     return (
-        f"{context.templates_dir}/{node.template}.md",
-        example if node.template in context.examples else None,
+        f"{context.templates_dir}/{applied}.md",
+        example if applied in context.examples else None,
     )
 
 
