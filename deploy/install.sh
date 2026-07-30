@@ -111,10 +111,6 @@ cp "$SOURCE/deploy/pyproject.toml" "$DEST/pyproject.toml"
 cp "$SOURCE/deploy/README.md" "$DEST/README.md"
 cp "$SOURCE/deploy/gitignore" "$DEST/.gitignore"
 
-# Эталонный набор правил — для сравнения с настроенным под АС CF.
-mkdir -p "$DEST/rules"
-cp "$SOURCE/rules/dotnet.yaml" "$DEST/rules/dotnet.yaml"
-
 # --- файлы, которые правит человек ------------------------------------------
 # Кладутся только если их ещё нет. Правка правил классификации — это недели
 # работы, и молча заменить её обновлением инструмента недопустимо.
@@ -209,6 +205,22 @@ if [ "$SYNC" -eq 1 ]; then
 
     echo -n "Проверка: docpipe "
     PYTHONPATH="$DEST" uv run --no-sync "${uv_flags[@]}" python -m docpipe version || diagnose
+fi
+
+# Эталонный набор правил здесь лежал до T26 и больше не копируется. Удалить его
+# нельзя молча — установщик вообще ничего не удаляет, — но и промолчать нельзя:
+# путь `rules/dotnet.yaml` совпадает со значением `rules` по умолчанию, поэтому
+# прогон из этого каталога без `--config` возьмёт его вместо настроенного набора
+# и завершится успешно.
+if [ -f "$DEST/rules/dotnet.yaml" ]; then
+    cat >&2 <<EOF
+
+ВНИМАНИЕ: $DEST/rules/dotnet.yaml остался от прежней версии поставки.
+Он больше не нужен: сравнивать настроенный набор не с чем — отличия помечены
+в самом cashflow-docspipe/rules.yaml, а новая версия приходит как rules.yaml.new.
+Хуже того, запуск из $DEST без --config подхватит его молча: путь совпадает
+со значением по умолчанию. Удалите каталог: rm -r $DEST/rules
+EOF
 fi
 
 cat <<EOF
