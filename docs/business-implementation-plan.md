@@ -1079,17 +1079,30 @@ uv run pytest tests/test_business_accept.py -q
 
 ---
 
-## B11 — документация
+## B11 — документация ✅
 
 **Создать:** `docs/business-layer.md` — формат каталога, виды якорей, статусы, цикл
 работы аналитика. По образцу `docs/manifest.md`: «что лежит в файле», без обоснований.
+`business.example/` — минимальный каталог-образец.
 
-**Изменить:** `README.md` (пайплайн и команды), `CLAUDE.md`, `CASHFLOW.md` (§8),
-`docs/materialize-implementation-plan.md` (ссылка на бизнес-слой).
+**Изменить:** `README.md` (пайплайн и команды), `CLAUDE.md`, `CASHFLOW.md` (§0, §8, §10),
+`docs/materialize-implementation-plan.md` (ссылка на бизнес-слой), `docs/materialize.md`
+(раздел про владение), `deploy/install.sh`, `deploy/cashflow-docspipe/docpipe.yaml`,
+`deploy/cashflow-docspipe/registries.yaml`, `tests/test_deploy_bundle.py`.
+
+**Поставка входит в задачу.** Без неё бизнес-слой на боевом репозитории
+не запускается вовсе: `registries.yaml` в поставке не было, скелеты
+`templates/business/**` в неё не копировались (обход каталога скелетов шага 2
+не рекурсивный, и глоб `templates/*.md` подкаталог не берёт), ключей `registries`
+и `business_root` в конфигурации не было. Каждая из трёх дыр даёт отказ, по тексту
+которого видно путь, но не видно, что виновата поставка.
 
 **Критерии приёмки**
 - команды из `docs/business-layer.md` проверены запуском;
-- `README.md` описывает `anchors` и `business`.
+- `README.md` описывает `anchors` и `business`;
+- установленное дерево содержит `registries.yaml` и `templates/business/**`,
+  а набор скелетов шага 2 при этом не меняется;
+- `registries.yaml` поставки совпадает с примером во всём, кроме путей.
 
 ---
 

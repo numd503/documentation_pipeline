@@ -16,6 +16,7 @@ from docpipe.classify import condition_values, load_ruleset
 from docpipe.config import DocpipeConfig, load_config
 from docpipe.materialize.ownership import load_ownership
 from docpipe.materialize.template import load_templates
+from docpipe.registry import load_registries
 
 ROOT = Path(__file__).parent.parent
 DEPLOY = ROOT / "deploy"
@@ -106,7 +107,8 @@ def test_bundle_config_excludes_the_documentation_tree() -> None:
 def test_bundle_paths_point_inside_the_bundle() -> None:
     """Все пути ведут в каталог инструмента, а не в рабочее дерево продукта."""
     config = load_config(BUNDLE_CONFIG)
-    for path in (config.rules, config.out, config.cache_dir, config.templates):
+    paths = (config.rules, config.out, config.cache_dir, config.templates, config.business_root)
+    for path in (*paths, config.registries or ""):
         assert path.startswith("docs/ml/docspipe/"), path
 
 
@@ -120,6 +122,32 @@ def test_bundle_config_names_the_templates_directory() -> None:
     которому не видно, что виновата конфигурация.
     """
     assert load_config(BUNDLE_CONFIG).templates != DocpipeConfig().templates
+
+
+def test_bundle_config_names_the_registries() -> None:
+    """Без `registries` бизнес-слой отказывается работать целиком: `anchors`
+    и `business` искать точки входа негде, а значения по умолчанию у ключа нет.
+    """
+    config = load_config(BUNDLE_CONFIG)
+
+    assert config.registries
+    assert (BUNDLE_CONFIG.parent / Path(config.registries).name).is_file()
+
+
+def test_bundle_registries_mirror_the_example() -> None:
+    """Отличаются только пути. Всё остальное — `item_xpath`, поля, вложенные
+    записи — обязано совпадать с примером: разъедься они, и настройщик
+    на боевом репозитории окажется единственным, кто это заметит.
+    """
+    bundled = load_registries(Path("deploy/cashflow-docspipe/registries.yaml"))
+    example = load_registries(Path("registries.example.yaml"))
+
+    assert [spec.id for spec in bundled] == [spec.id for spec in example]
+    for mine, theirs in zip(bundled, example, strict=True):
+        assert mine.item_xpath == theirs.item_xpath
+        assert mine.fields == theirs.fields
+        assert mine.children == theirs.children
+        assert mine.follow == theirs.follow
 
 
 def test_bundle_config_hides_the_tool_from_the_documentation_walk() -> None:
@@ -218,6 +246,7 @@ def test_installed_tree_holds_exactly_one_ruleset(tmp_path: Path) -> None:
     assert rulesets == [
         "cashflow-docspipe/docpipe.yaml",
         "cashflow-docspipe/ownership.yaml",
+        "cashflow-docspipe/registries.yaml",
         "cashflow-docspipe/rules.yaml",
     ]
     assert not (installed / "rules").exists()
@@ -238,6 +267,21 @@ def test_installed_tree_holds_the_templates(tmp_path: Path) -> None:
     declared = {rule.template for rule in load_ruleset(BUNDLE_RULES).rules if rule.template}
     assert declared <= set(installed), declared - set(installed)
     assert sorted(p.name for p in (templates / "examples").glob("*.md"))
+
+    # Скелеты бизнес-документов кладутся отдельным циклом: обход каталога
+    # скелетов шага 2 не рекурсивный, и подкаталог в его набор не попадает.
+    # Без них `business new` отказывается работать, а по сообщению видно путь,
+    # но не видно, что виновата поставка.
+    assert sorted(p.stem for p in (templates / "business").glob("*.md")) == [
+        "README",
+        "capability",
+        "entity",
+        "process",
+    ]
+    assert (templates / "business" / "examples" / "process.md").is_file()
+
+    # Шаг 2 при этом обязан продолжать видеть ровно свои скелеты.
+    assert "process" not in installed
 
 
 def test_bundle_ownership_is_an_empty_starter() -> None:

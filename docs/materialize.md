@@ -187,16 +187,57 @@ docpipe docs status artifacts/doc-tree.json --root . --fail-on broken --fail-on 
 
 ## Владение
 
-`ownership.yaml` раздаёт документам команду-владельца правилами по узлу, а не
-по модулю: шэренный `.csproj` иначе не разделить. Синтаксис условий тот же, что
-у `rules/dotnet.yaml`. Пример с пояснениями — [`ownership.example.yaml`](../ownership.example.yaml).
+**Владение необязательно, и начинать с него не нужно.** Оно влияет ровно
+на четыре вещи: поле `team` во front matter, строку «владелец» в генерируемом
+блоке, колонку в `docs status` и то, что отбирает флаг `--team`. На состав
+документов, их пути и статусы оно не влияет никак, поэтому заполнить его можно
+когда угодно позже: при этом перепишется одна строка front matter и одна строка
+генерируемого блока, а статусы и авторский текст останутся прежними.
+
+Файла `ownership.yaml` в репозитории **нет** — его заводят копией примера:
 
 ```bash
+cp ownership.example.yaml ownership.yaml
 docpipe docs owners MANIFEST --ownership ownership.yaml --lint
 ```
 
-`--lint` находит мёртвые правила, узлы без владельца (со срезами по модулям
-и каталогам), команды без узлов и ничьи по приоритету.
+В поставке для АС CF он уже лежит заготовкой, и путь к нему прописан
+в `docpipe.yaml`, — но подхватывается только при `--config`:
+
+```bash
+docpipe docs owners MANIFEST --config docs/ml/docspipe/cashflow-docspipe/docpipe.yaml --lint
+```
+
+Правила раздают команду по **узлу**, а не по модулю: шэренный `.csproj` иначе
+не разделить. Синтаксис условий тот же, что у `rules/dotnet.yaml`. Пример
+со всеми слоями приоритета и пояснениями —
+[`ownership.example.yaml`](../ownership.example.yaml).
+
+### С чего начинать настройку
+
+```bash
+# 1. Посмотреть, по каким полям вообще можно писать условия для конкретного узла
+docpipe docs owners MANIFEST --ownership ownership.yaml --explain docs/modules/X/services/y.md
+```
+
+```
+PricingController  (controller)
+  модуль:    Sample.Pricing.Api  (src/Sample.Pricing.Api/Sample.Pricing.Api.csproj)
+  домен:     Sample.Pricing.Api
+  namespace: Sample.Pricing.Api.Controllers
+  источники: src/Sample.Pricing.Api/Controllers/PricingController.cs
+  совпавшие правила: нет
+  владелец:  не задан
+```
+
+```bash
+# 2. Завести один слой приоритета 10 по module_glob и посмотреть, что осталось
+docpipe docs owners MANIFEST --ownership ownership.yaml --lint
+```
+
+`--lint` находит мёртвые правила, узлы без владельца — со срезами по модулям
+и каталогам, то есть с ответом «куда писать следующее правило», — команды
+без узлов и ничьи по приоритету.
 
 ## Автоперенос
 

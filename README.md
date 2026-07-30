@@ -55,27 +55,37 @@
 
 ## Состояние
 
-**Шаги 1 и 2 закончены.** Скоуп текущей версии: только .NET (C#).
+**Шаги 1 и 2 и бизнес-слой закончены.** Скоуп текущей версии: только .NET (C#).
 
 | | Что |
 |---|---|
-| ✅ **Шаг 1**, T00–T21, T23–T24 | `docpipe scan`: детерминированный манифест `doc-tree.json` по исходникам |
-| ✅ **Шаг 2**, M01–M11 | `docpipe materialize` и `docpipe docs`: документы, зоны, статусы, приёмка |
-| 🔨 **Бизнес-слой**, B01–B04 | реестры точек входа, инвентаризация, каталог процессов |
+| ✅ **Шаг 1**, T00–T26 | `docpipe scan`: детерминированный манифест `doc-tree.json` по исходникам |
+| ✅ **Шаг 2**, M01–M12 | `docpipe materialize` и `docpipe docs`: документы, зоны, статусы, приёмка |
+| ✅ **Бизнес-слой**, B01–B11 | `docpipe anchors` и `docpipe business`: точки входа, каталог процессов, `business_hash` |
 | ⬜ Шаг 3 | наполнение документов агентом; отдельного плана пока нет |
 | ⬜ T05b | связанные исходники `<Compile Include>` — отложена, см. [findings-stress.md](docs/findings-stress.md) |
 
-932 теста. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
+1069 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
 
 Что уже работает сквозным прогоном:
 
 ```bash
+# техническая документация
 docpipe scan --root . --out artifacts/doc-tree.json     # что документировать
 docpipe materialize artifacts/doc-tree.json --root .    # создать документы
 docpipe docs status artifacts/doc-tree.json --root .    # что делать агенту
 docpipe docs accept artifacts/doc-tree.json PATH        # зафиксировать соответствие коду
-docpipe anchors list artifacts/doc-tree.json --registries registries.yaml
+
+# бизнес-документация
+docpipe anchors list artifacts/doc-tree.json --registries registries.yaml   # какие есть точки входа
+docpipe business new bp.valuation.eod --title "Переоценка"                  # завести процесс
+docpipe business build  artifacts/doc-tree.json --config docpipe.yaml       # собрать связь с кодом
+docpipe business lint   artifacts/doc-tree.json --config docpipe.yaml       # что сломано и сколько ещё писать
+docpipe business status artifacts/doc-tree.json --config docpipe.yaml       # что разошлось с реализацией
 ```
+
+Как вести бизнес-документацию — [`docs/business-layer.md`](docs/business-layer.md),
+образец каталога — [`business.example/`](business.example/).
 
 ## Как этим пользоваться
 
@@ -183,6 +193,12 @@ jq '.nodes[].doc_path' /tmp/dt.json
 | `docs adopt MANIFEST` | перенести документ вручную |
 | `docs owners MANIFEST` | владельцы документов и диагностика правил владения |
 | `anchors list MANIFEST` | инвентаризация точек входа по реестрам платформы |
+| `anchors explain MANIFEST REF` | всё, что известно про один якорь: реестр, реализация, узел |
+| `business new ID --title …` | скелет бизнес-документа по выведенному из идентификатора пути |
+| `business build MANIFEST` | пересобрать генерируемые блоки бизнес-документов |
+| `business status MANIFEST` | что разошлось с реализацией; вход агента |
+| `business lint MANIFEST` | восемь проверок каталога и отчёт «сколько ещё писать» |
+| `business accept MANIFEST` | зафиксировать соответствие документа реализации |
 | `diff OLD NEW [--format text\|json]` | что изменилось между манифестами |
 | `validate MANIFEST` | схема плюс четыре инварианта; код 1 при нарушении |
 | `stats MANIFEST` | состав готового дерева |
@@ -710,6 +726,8 @@ tests/fixtures/
 | [`docs/business-implementation-plan.md`](docs/business-implementation-plan.md) | исполнительный план бизнес-слоя: якоря, реестры, каталог, `business_hash` |
 | [`docs/manifest.md`](docs/manifest.md) | справочник по манифесту: что лежит в `doc-tree.json` |
 | [`docs/materialize.md`](docs/materialize.md) | **справочник по шагу 2: устройство документа, статусы, команды, цикл работы** |
+| [`docs/business-layer.md`](docs/business-layer.md) | **справочник по бизнес-слою: каталог, якоря, `business_hash`, статусы, цикл работы аналитика** |
+| [`business.example/`](business.example/) | минимальный каталог-образец: возможности, процесс, сущность |
 | [`templates/README.md`](templates/README.md) | как устроены скелеты и что переживает прогон |
 | [`docs/implementation-log.md`](docs/implementation-log.md) | журнал: что сделано, что проверено, где план разошёлся с реальностью |
 | [`docs/findings-cashflow-registries.md`](docs/findings-cashflow-registries.md) | **разведка АС CF: где объявлены точки входа и что ломает их разбор** |

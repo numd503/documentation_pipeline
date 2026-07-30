@@ -6,6 +6,7 @@
 а прогон без изменений не открывает файл на запись.
 """
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -298,3 +299,57 @@ def test_build_dry_run_writes_nothing(tree: Path) -> None:
     assert result.exit_code == 0
     assert "Было бы обновлено: 3" in result.stdout
     assert path.read_bytes() == before
+
+
+def test_new_finds_skeletons_through_the_templates_key(tree: Path, tmp_path: Path) -> None:
+    """Каталог скелетов выводится из ключа `templates`, а не задан константой.
+
+    В установке инструмент лежит не в корне сканируемого репозитория, и
+    `templates/business` относительно текущего каталога указывало бы в никуда:
+    ровно та ловушка, из-за которой путь к шаблонам шага 2 обязателен
+    в конфигурации.
+    """
+    shutil.copytree(TEMPLATES, tree / "tools" / "skeletons" / "business")
+    (tree / "docpipe.yaml").write_text(
+        f"templates: {tree / 'tools' / 'skeletons'}\nbusiness_root: {BUSINESS}\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "business",
+            "new",
+            "bp.pricing.eod",
+            "--title",
+            "Переоценка",
+            "--root",
+            str(tree),
+            "--config",
+            str(tree / "docpipe.yaml"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert (tree / BUSINESS / "processes" / "pricing" / "eod.md").is_file()
+
+
+def test_new_names_the_templates_key_when_the_skeleton_is_missing(tree: Path) -> None:
+    """Сообщение обязано называть причину: «файл не найден» без неё выглядит
+    как дефект инструмента, хотя виновата конфигурация или поставка."""
+    result = runner.invoke(
+        app,
+        [
+            "business",
+            "new",
+            "bp.pricing.eod",
+            "--title",
+            "Переоценка",
+            "--root",
+            str(tree),
+            "--templates",
+            str(tree / "нет-такого"),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "--templates" in result.output

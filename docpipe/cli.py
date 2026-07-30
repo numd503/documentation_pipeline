@@ -836,15 +836,40 @@ def docs_owners(
     """Кто владеет документами и что не так с правилами владения."""
     settings = load_config(config)
     path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
+
+    # Сообщения здесь длиннее обычного намеренно. Владение — необязательная
+    # настройка, файла с ним в репозитории нет, и «файл не найден» без объяснения
+    # выглядит как поломка команды, а не как «его надо создать». Этот отказ —
+    # первое, обо что спотыкаются, начиная настройку.
     if path is None:
-        typer.echo("Правила владения не заданы: --ownership или ключ `ownership`", err=True)
+        typer.echo(
+            "Правила владения не заданы: --ownership FILE или ключ `ownership`"
+            " в docpipe.yaml (тогда нужен --config).\n"
+            "Файл заводится копией примера: cp ownership.example.yaml ownership.yaml\n"
+            "Владение необязательно: без него у всех документов `team: null`,"
+            " и это не мешает ни материализации, ни статусам.",
+            err=True,
+        )
         raise typer.Exit(code=2)
 
     try:
         manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
-        ownership = load_ownership(path)
     except (OSError, ValueError) as exc:
-        typer.echo(f"{exc}", err=True)
+        typer.echo(f"Не удалось прочитать манифест {manifest_path}: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    try:
+        ownership = load_ownership(path)
+    except FileNotFoundError as exc:
+        typer.echo(
+            f"Файл правил владения не найден: {path}.\n"
+            "В репозитории его нет — он заводится копией примера:"
+            " cp ownership.example.yaml ownership.yaml",
+            err=True,
+        )
+        raise typer.Exit(code=2) from exc
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Правила владения не читаются ({path}): {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
     if explain_node:
@@ -971,7 +996,7 @@ business_app = typer.Typer(
 )
 app.add_typer(business_app, name="business")
 
-BUSINESS_TEMPLATES = "templates/business"
+BUSINESS_TEMPLATES = "business"
 
 
 def _business_template(directory: Path, kind: str) -> str:
@@ -979,7 +1004,12 @@ def _business_template(directory: Path, kind: str) -> str:
     try:
         return path.read_bytes().decode("utf-8-sig")
     except OSError as exc:
-        typer.echo(f"Скелет не найден: {path}", err=True)
+        typer.echo(
+            f"Скелет не найден: {path}."
+            " Каталог берётся из ключа `templates` плюс `business`;"
+            " задать явно — флагом --templates",
+            err=True,
+        )
         raise typer.Exit(code=2) from exc
 
 
@@ -1021,7 +1051,14 @@ def business_new(
         typer.echo(f"Документ уже существует: {path}", err=True)
         raise typer.Exit(code=1)
 
-    template = _business_template(templates_dir or Path(BUSINESS_TEMPLATES), kind)
+    # Скелеты бизнес-слоя лежат подкаталогом внутри каталога скелетов шага 2,
+    # поэтому путь выводится из ключа `templates`, а не задан константой.
+    # Константа `templates/business` относительно текущего каталога работала бы
+    # только в репозитории разработки: в установке инструмент лежит не в корне
+    # сканируемого репозитория, и по умолчанию искалось бы несуществующее.
+    template = _business_template(
+        templates_dir or Path(settings.templates) / BUSINESS_TEMPLATES, kind
+    )
     head = (
         "---\ndocpipe:\n"
         f"  schema: business/1\n  id: {doc_id}\n  kind: {kind}\n"
