@@ -75,6 +75,16 @@ class BuildContext:
     implementors: dict[str, list[DocNode]] = field(default_factory=dict)
     module_refs: dict[str, set[str]] = field(default_factory=dict)
 
+    # Обратный индекс «узел → бизнес-документы» приходит СЮДА КАК ДАННЫЕ.
+    # `docpipe/materialize/**` не импортирует `docpipe/business/**`: иначе шаг 2
+    # перестанет быть самостоятельным, а бизнес-слой — необязательным.
+    #
+    # `business_root` отличает «каталог не задан» от «каталог задан, но этот узел
+    # в нём не упомянут». Без этого различия раздел «Бизнес-контекст» появлялся бы
+    # у всех сразу при первом же бизнес-документе в репозитории.
+    business_root: str | None = None
+    business_links: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+
 
 def build_context(
     manifest: Manifest,
@@ -372,5 +382,13 @@ def build_generated_block(
         lines += [f"> {line}" for line in symbol.xml_doc.splitlines()]
     else:
         lines.append("Нет.")
+
+    # Раздел появляется, только когда бизнес-каталог задан. Без него шаг 2
+    # обязан работать ровно как прежде — вплоть до байта в золотом дереве.
+    if context.business_root is not None:
+        lines += ["", "### Бизнес-контекст", ""]
+        found = context.business_links.get(node.id, [])
+        listed = [f"- [{title}]({_relative(node.doc_path, path)})" for title, path in found]
+        lines += listed or ["Нет."]
 
     return "\n".join(lines) + "\n"

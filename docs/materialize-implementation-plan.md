@@ -291,6 +291,17 @@ docpipe_state:
 
 ---
 
+## Связь с бизнес-слоем
+
+Бизнес-документация ведётся отдельным слоем; его план —
+[`business-implementation-plan.md`](business-implementation-plan.md), справочник —
+[`business-layer.md`](business-layer.md). Шаг 2 знает о нём ровно одно: если
+в конфигурации заданы `registries` и `business_root`, генерируемый блок получает
+раздел «Бизнес-контекст». Обратный индекс приходит в `BuildContext` **как данные**;
+`docpipe/materialize/**` бизнес-слой не импортирует, и это проверяется обходом AST.
+
+---
+
 ## Владение (`ownership.yaml`)
 
 Синтаксис — тот же, что у `rules/dotnet.yaml`: `id`, `priority`, дерево `any`/`all`.

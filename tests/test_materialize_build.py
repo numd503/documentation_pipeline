@@ -5,6 +5,7 @@ Front matter сверяется с эталоном **байт в байт**: э
 в квотировании — изменение формата, а не косметика.
 """
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -321,3 +322,59 @@ def test_unresolvable_dependency_is_marked_not_hidden() -> None:
     context = build_context(manifest, {}, EXAMPLES)
 
     assert "вне дерева документации" in build_generated_block(node, context)
+
+
+# --------------------------------------------------------------------------------------
+# Бизнес-контекст (B09)
+# --------------------------------------------------------------------------------------
+
+
+def test_business_section_is_absent_without_a_catalog(manifest: Manifest, context) -> None:  # type: ignore[no-untyped-def]
+    """Без бизнес-каталога шаг 2 работает ровно как прежде.
+
+    Проверяется отсутствием заголовка, а не только совпадением золотого дерева:
+    дерево сравнивается для шести узлов, а свойство должно держаться для любого.
+    """
+    text = build_generated_block(_node(manifest, "PricingController"), context)
+
+    assert "### Бизнес-контекст" not in text
+
+
+def test_business_section_links_to_the_process(manifest: Manifest, context) -> None:  # type: ignore[no-untyped-def]
+    """Обратный индекс приходит в контекст как данные: `docpipe/materialize`
+    не знает ни про каталог, ни про якоря."""
+    node = _node(manifest, "PricingController")
+    with_links = replace(
+        context,
+        business_root="business",
+        business_links={node.id: [("Онлайн УФН", "business/processes/valuation/twinml.md")]},
+    )
+
+    text = build_generated_block(node, with_links)
+
+    assert "### Бизнес-контекст" in text
+    assert "[Онлайн УФН](../../../../business/processes/valuation/twinml.md)" in text
+
+
+def test_business_section_says_nothing_when_node_is_not_referenced(
+    manifest: Manifest, context
+) -> None:  # type: ignore[no-untyped-def]
+    """Каталог задан, но узел в нём не упомянут — это факт, а не отсутствие
+    возможности. Пропущенный раздел читался бы как «инструмент не умеет»."""
+    node = _node(manifest, "PricingController")
+    with_links = replace(context, business_root="business", business_links={})
+
+    text = build_generated_block(node, with_links)
+
+    assert "### Бизнес-контекст\n\nНет." in text
+
+
+def test_business_links_contain_no_backslash(manifest: Manifest, context) -> None:  # type: ignore[no-untyped-def]
+    node = _node(manifest, "PricingController")
+    with_links = replace(
+        context,
+        business_root="business",
+        business_links={node.id: [("Процесс", "business/processes/x/y.md")]},
+    )
+
+    assert "\\" not in build_generated_block(node, with_links)

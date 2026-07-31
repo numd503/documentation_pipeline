@@ -138,6 +138,11 @@ keep_configured "$SOURCE/deploy/cashflow-docspipe/rules.yaml" \
 # на файл, которого в поставке нет.
 keep_configured "$SOURCE/deploy/cashflow-docspipe/ownership.yaml" \
     "$DEST/cashflow-docspipe/ownership.yaml" "cashflow-docspipe/ownership.yaml"
+# Описание реестров платформы: без него `docpipe anchors` и `docpipe business`
+# отказываются работать с «Реестры не заданы», а пути внутри него — первое,
+# что придётся сверить с реальной раскладкой субрепозиториев.
+keep_configured "$SOURCE/deploy/cashflow-docspipe/registries.yaml" \
+    "$DEST/cashflow-docspipe/registries.yaml" "cashflow-docspipe/registries.yaml"
 cp "$SOURCE/deploy/cashflow-docspipe/README.md" "$DEST/cashflow-docspipe/README.md"
 
 # --- шаблоны документов (шаг 2) ---------------------------------------------
@@ -155,6 +160,17 @@ cp "$SOURCE/deploy/cashflow-docspipe/README.md" "$DEST/cashflow-docspipe/README.
 # которого нет и не будет.
 mkdir -p "$DEST/cashflow-docspipe/templates/examples"
 for tpl in "$SOURCE"/templates/*.md "$SOURCE"/templates/examples/*.md; do
+    rel="${tpl#"$SOURCE"/templates/}"
+    keep_configured "$tpl" "$DEST/cashflow-docspipe/templates/$rel" "templates/$rel"
+done
+
+# --- скелеты бизнес-документов ----------------------------------------------
+# Отдельным циклом, потому что обход каталога скелетов шага 2 НЕ рекурсивный:
+# `templates/business` для него подкаталог и в набор шага 2 не попадает.
+# Без этих файлов `docpipe business new` отказывается работать со «Скелет
+# не найден», и по сообщению видно путь, но не видно, что виновата поставка.
+mkdir -p "$DEST/cashflow-docspipe/templates/business/examples"
+for tpl in "$SOURCE"/templates/business/*.md "$SOURCE"/templates/business/examples/*.md; do
     rel="${tpl#"$SOURCE"/templates/}"
     keep_configured "$tpl" "$DEST/cashflow-docspipe/templates/$rel" "templates/$rel"
 done

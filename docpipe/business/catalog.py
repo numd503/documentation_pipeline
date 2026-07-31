@@ -46,6 +46,19 @@ def doc_path_for(doc_id: str, business_root: str) -> str:
     return f"{business_root}/{folder}/{'/'.join(rest)}.md"
 
 
+def capability_error(doc: BusinessDoc, business_root: str) -> str:
+    """Сообщение про ссылку на необъявленную возможность.
+
+    Вынесено, потому что его собирают двое: загрузка каталога и линт. Два
+    текста про одно и то же разошлись бы на первой же правке, и линт начал бы
+    показывать находку, которой нет в списке ошибок каталога, — или наоборот.
+    """
+    return (
+        f"{doc.doc_path}: возможность {doc.capability!r} не объявлена"
+        f" в {business_root}/{CAPABILITIES_FILE}"
+    )
+
+
 def _load_capabilities(path: Path) -> tuple[list[Capability], list[str]]:
     if not path.is_file():
         return [], []
@@ -183,10 +196,7 @@ def load_catalog(root: Path, business_root: str) -> Catalog:
     declared = {capability.id for capability in capabilities}
     for doc in docs:
         if doc.capability and doc.capability not in declared:
-            errors.append(
-                f"{doc.doc_path}: возможность {doc.capability!r} не объявлена"
-                f" в {business_root}/{CAPABILITIES_FILE}"
-            )
+            errors.append(capability_error(doc, business_root))
 
     return Catalog(
         docs=sorted(docs, key=lambda d: d.id),
