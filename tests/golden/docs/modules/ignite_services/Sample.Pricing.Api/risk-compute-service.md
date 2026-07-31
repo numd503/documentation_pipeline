@@ -2,7 +2,7 @@
 docpipe:
   schema: materialize/1
   node_id: type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Grid.RiskComputeService`0
-  doc_path: docs/modules/Sample.Pricing.Api/ignite_services/risk-compute-service.md
+  doc_path: docs/modules/ignite_services/Sample.Pricing.Api/risk-compute-service.md
   title: RiskComputeService
   fqn: Sample.Pricing.Api.Grid.RiskComputeService
   kind: ignite_service

@@ -20,7 +20,7 @@ from docpipe.materialize.template import DEFAULT_TEMPLATE
 
 GOLDEN_MANIFEST = Path("tests/golden/doc-tree.json")
 GOLDEN_DOCS = Path("tests/golden/docs")
-CONTROLLER = "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
+CONTROLLER = "docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md"
 runner = CliRunner()
 
 

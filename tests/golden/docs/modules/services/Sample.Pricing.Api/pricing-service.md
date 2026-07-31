@@ -2,7 +2,7 @@
 docpipe:
   schema: materialize/1
   node_id: type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Services.PricingService`0
-  doc_path: docs/modules/Sample.Pricing.Api/services/pricing-service.md
+  doc_path: docs/modules/services/Sample.Pricing.Api/pricing-service.md
   title: PricingService
   fqn: Sample.Pricing.Api.Services.PricingService
   kind: service
@@ -46,7 +46,7 @@ docpipe_state:
 
 | Тип | Через | Документ |
 | --- | --- | --- |
-| `Sample.Common.Abstractions.IPricingProvider` | constructor | [CurveProvider](../providers/curve-provider.md) — реализация интерфейса |
+| `Sample.Common.Abstractions.IPricingProvider` | constructor | [CurveProvider](../../providers/Sample.Pricing.Api/curve-provider.md) — реализация интерфейса |
 | `Sample.Pricing.Api.Services.IPricingService` | di | вне дерева документации |
 
 ### Связи

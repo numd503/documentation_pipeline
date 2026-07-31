@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 from docpipe.cli import app
 
 GOLDEN_MANIFEST = Path("tests/golden/doc-tree.json")
-CONTROLLER = "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
+CONTROLLER = "docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md"
 runner = CliRunner()
 
 
@@ -39,7 +39,7 @@ def _manifest(tmp_path: Path, mutate) -> Path:  # type: ignore[no-untyped-def]
     return path
 
 
-NEW_PATH = "docs/modules/Sample.Pricing.Api/services/pricing-controller.md"
+NEW_PATH = "docs/modules/services/Sample.Pricing.Api/pricing-controller.md"
 
 
 def _reclassified(payload: dict) -> None:  # type: ignore[type-arg]
@@ -128,7 +128,7 @@ def test_rename_with_the_same_file_moves_with_high_confidence(tmp_path: Path) ->
     def rename(payload: dict) -> None:  # type: ignore[type-arg]
         for node in payload["nodes"]:
             if node["doc_path"] == CONTROLLER:
-                node["doc_path"] = "docs/modules/Sample.Pricing.Api/controllers/pricing-api.md"
+                node["doc_path"] = "docs/modules/controllers/Sample.Pricing.Api/pricing-api.md"
                 node["id"] = node["id"].replace("PricingController", "PricingApi")
                 node["title"] = "PricingApi"
                 node["symbol"]["fqn"] = node["symbol"]["fqn"].replace(
@@ -136,7 +136,7 @@ def test_rename_with_the_same_file_moves_with_high_confidence(tmp_path: Path) ->
                 )
 
     result = _run(tmp_path, _manifest(tmp_path, rename))
-    moved = tmp_path / "docs/modules/Sample.Pricing.Api/controllers/pricing-api.md"
+    moved = tmp_path / "docs/modules/controllers/Sample.Pricing.Api/pricing-api.md"
 
     assert result.exit_code == 0
     assert not (tmp_path / CONTROLLER).exists()
@@ -147,14 +147,14 @@ def test_ambiguous_pair_is_not_moved(tmp_path: Path) -> None:
     """Требование «пара единственная в обе стороны» снимает главный риск —
     два типа, обменявшихся именами."""
     _run(tmp_path)
-    copy = tmp_path / "docs/modules/Sample.Pricing.Api/controllers/copy.md"
+    copy = tmp_path / "docs/modules/controllers/Sample.Pricing.Api/copy.md"
     original = (tmp_path / CONTROLLER).read_text(encoding="utf-8")
     copy.write_text(original.replace("PricingController`0", "PricingCopy`0"), encoding="utf-8")
 
     def rename(payload: dict) -> None:  # type: ignore[type-arg]
         for node in payload["nodes"]:
             if node["doc_path"] == CONTROLLER:
-                node["doc_path"] = "docs/modules/Sample.Pricing.Api/controllers/pricing-api.md"
+                node["doc_path"] = "docs/modules/controllers/Sample.Pricing.Api/pricing-api.md"
                 node["id"] = node["id"].replace("PricingController", "PricingApi")
 
     result = _run(tmp_path, _manifest(tmp_path, rename))
@@ -176,3 +176,81 @@ def test_dry_run_does_not_move(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert (tmp_path / CONTROLLER).exists()
     assert not (tmp_path / NEW_PATH).exists()
+
+
+# --------------------------------------------------------------------------------------
+# Смена раскладки: переезжает всё дерево сразу
+# --------------------------------------------------------------------------------------
+
+
+def _module_first(payload: dict) -> None:  # type: ignore[type-arg]
+    """Манифест, собранный со старой раскладкой `module-first`.
+
+    Пересобирать его сканом нельзя: тест обязан оставаться самодостаточным,
+    а раскладка — свойство манифеста, а не решения.
+    """
+    for node in payload["nodes"]:
+        _, _, kind_plural, module, name = node["doc_path"].split("/")
+        node["doc_path"] = f"docs/modules/{module}/{kind_plural}/{name}"
+
+
+def test_layout_change_relocates_the_whole_tree(tmp_path: Path) -> None:
+    """Смена раскладки — переезд для КАЖДОГО документа, и текст обязан уцелеть.
+
+    Единственный случай, когда переезжают сразу все узлы. Сопоставление идёт
+    по `node_id` из front matter, поэтому оно точное: ни один документ
+    не пересоздаётся заново и ни один не теряется.
+    """
+    old = _manifest(tmp_path, _module_first)
+    _run(tmp_path, old)
+    old_path = "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
+    _fill(tmp_path, old_path)
+
+    result = _run(tmp_path)
+
+    assert result.exit_code == 0
+    assert result.stdout.count(" → ") == 6
+    assert not (tmp_path / old_path).exists()
+    assert "Авторский текст purpose." in (tmp_path / CONTROLLER).read_text(encoding="utf-8")
+
+
+def test_layout_change_keeps_the_text_of_an_accepted_document(tmp_path: Path) -> None:
+    """Принятый документ переезжает и просит пересмотра — но не переписывается.
+
+    Пометка снимается обычной приёмкой; отдельного режима для смены раскладки
+    нет намеренно, иначе появился бы второй путь записи.
+    """
+    old = _manifest(tmp_path, _module_first)
+    _run(tmp_path, old)
+    old_path = "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
+    _fill(tmp_path, old_path)
+    runner.invoke(app, ["docs", "accept", str(old), old_path, "--root", str(tmp_path)])
+
+    _run(tmp_path)
+    status = runner.invoke(
+        app, ["docs", "status", str(GOLDEN_MANIFEST), CONTROLLER, "--root", str(tmp_path)]
+    )
+
+    assert "relocated" in status.stdout
+    assert "Авторский текст notes." in (tmp_path / CONTROLLER).read_text(encoding="utf-8")
+
+    runner.invoke(
+        app, ["docs", "accept", str(GOLDEN_MANIFEST), CONTROLLER, "--root", str(tmp_path)]
+    )
+    after = runner.invoke(
+        app, ["docs", "status", str(GOLDEN_MANIFEST), CONTROLLER, "--root", str(tmp_path)]
+    )
+
+    assert "current" in after.stdout
+
+
+def test_layout_change_is_idempotent(tmp_path: Path) -> None:
+    """Второй прогон после переезда не трогает ни байта."""
+    _run(tmp_path, _manifest(tmp_path, _module_first))
+    _run(tmp_path)
+    before = {path: path.read_bytes() for path in sorted((tmp_path / "docs").rglob("*.md"))}
+
+    result = _run(tmp_path)
+
+    assert "без изменений:  6" in result.stdout
+    assert {path: path.read_bytes() for path in before} == before

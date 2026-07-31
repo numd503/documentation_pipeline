@@ -2,7 +2,7 @@
 docpipe:
   schema: materialize/1
   node_id: type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Providers.CurveProvider`0
-  doc_path: docs/modules/Sample.Pricing.Api/providers/curve-provider.md
+  doc_path: docs/modules/providers/Sample.Pricing.Api/curve-provider.md
   title: CurveProvider
   fqn: Sample.Pricing.Api.Providers.CurveProvider
   kind: provider

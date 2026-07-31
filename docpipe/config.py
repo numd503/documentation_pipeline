@@ -6,10 +6,12 @@
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
+
+DocLayout = Literal["kind-first", "module-first"]
 
 
 class DocpipeConfig(BaseModel):
@@ -41,6 +43,25 @@ class DocpipeConfig(BaseModel):
     ownership: str | None = None
     docs_root: str = "docs"
     docs_scan_exclude: list[str] = Field(default_factory=list)
+
+    # Раскладка документов. Обе — перестановка одной и той же тройки
+    # (модуль, вид, slug), поэтому на **коллизии не влияют вообще**: путь
+    # в каждой из них однозначно определяется тройкой, и множество конфликтов
+    # у них общее (на ABP — одни и те же 19 путей на 47 узлов). Выбирать
+    # приходится не по безопасности, а по тому, как дерево читают:
+    #
+    #   kind-first    docs/modules/gridservices/Sbt.Cf.Grid.AutoConclusion/x.md
+    #   module-first  docs/modules/Sbt.Cf.Grid.AutoConclusion/gridservices/x.md
+    #
+    # `kind-first` собирает все сущности одного вида в один каталог — это то,
+    # ради чего он и выбран по умолчанию: «покажи все grid-сервисы» становится
+    # обходом каталога. Плата ровно одна: по префиксу пути больше не выбрать
+    # модуль целиком (`docs status МАНИФЕСТ docs/modules/Sample.Common`),
+    # потому что его документы разложены по каталогам видов. `module-first`
+    # оставлен параметром для тех, кому важнее эта выборка, и как способ
+    # не переезжать уже написанным деревом: смена значения меняет `doc_path`
+    # у всех узлов сразу.
+    doc_layout: DocLayout = "kind-first"
 
     # Бизнес-слой. `business_root` — параметр, а не константа: на АС CF
     # артефакты инструмента лежат в `docs/ml/docspipe`, и первый каталог

@@ -142,7 +142,7 @@ jq '.nodes[].doc_path' /tmp/dt.json
   "nodes": [
     { "id": "type:src/…/Sample.Pricing.Api.csproj#…PricingController`0",
       "kind": "controller",
-      "doc_path": "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md",
+      "doc_path": "docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md",
       "matched_rules": ["controller.aspnet"],       // все совпавшие правила, для аудита
       "endpoints": [{ "http_method": "GET", "route": "api/v1/Pricing/{id:guid}" }],
       "dependencies": [{ "target": "…IPricingService", "via": "constructor",

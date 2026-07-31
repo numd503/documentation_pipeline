@@ -253,7 +253,8 @@ docpipe_state:
 Переезд — это когда изменился **код** и пересчитался `doc_path`, а файл с текстом остался
 на старом месте. Файл никто не переносил.
 
-`doc_path` = `docs/modules/{имя csproj}/{вид}s/{slug имени типа}.md`, а
+`doc_path` = `docs/modules/{вид}s/{имя csproj}/{slug имени типа}.md` (порядок сегментов
+задаётся `doc_layout`), а
 `node_id` = `type:{путь к csproj}#{FQN}` + арность. Обе строки меняются от пересекающихся,
 но не совпадающих причин:
 
@@ -1063,7 +1064,7 @@ def decide(node: DocNode | None, doc: ExistingDoc | None) -> Decision: ...  # ac
 > микрооптимизация: в `.venv` встречаются `.md` на мегабайты.
 
 > **Ловушка. Регистр путей.** На macOS и Windows файловая система регистронезависима,
-> а имя модуля в `doc_path` не слагифицируется (`docs/modules/{module.name}/`). Два проекта
+> а имя модуля в `doc_path` не слагифицируется (в пути есть сегмент `{module.name}`). Два проекта
 > `Cf.Pricing` и `CF.Pricing` дадут один каталог. `docpipe validate` этого не ловит —
 > он сравнивает точные строки.
 
@@ -1220,7 +1221,9 @@ uv run pytest tests/test_materialize_cli.py tests/test_relocation.py -q
 - `--fail-on empty` → код 1;
 - `--format json` проходит `json.loads`, `documents` отсортирован по `doc_path`;
 - вывод `--format json` двух вызовов совпадает байт в байт;
-- `docs status MANIFEST docs/modules/Sample.Common` возвращает только документы под каталогом;
+- `docs status MANIFEST docs/modules/controllers` возвращает только документы под каталогом,
+  а `docs/modules/controllers/Sample.Common` — только один: модуль при `kind-first`
+  выбирается префиксом ВНУТРИ вида, а не сам по себе;
 - манифест с `partial` даёт предупреждение в тексте и `"manifest_partial": true` в JSON;
 - документ с текстом в одной секции и пустыми остальными → решение `write`,
   `empty_sections` перечисляет остальные;

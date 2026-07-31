@@ -45,7 +45,8 @@ def test_interface_resolves_through_its_implementation(golden: Manifest) -> None
 
     block = build_generated_block(node, context)
 
-    assert "[PricingService](../services/pricing-service.md) — реализация интерфейса" in block
+    link = "[PricingService](../../services/Sample.Pricing.Api/pricing-service.md)"
+    assert f"{link} — реализация интерфейса" in block
 
 
 def test_no_link_contains_a_backslash(golden: Manifest) -> None:

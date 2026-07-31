@@ -2,7 +2,7 @@
 docpipe:
   schema: materialize/1
   node_id: type:src/Sample.Common/Sample.Common.csproj#Sample.Common.Web.BaseApiController`0
-  doc_path: docs/modules/Sample.Common/controllers/base-api-controller.md
+  doc_path: docs/modules/controllers/Sample.Common/base-api-controller.md
   title: BaseApiController
   fqn: Sample.Common.Web.BaseApiController
   kind: controller

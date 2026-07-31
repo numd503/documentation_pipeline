@@ -13,8 +13,8 @@ from typer.testing import CliRunner
 from docpipe.cli import app
 
 MANIFEST = Path("tests/golden/doc-tree.json")
-CONTROLLER = "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
-SERVICE = "docs/modules/Sample.Pricing.Api/services/pricing-service.md"
+CONTROLLER = "docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md"
+SERVICE = "docs/modules/services/Sample.Pricing.Api/pricing-service.md"
 runner = CliRunner()
 
 
@@ -258,7 +258,7 @@ def _adopt(root: Path, source: str, target: str, *extra: str):  # type: ignore[n
     )
 
 
-SPARE = "docs/modules/Sample.Pricing.Api/controllers/spare.md"
+SPARE = "docs/modules/controllers/Sample.Pricing.Api/spare.md"
 
 
 def _spare(root: Path, node_id: str = "type:src/X/X.csproj#X.Gone`0") -> str:
@@ -314,7 +314,7 @@ def test_adopt_refuses_a_duplicate_node_id(tmp_path: Path) -> None:
 def test_adopt_refuses_a_target_no_node_claims(tmp_path: Path) -> None:
     _materialize(tmp_path)
 
-    result = _adopt(tmp_path, CONTROLLER, "docs/modules/Sample.Pricing.Api/services/нет.md")
+    result = _adopt(tmp_path, CONTROLLER, "docs/modules/services/Sample.Pricing.Api/нет.md")
 
     assert result.exit_code == 1
     assert "ни один узел" in result.stderr

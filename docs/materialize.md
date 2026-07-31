@@ -25,7 +25,7 @@
 docpipe:                       ← проекция манифеста, перезаписывается всегда
   schema: materialize/1
   node_id: type:src/…#…PricingController`0
-  doc_path: docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md
+  doc_path: docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md
   title: PricingController
   fqn: Sample.Pricing.Api.Controllers.PricingController
   kind: controller
@@ -141,8 +141,8 @@ docpipe docs owners MANIFEST [--explain NODE] [--lint]
   без изменений:  0
 
 Где было бы создано:          # раскладка по каталогам, только для созданных
-  docs/modules/Sample.Pricing.Api/services        2
-  docs/modules/Sample.Common/controllers          1
+  docs/modules/services/Sample.Pricing.Api        2
+  docs/modules/controllers/Sample.Common          1
 
 Своего скелета нет, применён `default`:   # только если подстановка была
   ignite-cache    412
@@ -169,7 +169,7 @@ docpipe docs status artifacts/doc-tree.json --root . --format json
 # 3. Агент наполняет секции, front matter не трогает
 
 # 4. Зафиксировать соответствие коду
-docpipe docs accept artifacts/doc-tree.json docs/modules/X/services/y.md --root .
+docpipe docs accept artifacts/doc-tree.json docs/modules/services/X/y.md --root .
 
 # 5. После изменения кода — снова scan, затем status:
 #    сменился контракт  -> stale,   write, с перечнем добавленных и удалённых членов
@@ -217,7 +217,7 @@ docpipe docs owners MANIFEST --config docs/ml/docspipe/cashflow-docspipe/docpipe
 
 ```bash
 # 1. Посмотреть, по каким полям вообще можно писать условия для конкретного узла
-docpipe docs owners MANIFEST --ownership ownership.yaml --explain docs/modules/X/services/y.md
+docpipe docs owners MANIFEST --ownership ownership.yaml --explain docs/modules/services/X/y.md
 ```
 
 ```
@@ -254,6 +254,38 @@ docpipe docs owners MANIFEST --ownership ownership.yaml --lint
 Ссылки на переехавший документ **из других документов** чинятся сами: генерируемые
 блоки пересобираются в том же прогоне. Ссылки внутри авторских секций не чинятся —
 `docs status` сообщает о битых в `broken_links`.
+
+### Смена `doc_layout`
+
+Единственный случай, когда переезжают сразу все документы. Механизм тот же:
+`node_id` есть в front matter каждого документа, поэтому сопоставление точное —
+ни один документ не пересоздаётся и ни один не теряется.
+
+```bash
+# 1. Посмотреть, что поедет, ничего не трогая
+docpipe materialize artifacts/doc-tree.json --root . --dry-run
+
+# 2. Перенести
+docpipe materialize artifacts/doc-tree.json --root .
+
+# 3. Снять пометку о пересмотре — только с переехавших, списком
+docpipe docs status artifacts/doc-tree.json --root . --format json \
+  | jq -r '.documents[] | select(.status == "relocated") | .doc_path' > /tmp/relocated.txt
+docpipe docs accept artifacts/doc-tree.json $(cat /tmp/relocated.txt) --root .
+
+# 4. Прибрать опустевшие каталоги: перенос их не удаляет
+find docs -type d -empty -delete
+```
+
+Шаг 3 нужен потому, что переезд ставит принятому документу статус `relocated`
+и просит пересмотра. Для переезда из-за смены **кода** это правильно, для смены
+раскладки — шум: текст не менялся. Отдельного режима «переезд без пересмотра»
+нет намеренно: он был бы вторым путём записи со своей логикой слияния зон.
+Поэтому приёмка идёт обычной командой, и её видно в истории.
+
+Списком, а не `--all`: приёмка отклоняет ненаполненные документы целиком,
+поэтому на дереве, где хоть один документ ещё не написан, `--all` не примет
+**ничего** — включая те, что действительно только переехали.
 
 ## Шаблоны
 
