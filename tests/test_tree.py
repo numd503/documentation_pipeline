@@ -1,6 +1,7 @@
 """Проверка сборки дерева документации (T15)."""
 
 import shutil
+from collections import defaultdict
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,7 @@ import yaml
 
 from docpipe.config import DocpipeConfig
 from docpipe.model import Dependency, DocNode
-from docpipe.tree import parameter_types
+from docpipe.tree import doc_path_for, parameter_types
 from tests.conftest import build_tree
 
 
@@ -35,7 +36,75 @@ def test_exactly_six_nodes(sample_solution: Path) -> None:
 
 def test_doc_path(sample_solution: Path) -> None:
     node = _nodes(sample_solution)["PricingController"]
-    assert node.doc_path == "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
+    assert node.doc_path == "docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md"
+
+
+def test_doc_path_module_first_layout(sample_solution: Path) -> None:
+    """Вторая раскладка — та же тройка сегментов, переставленная."""
+    nodes = _nodes(sample_solution, config=DocpipeConfig(doc_layout="module-first"))
+    assert (
+        nodes["PricingController"].doc_path
+        == "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
+    )
+
+
+def test_layout_groups_kinds_together(sample_solution: Path) -> None:
+    """Ради чего раскладка и менялась: все сущности вида — в одном каталоге.
+
+    В `module-first` тот же набор узлов даёт столько каталогов верхнего уровня,
+    сколько модулей, и обойти «все контроллеры» одним каталогом нельзя.
+    """
+    other = _nodes(sample_solution, config=DocpipeConfig(doc_layout="module-first"))
+    kind_first = {node.doc_path.split("/")[2] for node in _nodes(sample_solution).values()}
+    module_first = {node.doc_path.split("/")[2] for node in other.values()}
+    assert kind_first == {"controllers", "ignite_services", "providers", "services", "workflows"}
+    assert module_first == {"Sample.Common", "Sample.Pricing.Api"}
+
+
+def test_layout_does_not_change_collisions() -> None:
+    """Смена раскладки не создаёт и не убирает ни одного конфликта путей.
+
+    Свойство, ради которого раскладку и можно менять безболезненно: путь
+    в каждой из них — инъекция от тройки (модуль, вид, slug), поэтому два узла
+    спорят за файл в одной ровно тогда, когда спорят и в другой. Проверяется
+    на наборе, где конфликты есть **на самом деле**: на фикстурах узлов слишком
+    мало, чтобы хоть один случился, и тест на них проходил бы вхолостую.
+
+    Опасный случай — последний: модуль назван как вид сущности. Уровни в пути
+    не смешиваются, поэтому и он ничего не склеивает.
+    """
+    triples = [
+        ("Sample.Pricing.Api", "controller", "PricingController"),
+        ("Sample.Pricing.Api", "controller", "pricing_controller"),  # тот же slug
+        ("Sample.Common", "controller", "PricingController"),  # тот же вид и slug
+        ("Sample.Pricing.Api", "service", "PricingController"),  # тот же модуль и slug
+        ("Sample.Pricing.Api", "service", "PricingService"),
+        ("services", "controller", "PricingService"),  # модуль назван как вид
+        ("services", "service", "PricingService"),
+    ]
+
+    def groups(layout: str) -> list[list[int]]:
+        by_path: defaultdict[str, list[int]] = defaultdict(list)
+        for position, (module, kind, name) in enumerate(triples):
+            by_path[doc_path_for(module, kind, name, layout)].append(position)  # type: ignore[arg-type]
+        return sorted(by_path.values())
+
+    assert groups("kind-first") == groups("module-first")
+    # И конфликт в наборе действительно есть — иначе сравнение выше пусто.
+    assert [group for group in groups("kind-first") if len(group) > 1] == [[0, 1]]
+
+
+def test_layout_keeps_node_identity(sample_solution: Path) -> None:
+    """Раскладка меняет только путь: `id` узла от неё не зависит."""
+    kind_first = _nodes(sample_solution)
+    module_first = _nodes(sample_solution, config=DocpipeConfig(doc_layout="module-first"))
+
+    assert {title: node.id for title, node in kind_first.items()} == {
+        title: node.id for title, node in module_first.items()
+    }
+    assert {title: node.signature_hash for title, node in kind_first.items()} == {
+        title: node.signature_hash for title, node in module_first.items()
+    }
 
 
 def test_node_belongs_to_its_own_module(sample_solution: Path) -> None:

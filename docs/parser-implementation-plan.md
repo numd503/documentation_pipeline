@@ -2059,9 +2059,25 @@ def build_nodes(symbols: dict[str, Symbol], modules: list[Module],
    > добавить `-{sha256(путь к файлу)[:8]}` и **записать это в `stats`**, потому что
    > почти всегда это сигнал о неверно заданном scope, а не о норме.
 
-5. **doc_path**: `docs/modules/{module.name}/{kind_plural}/{slug}.md`, где `kind_plural` —
-   `kind` + `s` (`controller` → `controllers`, `ignite_service` → `ignite_services`),
-   `slug = slugify(symbol.name)`.
+5. **doc_path**: три сегмента — модуль, вид, slug, — порядок задаётся
+   `config.doc_layout`; `kind_plural` — `kind` + `s` (`controller` → `controllers`,
+   `ignite_service` → `ignite_services`), `slug = slugify(symbol.name)`:
+
+   ```
+   kind-first (по умолчанию)  docs/modules/{kind_plural}/{module.name}/{slug}.md
+   module-first               docs/modules/{module.name}/{kind_plural}/{slug}.md
+   ```
+
+   > **Раскладка на коллизии не влияет — не пытаться «обезопасить» её выбором.**
+   > Обе — перестановка одной и той же тройки, каждая однозначно определяется
+   > тройкой, поэтому за один файл узлы спорят в них одновременно, и пункт 6
+   > отрабатывает одинаково. Проверено на ABP: одни и те же 19 путей на 47 узлов.
+   > Массовые коллизии дала бы раскладка **без** имени модуля (`docs/{kind}/{slug}.md`) —
+   > именно оно их и разводит, а не порядок сегментов.
+   >
+   > Уровни не смешиваются: модуль всегда на своём уровне, вид — на своём. Поэтому
+   > модуль, названный как вид (`Services`), ни во что не упирается, и проверять
+   > это отдельно не нужно.
 6. **Коллизии `doc_path`.** Сгруппировать узлы по `doc_path`. Если в группе >1 — **всем**
    участникам добавить суффикс `-{sha256(id)[:8]}` перед `.md`.
 
@@ -2120,7 +2136,10 @@ def build_nodes(symbols: dict[str, Symbol], modules: list[Module],
 **Критерии приёмки**
 - ровно 6 узлов (`PricingController`, `BaseApiController`, `RiskComputeService`,
   `ValuationWorkflow`, `CurveProvider`, `PricingService`);
-- `PricingController.doc_path == "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"`;
+- `PricingController.doc_path == "docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md"`,
+  а при `doc_layout: module-first` — `"docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"`;
+- смена `doc_layout` не меняет ни `id`, ни `signature_hash` ни одного узла и не меняет
+  число различных `doc_path`;
 - `BaseApiController.module == "Sample.Common"`;
 - у `PricingController` в `dependencies` есть
   `Dependency(target="Sample.Pricing.Api.Services.IPricingService", via="constructor", confidence="high")`;

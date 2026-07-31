@@ -2,7 +2,7 @@
 docpipe:
   schema: materialize/1
   node_id: type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Workflows.ValuationWorkflow`0
-  doc_path: docs/modules/Sample.Pricing.Api/workflows/valuation-workflow.md
+  doc_path: docs/modules/workflows/Sample.Pricing.Api/valuation-workflow.md
   title: ValuationWorkflow
   fqn: Sample.Pricing.Api.Workflows.ValuationWorkflow
   kind: workflow

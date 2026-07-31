@@ -33,7 +33,7 @@
   "nodes": [
     {
       "dependencies": [],
-      "doc_path": "docs/modules/Sample.Common/controllers/base-api-controller.md",
+      "doc_path": "docs/modules/controllers/Sample.Common/base-api-controller.md",
       "domain": "Sample.Common",
       "endpoints": [],
       "id": "type:src/Sample.Common/Sample.Common.csproj#Sample.Common.Web.BaseApiController`0",
@@ -109,7 +109,7 @@
           "via": "constructor"
         }
       ],
-      "doc_path": "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md",
+      "doc_path": "docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md",
       "domain": "Sample.Pricing.Api",
       "endpoints": [
         {
@@ -247,7 +247,7 @@
     },
     {
       "dependencies": [],
-      "doc_path": "docs/modules/Sample.Pricing.Api/ignite_services/risk-compute-service.md",
+      "doc_path": "docs/modules/ignite_services/Sample.Pricing.Api/risk-compute-service.md",
       "domain": "Sample.Pricing.Api",
       "endpoints": [],
       "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Grid.RiskComputeService`0",
@@ -342,7 +342,7 @@
           "via": "di"
         }
       ],
-      "doc_path": "docs/modules/Sample.Pricing.Api/providers/curve-provider.md",
+      "doc_path": "docs/modules/providers/Sample.Pricing.Api/curve-provider.md",
       "domain": "Sample.Pricing.Api",
       "endpoints": [],
       "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Providers.CurveProvider`0",
@@ -422,7 +422,7 @@
           "via": "di"
         }
       ],
-      "doc_path": "docs/modules/Sample.Pricing.Api/services/pricing-service.md",
+      "doc_path": "docs/modules/services/Sample.Pricing.Api/pricing-service.md",
       "domain": "Sample.Pricing.Api",
       "endpoints": [],
       "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Services.PricingService`0",
@@ -535,7 +535,7 @@
     },
     {
       "dependencies": [],
-      "doc_path": "docs/modules/Sample.Pricing.Api/workflows/valuation-workflow.md",
+      "doc_path": "docs/modules/workflows/Sample.Pricing.Api/valuation-workflow.md",
       "domain": "Sample.Pricing.Api",
       "endpoints": [],
       "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Workflows.ValuationWorkflow`0",

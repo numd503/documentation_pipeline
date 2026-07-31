@@ -9,7 +9,7 @@ import re
 from collections import defaultdict
 
 from docpipe.classify import Ruleset, classify
-from docpipe.config import DocpipeConfig
+from docpipe.config import DocLayout, DocpipeConfig
 from docpipe.discovery import matches_glob
 from docpipe.dotnet.resolve import strip_generics, symbol_key
 from docpipe.hashing import slugify, stable_hash
@@ -281,6 +281,25 @@ def _kind_plural(kind: str) -> str:
     return f"{kind}s"
 
 
+def doc_path_for(module_name: str, kind: str, name: str, layout: DocLayout) -> str:
+    """Путь документа.
+
+    Обе раскладки — перестановка одних и тех же трёх сегментов, и это не
+    косметика, а то, из-за чего смена раскладки **не создаёт новых коллизий**:
+    путь в каждой из них — инъекция от тройки (модуль, вид, slug), поэтому
+    два узла спорят за файл в одной ровно тогда, когда спорят и в другой.
+    Разводит их `_assign_doc_paths` одинаково в обоих случаях.
+
+    Уровни не смешиваются: имя модуля всегда стоит на своём уровне, вид —
+    на своём. Модуль, названный как вид (`Services`), поэтому ни во что
+    не упирается.
+    """
+    slug = slugify(name)
+    if layout == "module-first":
+        return f"docs/modules/{module_name}/{_kind_plural(kind)}/{slug}.md"
+    return f"docs/modules/{_kind_plural(kind)}/{module_name}/{slug}.md"
+
+
 def _assign_doc_paths(nodes: list[DocNode]) -> list[DocNode]:
     """Развести узлы, претендующие на один файл.
 
@@ -358,9 +377,8 @@ def build_nodes(
                 kind=classification.kind,
                 template=classification.template,
                 title=symbol.name,
-                doc_path=(
-                    f"docs/modules/{module.name}/"
-                    f"{_kind_plural(classification.kind)}/{slugify(symbol.name)}.md"
+                doc_path=doc_path_for(
+                    module.name, classification.kind, symbol.name, config.doc_layout
                 ),
                 parent=module.id,
                 module=module.name,

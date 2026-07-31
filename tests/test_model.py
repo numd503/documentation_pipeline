@@ -61,7 +61,7 @@ def _minimal_manifest() -> Manifest:
                 kind="controller",
                 template="controller",
                 title="PricingController",
-                doc_path="docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md",
+                doc_path="docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md",
                 parent="module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
                 module="Sample.Pricing.Api",
                 domain="pricing",

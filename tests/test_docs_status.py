@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from docpipe.cli import app
 
 MANIFEST = Path("tests/golden/doc-tree.json")
-CONTROLLER = "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
+CONTROLLER = "docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md"
 runner = CliRunner()
 
 
@@ -124,13 +124,33 @@ def test_example_ref_is_null_where_there_is_no_example(tmp_path: Path) -> None:
 
 
 def test_positional_path_narrows_to_a_directory(tmp_path: Path) -> None:
+    """При раскладке `kind-first` каталог верхнего уровня — вид сущности.
+
+    Выбрать префиксом модуль целиком больше нельзя: его документы разложены
+    по каталогам видов. Это единственная плата за раскладку, и здесь она
+    зафиксирована как поведение, а не обойдена.
+    """
     _materialize(tmp_path)
 
-    result = _status(tmp_path, "docs/modules/Sample.Common", "--format", "json")
+    result = _status(tmp_path, "docs/modules/controllers", "--format", "json")
     payload = json.loads(result.stdout)
 
+    assert payload["total"] == 2
+    assert all(
+        doc["doc_path"].startswith("docs/modules/controllers/") for doc in payload["documents"]
+    )
+
+
+def test_positional_path_narrows_to_one_module_inside_a_kind(tmp_path: Path) -> None:
+    """Модуль выбирается префиксом внутри вида: `{вид}/{модуль}`."""
+    _materialize(tmp_path)
+
+    payload = json.loads(
+        _status(tmp_path, "docs/modules/controllers/Sample.Common", "--format", "json").stdout
+    )
+
     assert payload["total"] == 1
-    assert payload["documents"][0]["doc_path"].startswith("docs/modules/Sample.Common/")
+    assert payload["documents"][0]["doc_path"].startswith("docs/modules/controllers/Sample.Common/")
 
 
 def test_positional_path_accepts_a_file(tmp_path: Path) -> None:
@@ -212,7 +232,8 @@ def test_broken_link_inside_an_authored_section(tmp_path: Path) -> None:
 
 def test_working_link_is_not_reported(tmp_path: Path) -> None:
     _materialize(tmp_path)
-    _fill(tmp_path, CONTROLLER, "purpose", "См. [сервис](../services/pricing-service.md).")
+    link = "../../services/Sample.Pricing.Api/pricing-service.md"
+    _fill(tmp_path, CONTROLLER, "purpose", f"См. [сервис]({link}).")
 
     payload = json.loads(_status(tmp_path, CONTROLLER, "--format", "json").stdout)
 

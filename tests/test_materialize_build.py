@@ -36,7 +36,7 @@ EXPECTED_FRONT_MATTER = """---
 docpipe:
   schema: materialize/1
   node_id: type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Controllers.PricingController`0
-  doc_path: docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md
+  doc_path: docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md
   title: PricingController
   fqn: Sample.Pricing.Api.Controllers.PricingController
   kind: controller

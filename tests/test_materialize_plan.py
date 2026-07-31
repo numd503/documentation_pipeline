@@ -122,7 +122,7 @@ def _accept(root: Path, doc_path: str, node) -> None:  # type: ignore[no-untyped
     path.write_text(text, encoding="utf-8")
 
 
-CONTROLLER = "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
+CONTROLLER = "docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md"
 
 
 def _one(plan, doc_path: str):  # type: ignore[no-untyped-def]
@@ -342,7 +342,7 @@ def test_orphan_is_reported_with_its_own_team(  # type: ignore[no-untyped-def]
 
     # Документ исчезнувшего узла: лежит не на пути ни одного узла и ни с чем
     # не сопоставляется — ни по источникам, ни по impl_hash.
-    gone = tmp_path / "docs/modules/Sample.Pricing.Api/controllers/gone.md"
+    gone = tmp_path / "docs/modules/controllers/Sample.Pricing.Api/gone.md"
     gone.write_text(
         "---\n"
         "docpipe:\n"
@@ -583,7 +583,7 @@ def test_relocated_document_keeps_its_text(  # type: ignore[no-untyped-def]
             "nodes": [
                 n.model_copy(
                     update={
-                        "doc_path": "docs/modules/Sample.Pricing.Api/services/pricing-controller.md"
+                        "doc_path": "docs/modules/services/Sample.Pricing.Api/pricing-controller.md"
                     }
                 )
                 if n.doc_path == CONTROLLER

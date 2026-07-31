@@ -2,7 +2,7 @@
 docpipe:
   schema: materialize/1
   node_id: type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Controllers.PricingController`0
-  doc_path: docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md
+  doc_path: docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md
   title: PricingController
   fqn: Sample.Pricing.Api.Controllers.PricingController
   kind: controller
@@ -45,7 +45,7 @@ docpipe_state:
 
 | Тип | Через | Документ |
 | --- | --- | --- |
-| `Sample.Pricing.Api.Services.IPricingService` | constructor | [PricingService](../services/pricing-service.md) — реализация интерфейса |
+| `Sample.Pricing.Api.Services.IPricingService` | constructor | [PricingService](../../services/Sample.Pricing.Api/pricing-service.md) — реализация интерфейса |
 
 ### Связи
 
