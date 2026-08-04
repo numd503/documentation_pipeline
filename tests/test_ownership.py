@@ -16,7 +16,7 @@ from docpipe.materialize.ownership import (
     load_ownership,
     owner_of,
 )
-from docpipe.model import DocNode, SourceSpan, Symbol
+from docpipe.model import Attribute, DocNode, SourceSpan, Symbol
 
 EXAMPLE = Path("ownership.example.yaml")
 
@@ -29,6 +29,9 @@ def _node(
     csproj: str = "src/Cf.Shared/Cf.Shared.csproj",
     kind: str = "service",
     extra: list[str] | None = None,
+    bases: list[str] | None = None,
+    closure: list[str] | None = None,
+    attributes: list[str] | None = None,
 ) -> DocNode:
     name = fqn.rsplit(".", 1)[-1]
     sources = [SourceSpan(path=p, start=1, end=9) for p in [path, *(extra or [])]]
@@ -48,6 +51,11 @@ def _node(
             namespace=fqn.rsplit(".", 1)[0],
             module=module,
             sources=sources,
+            base_types=bases or [],
+            # Замыкание в манифесте содержит и прямые базы: правило `inherits`
+            # обязано ловить их тоже, иначе оно оказалось бы уже `base_type`.
+            base_type_closure=closure if closure is not None else list(bases or []),
+            attributes=[Attribute(name=item) for item in attributes or []],
         ),
         signature_hash="sha256:0",
         impl_hash="sha256:0",
@@ -67,6 +75,13 @@ NODES = [
         "src/Cf.Pricing.Engine/StressTestRunner.cs",
         module="Cf.Pricing.Engine",
         csproj="src/Cf.Pricing.Engine/Cf.Pricing.Engine.csproj",
+    ),
+    # Лежит в каталоге платформы, но по базовому типу принадлежит рискам:
+    # граница, которую нельзя провести ни путём, ни namespace.
+    _node(
+        "Cf.Shared.Common.VarEngine",
+        "src/Cf.Shared/Common/VarEngine.cs",
+        bases=["Cf.Risk.Engine.RiskEngineBase"],
     ),
 ]
 
@@ -103,6 +118,12 @@ def _team(fqn: str, ownership: Ownership) -> str | None:
 def test_shared_project_is_split_by_folder(fqn: str, team: str, ownership: Ownership) -> None:
     """Ради этого владение и заводится: один `.csproj`, код трёх команд."""
     assert _team(fqn, ownership) == team
+
+
+def test_base_type_beats_folder(ownership: Ownership) -> None:
+    """Слой 80 в заготовке: тип лежит в каталоге платформы, но наследует
+    `RiskEngineBase`. Ни путём, ни namespace такая граница не выражается."""
+    assert _team("Cf.Shared.Common.VarEngine", ownership) == "risk"
 
 
 def test_namespace_beats_folder(ownership: Ownership) -> None:
@@ -186,6 +207,166 @@ def test_any_source_is_enough(ownership: Ownership) -> None:
     )
 
     assert owner_of(node, ownership).team in {"risk", "platform"}
+
+
+# --------------------------------------------------------------------------------------
+# Предикаты по контракту типа
+# --------------------------------------------------------------------------------------
+
+
+BY_BASE = """
+teams: [{id: ml, title: ML}, {id: platform, title: P}]
+rules:
+  - {id: platform.all, team: platform, priority: 10, when: {module_glob: ["**"]}}
+  - {id: ml.controllers, team: ml, priority: 50, when: {inherits: ["MlApiControllerBase"]}}
+"""
+
+
+def test_inherits_follows_the_whole_closure(tmp_path: Path) -> None:
+    """Ради этого предикат и заведён: команда опознаёт свои типы по базовому
+    классу, а прямой базой у них стоит собственный промежуточный."""
+    ownership = _inline(BY_BASE, tmp_path)
+    node = _node(
+        "Ml.Api.ScoringController",
+        "src/Ml.Api/ScoringController.cs",
+        bases=["Ml.Api.ScoringControllerBase"],
+        closure=["Ml.Api.ScoringControllerBase", "Sbt.Ml.Web.MlApiControllerBase"],
+    )
+
+    assert owner_of(node, ownership).team == "ml"
+
+
+def test_base_type_is_not_a_synonym_of_inherits(tmp_path: Path) -> None:
+    """Два предиката, а не один: `base_type` смотрит только на прямые базы.
+    Если бы он тоже шёл по замыканию, разница между ними была бы необъяснима."""
+    ownership = _inline(
+        """
+teams: [{id: ml, title: ML}]
+rules:
+  - {id: ml.direct, team: ml, priority: 10, when: {base_type: ["MlApiControllerBase"]}}
+""",
+        tmp_path,
+    )
+    through_middle = _node(
+        "Ml.Api.ScoringController",
+        "src/Ml.Api/ScoringController.cs",
+        bases=["Ml.Api.ScoringControllerBase"],
+        closure=["Ml.Api.ScoringControllerBase", "Sbt.Ml.Web.MlApiControllerBase"],
+    )
+    direct = _node(
+        "Ml.Api.LimitsController",
+        "src/Ml.Api/LimitsController.cs",
+        bases=["Sbt.Ml.Web.MlApiControllerBase"],
+    )
+
+    assert owner_of(through_middle, ownership).team is None
+    assert owner_of(direct, ownership).team == "ml"
+
+
+def test_condition_from_the_ruleset_works_verbatim(tmp_path: Path) -> None:
+    """Условие скопировано из `rules/dotnet.yaml` (правило `controller.aspnet`)
+    без единой правки. Ради этого трактовка имён и вынесена в общую функцию:
+    иначе одна и та же строка означала бы в двух файлах разное."""
+    ownership = _inline(
+        """
+teams: [{id: ml, title: ML}]
+rules:
+  - id: ml.controllers
+    team: ml
+    priority: 100
+    when:
+      any:
+        - attribute: ["ApiController"]
+        - base_type: ["ControllerBase", "Controller"]
+        - inherits: ["ControllerBase", "Controller"]
+""",
+        tmp_path,
+    )
+    by_attribute = _node("Ml.Api.A", "src/Ml.Api/A.cs", attributes=["ApiController"])
+    by_closure = _node(
+        "Ml.Api.B",
+        "src/Ml.Api/B.cs",
+        bases=["Ml.Api.BaseApiController"],
+        closure=["Ml.Api.BaseApiController", "Microsoft.AspNetCore.Mvc.ControllerBase"],
+    )
+
+    assert owner_of(by_attribute, ownership).team == "ml"
+    assert owner_of(by_closure, ownership).team == "ml"
+
+
+def test_short_name_matches_qualified_base(tmp_path: Path) -> None:
+    """`base_type_candidates` из `classify.py`: в правиле пишут короткое имя,
+    в замыкании лежит полное."""
+    ownership = _inline(
+        """
+teams: [{id: ml, title: ML}]
+rules:
+  - {id: ml.base, team: ml, priority: 10, when: {inherits: ["MlApiControllerBase"]}}
+""",
+        tmp_path,
+    )
+    node = _node("Ml.Api.C", "src/Ml.Api/C.cs", bases=["Sbt.Ml.Web.MlApiControllerBase"])
+
+    assert owner_of(node, ownership).team == "ml"
+
+
+def test_broken_closure_keeps_only_the_direct_base(tmp_path: Path) -> None:
+    """Модуль базы исключён в `docpipe.yaml` — рвётся ТРАНЗИТИВНАЯ часть
+    замыкания. Воспроизведено на `SampleSolution`: у `PricingController`
+    остаётся `["BaseApiController"]`, а `ControllerBase` из её объявления
+    пропадает. Правило по прямой базе работает, по базе через уровень — нет,
+    и это молча."""
+    ownership = _inline(
+        """
+teams: [{id: web, title: W}]
+rules:
+  - {id: web.direct, team: web, priority: 10, when: {inherits: ["BaseApiController"]}}
+  - {id: web.grandparent, team: web, priority: 10, when: {inherits: ["ControllerBase"]}}
+""",
+        tmp_path,
+    )
+    node = _node(
+        "Ml.Api.PricingController",
+        "src/Ml.Api/PricingController.cs",
+        bases=["BaseApiController"],
+        closure=["BaseApiController"],
+    )
+
+    matched = {rule.id for rule in owner_of(node, ownership).matched}
+    assert matched == {"web.direct"}
+
+
+def test_type_predicates_are_false_without_symbol(tmp_path: Path) -> None:
+    """Узел без символа не обязан ронять прогон: остальные предикаты владения
+    ведут себя на нём так же — пустое значение, а не исключение."""
+    ownership = _inline(
+        """
+teams: [{id: ml, title: ML}]
+rules:
+  - id: ml.any
+    team: ml
+    priority: 10
+    when:
+      any:
+        - attribute: ["ApiController"]
+        - base_type: ["ControllerBase"]
+        - inherits: ["ControllerBase"]
+""",
+        tmp_path,
+    )
+    node = DocNode(
+        id="module:src/Ml.Api/Ml.Api.csproj",
+        kind="module",
+        template="module",
+        title="Ml.Api",
+        doc_path="docs/modules/Ml.Api/index.md",
+        module="Ml.Api",
+        domain="ml",
+        symbol=None,
+        signature_hash="sha256:0",
+    )
+
+    assert owner_of(node, ownership).team is None
 
 
 # --------------------------------------------------------------------------------------

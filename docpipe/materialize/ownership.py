@@ -17,6 +17,7 @@ from typing import Any, Final
 
 import yaml
 
+from docpipe.classify import matches_any_type
 from docpipe.discovery import matches_glob
 from docpipe.model import DocNode
 from docpipe.ruleset import (
@@ -119,9 +120,53 @@ def _fqn_prefix(node: DocNode, values: list[str]) -> bool:
     return any(fqn.startswith(value) for value in values)
 
 
-# Восемь предикатов, намеренно мало — та же причина, что в `classify.py`:
-# большой набор означает, что настройщик каждый раз выбирает из десяти способов
-# написать одно и то же.
+# --------------------------------------------------------------------------------------
+# Предикаты по контракту типа
+# --------------------------------------------------------------------------------------
+#
+# Те же три, что и в правилах классификации, с той же трактовкой имён: условие
+# копируется из `rules/dotnet.yaml` в `ownership.yaml` буквально. Заведены потому,
+# что команда, опознающая свои типы по базовому классу («наследник
+# `MlApiControllerBase` — наш контроллер»), иначе обязана выразить ту же границу
+# вторым способом, через путь. Два описания одной границы расходятся на первом
+# же файле, переехавшем в другой каталог, и расхождение видно не сразу:
+# документ просто уезжает не в ту команду.
+#
+# ЛОВУШКА, которой нет у предикатов расположения. `base_type_closure` строится
+# по индексу символов прогона, и через модуль, исключённый в `docpipe.yaml`,
+# наследование рвётся: правило по базовому типу оттуда молча не сработает, узел
+# останется ничьим либо уедет к менее специфичному правилу. Ищется это в
+# `docs owners --lint` — «правила, не совпавшие ни с одним узлом» и «узлов
+# без владельца».
+
+
+def _attribute(node: DocNode, values: list[str]) -> bool:
+    names = {attribute.name for attribute in node.symbol.attributes} if node.symbol else set()
+    return any(value in names for value in values)
+
+
+def _base_type(node: DocNode, values: list[str]) -> bool:
+    """Только прямые базы объявления."""
+    if node.symbol is None:
+        return False
+    return matches_any_type(values, node.symbol.base_types + node.symbol.base_types_raw)
+
+
+def _inherits(node: DocNode, values: list[str]) -> bool:
+    """Всё замыкание наследования: сработает и на типе, который наследует
+    названный базовый через свой промежуточный."""
+    if node.symbol is None:
+        return False
+    return matches_any_type(values, node.symbol.base_type_closure)
+
+
+# Одиннадцать предикатов: восемь про расположение узла (путь, проект, namespace,
+# домен, FQN) плюс `kind` и три про контракт типа. Дальше набор намеренно
+# не растёт — довод тот же, что в `classify.py`: большой набор означает, что
+# настройщик каждый раз выбирает из десяти способов написать одно и то же.
+# `name_suffix`, `name_regex`, `type_kind`, `modifier` не заведены сознательно:
+# они описывают форму типа, а не границу ответственности, и владение по имени
+# уже выражается `fqn_prefix`.
 TABLE: Final[PredicateTable] = PredicateTable(
     predicates={
         "path_glob": _path_glob,
@@ -132,6 +177,9 @@ TABLE: Final[PredicateTable] = PredicateTable(
         "namespace_prefix": _namespace_prefix,
         "namespace_regex": _namespace_regex,
         "fqn_prefix": _fqn_prefix,
+        "attribute": _attribute,
+        "base_type": _base_type,
+        "inherits": _inherits,
     },
     regex_keys=frozenset({"namespace_regex"}),
 )

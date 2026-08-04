@@ -126,7 +126,14 @@ def base_type_candidates(text: str) -> set[str]:
     return candidates
 
 
-def _matches_any_type(values: list[str], texts: list[str]) -> bool:
+def matches_any_type(values: list[str], texts: list[str]) -> bool:
+    """Совпало ли имя из правила хоть с одним из имён типа.
+
+    Публичная намеренно: тем же сопоставлением пользуется `ownership.py`. Своя
+    копия там означала бы, что `inherits` в правилах классификации и в правилах
+    владения по-разному понимают fluent-базы, — а условие копируют из одного
+    файла в другой буквально, и разница обнаружилась бы не сразу.
+    """
     return any(value in base_type_candidates(text) for text in texts for value in values)
 
 
@@ -141,11 +148,11 @@ def _attribute(symbol: Symbol, values: list[str]) -> bool:
 
 
 def _base_type(symbol: Symbol, values: list[str]) -> bool:
-    return _matches_any_type(values, symbol.base_types + symbol.base_types_raw)
+    return matches_any_type(values, symbol.base_types + symbol.base_types_raw)
 
 
 def _inherits(symbol: Symbol, values: list[str]) -> bool:
-    return _matches_any_type(values, symbol.base_type_closure)
+    return matches_any_type(values, symbol.base_type_closure)
 
 
 def _name_regex(symbol: Symbol, values: list[str]) -> bool:
