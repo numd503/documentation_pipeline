@@ -56,6 +56,15 @@ class ExcludeRule:
     priority: int
     when: dict[str, Any]
 
+    # Исключение из решения об отсеве: правило совпадает, когда `when` истинно
+    # И `unless` ложно. Это единственная форма отрицания в движке, и она узкая
+    # намеренно. Общий `not` внутри дерева условий превращает набор в систему
+    # уравнений, которую нельзя прочитать построчно; «исключаем каталог, кроме
+    # вот такого» читается построчно и является самым частым случаем настройки:
+    # в каталоге лежит один вид документируемых типов и много вспомогательных,
+    # а описать вспомогательные положительно удаётся не всегда.
+    unless: dict[str, Any] | None = None
+
 
 @dataclass(frozen=True)
 class Exclusion:
@@ -280,6 +289,7 @@ def _load_exclusion(raw: Any, path: Path) -> Exclusion:
                 reason=str(item["reason"]),
                 priority=int(item.get("priority", 0)),
                 when=item["when"],
+                unless=item.get("unless"),
             )
         )
 
@@ -287,6 +297,12 @@ def _load_exclusion(raw: Any, path: Path) -> Exclusion:
     # диагностику битой регулярки при загрузке, что была у неё до правки.
     for rule in rules:
         validate_condition(rule.when, f"{path}:exclude.{rule.id}.when", _TABLE)
+        if rule.unless is not None:
+            # Пустой `unless` — почти наверняка недописанное правило, а не
+            # «исключений нет»: оно молча вело бы себя как обычный отсев.
+            if not rule.unless:
+                raise ValueError(f"{path}: правило отсева {rule.id!r} объявляет пустой `unless`")
+            validate_condition(rule.unless, f"{path}:exclude.{rule.id}.unless", _TABLE)
 
     return Exclusion(require_public=bool(raw.get("require_public", False)), rules=rules)
 
@@ -327,6 +343,17 @@ def load_ruleset(path: Path) -> Ruleset:
 # --------------------------------------------------------------------------------------
 
 
+def _excludes(rule: ExcludeRule, symbol: Symbol) -> bool:
+    """Совпадает ли правило отсева с символом.
+
+    `unless` вычисляется только при истинном `when`: правило описывает группу,
+    а исключение — вырез внутри неё, и порядок обратным быть не может.
+    """
+    if not evaluate(rule.when, symbol, _TABLE):
+        return False
+    return rule.unless is None or not evaluate(rule.unless, symbol, _TABLE)
+
+
 def exclusion_of(symbol: Symbol, ruleset: Ruleset) -> ExcludeRule | None:
     """Решение «не документируем» для символа, или `None`, если такого решения нет.
 
@@ -335,7 +362,7 @@ def exclusion_of(symbol: Symbol, ruleset: Ruleset) -> ExcludeRule | None:
     (`pick_winner`). Без этого счётчики по причинам зависели бы от порядка строк
     в YAML: перестановка двух правил меняла бы цифры, которые идут в журнал и в CI.
     """
-    matched = [rule for rule in ruleset.exclude.rules if evaluate(rule.when, symbol, _TABLE)]
+    matched = [rule for rule in ruleset.exclude.rules if _excludes(rule, symbol)]
     if ruleset.exclude.require_public and "public" not in symbol.modifiers:
         matched.append(REQUIRE_PUBLIC)
     return pick_winner(matched) if matched else None

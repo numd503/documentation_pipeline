@@ -666,3 +666,127 @@ def test_test_project_produces_no_nodes(wild_solution: Path) -> None:
 
     _, nodes = build_tree(wild_solution)
     assert {node.module for node in nodes} == {"Wild.Api"}
+
+
+# --------------------------------------------------------------------------------------
+# `unless`: вырез внутри решения об отсеве
+# --------------------------------------------------------------------------------------
+#
+# Самый частый случай настройки: в каталоге лежит один вид документируемых типов
+# и много вспомогательных. Описать вспомогательные положительно удаётся не всегда,
+# а общий `not` в движке отсутствует намеренно — он превращает набор в систему
+# уравнений, которую нельзя прочитать построчно. `unless` читается построчно:
+# «исключаем каталог, кроме наследников такого-то».
+
+GRID = b"""
+namespace App.Grid;
+public abstract class GridService { }
+public class CalcService : GridService { }
+public class CalcOptions { }
+"""
+
+
+def _grid_symbols() -> dict[str, Symbol]:
+    result = parse_source(GRID, "src/Grid/Services.cs")
+    index = compute_closures(
+        build_symbol_index([result], {"src/Grid/Services.cs": "src/Grid/Grid.csproj"})
+    )
+    return {symbol.name: symbol for symbol in index.values()}
+
+
+def _with_unless(tmp_path: Path, unless: dict | None):  # type: ignore[no-untyped-def]
+    rule: dict = {
+        "id": "grid.support",
+        "reason": "Вспомогательные типы каталога сервисов",
+        "priority": 50,
+        "when": {"path_glob": ["src/Grid/**"]},
+    }
+    if unless is not None:
+        rule["unless"] = unless
+    path = tmp_path / "r.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "version": "1",
+                "ruleset_version": "test",
+                "exclude": {"rules": [rule]},
+                "rules": [
+                    {
+                        "id": "grid.services",
+                        "kind": "ignite_service",
+                        "template": "ignite-service",
+                        "priority": 50,
+                        "when": {"inherits": ["GridService"]},
+                    }
+                ],
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    return load_ruleset(path)
+
+
+def test_unless_carves_the_wanted_types_out_of_the_exclusion(tmp_path: Path) -> None:
+    symbols = _grid_symbols()
+    ruleset = _with_unless(tmp_path, {"inherits": ["GridService"]})
+
+    assert not is_excluded(symbols["CalcService"], ruleset)
+    assert classify(symbols["CalcService"], ruleset) is not None
+    assert is_excluded(symbols["CalcOptions"], ruleset)
+    assert is_excluded(symbols["GridService"], ruleset)
+
+
+def test_without_unless_the_whole_directory_is_gone(tmp_path: Path) -> None:
+    """Приоритет правила классификации этого не меняет и не может:
+    отсев — стадия ДО правил, а не участник одного с ними соревнования."""
+    symbols = _grid_symbols()
+    ruleset = _with_unless(tmp_path, None)
+
+    assert is_excluded(symbols["CalcService"], ruleset)
+    assert classify(symbols["CalcService"], ruleset) is None
+
+
+def test_unless_keeps_the_reason_of_the_rule_it_belongs_to(tmp_path: Path) -> None:
+    """Вырез не заводит второго решения: отсеянные соседи по-прежнему
+    объясняются одной причиной, и отчёт `--stats` не дробится."""
+    symbols = _grid_symbols()
+    ruleset = _with_unless(tmp_path, {"inherits": ["GridService"]})
+    decision = exclusion_of(symbols["CalcOptions"], ruleset)
+
+    assert decision is not None
+    assert decision.id == "grid.support"
+    assert exclusion_of(symbols["CalcService"], ruleset) is None
+
+
+def test_unless_is_checked_only_when_when_matched(tmp_path: Path) -> None:
+    """Правило описывает группу, исключение — вырез внутри неё. Обратный
+    порядок сделал бы `unless` вторым условием отсева, а не выключателем."""
+    outside = _symbol(b"namespace N;\npublic class Other { }\n", path="src/Other/X.cs")
+    ruleset = _with_unless(tmp_path, {"inherits": ["GridService"]})
+
+    assert not is_excluded(outside, ruleset)
+
+
+def test_empty_unless_is_rejected(tmp_path: Path) -> None:
+    """Пустой `unless` — недописанное правило, а не «исключений нет»:
+    молча оно вело бы себя как обычный отсев."""
+    with pytest.raises(ValueError, match="пустой `unless`"):
+        _with_unless(tmp_path, {})
+
+
+def test_broken_predicate_in_unless_is_rejected_at_load(tmp_path: Path) -> None:
+    """Та же диагностика, что у `when`: опечатка иначе означала бы вырез,
+    который никогда не срабатывает, и типы молча исчезли бы из документации."""
+    with pytest.raises(ValueError, match="unless"):
+        _with_unless(tmp_path, {"inherit": ["GridService"]})
+
+
+def test_unless_accepts_combinators(tmp_path: Path) -> None:
+    symbols = _grid_symbols()
+    ruleset = _with_unless(
+        tmp_path, {"any": [{"inherits": ["GridService"]}, {"name_suffix": ["Options"]}]}
+    )
+
+    assert not is_excluded(symbols["CalcService"], ruleset)
+    assert not is_excluded(symbols["CalcOptions"], ruleset)
