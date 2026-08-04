@@ -113,7 +113,8 @@ def test_structure(specs: dict[str, RegistrySpec]) -> None:
 
     assert [item.ref for item in result.items] == ["UserTaskTypes", "UserTasks"]
     assert sum(child.kind == "list_field" for child in tasks.children) == 4
-    assert sum(child.kind == "list_event" for child in tasks.children) == 3
+    # Четыре записи на три события: на `ItemAdded` подписаны двое.
+    assert sum(child.kind == "list_event" for child in tasks.children) == 4
 
 
 def test_kafka_stub_is_empty_but_valid(specs: dict[str, RegistrySpec]) -> None:
@@ -166,11 +167,20 @@ def test_event_receiver_gives_list_event_class_and_assembly(
 ) -> None:
     result = _read(specs, "structure")
     tasks = next(item for item in result.items if item.ref == "UserTasks")
-    added = next(c for c in tasks.children if c.kind == "list_event" and c.ref == "ItemAdded")
+    added = [c for c in tasks.children if c.kind == "list_event" and c.ref == "ItemAdded"]
 
     assert tasks.ref == "UserTasks"
-    assert added.fields["impl_fqn"].endswith("UserTasksAddedTriggerSampleWorkflowEventReceiver")
-    assert added.fields["assembly"] == "Sbt.Cashflow.ML.EventReceivers"
+    # Класс и сборка читаются у КАЖДОГО обработчика пары, а не у первого:
+    # `next()` здесь однажды брал произвольного из двух и утверждение
+    # про сборку проверяло порядок записей в XML, а не чтение реестра.
+    assert {c.fields["assembly"] for c in added} == {
+        "Sbt.Cashflow.ML.EventReceivers",
+        "Sbt.Cashflow.Reports.EventReceivers",
+    }
+    assert any(
+        c.fields["impl_fqn"].endswith("UserTasksAddedTriggerSampleWorkflowEventReceiver")
+        for c in added
+    )
 
 
 # --------------------------------------------------------------------------------------

@@ -36,6 +36,7 @@ from docpipe.registry.anchors import ENTRY_KINDS, ResolvedAnchor
 # зелёную проверку).
 CHECKS: Final[tuple[str, ...]] = (
     "unresolved",
+    "selector-empty",
     "no-entry",
     "ambiguous-version",
     "unknown-capability",
@@ -153,6 +154,35 @@ def lint(
                 )
             )
 
+    # 1a. Селектор `only` не совпал ни с одной записью якоря. Это НЕ то же
+    #     самое, что «точка входа не найдена»: якорь на месте, сузили в пустоту.
+    #     Чинится одной строкой, поэтому и находка отдельная — с перечнем того,
+    #     кто сейчас на якоре, иначе правку пришлось бы угадывать.
+    for doc in catalog.docs:
+        for anchor in hashed_anchors(doc):
+            if not anchor.verify or anchor.only is None:
+                continue
+            resolution = resolve(anchor, ctx)
+            if not resolution.selector_missed:
+                continue
+            holders = ", ".join(resolution.candidates) or "никто"
+            reason = (
+                " Правил владения нет: `only.team` без `ownership.yaml` не сужает ничего."
+                if anchor.only.team and ctx.ownership is None
+                else ""
+            )
+            findings.append(
+                Finding(
+                    check="selector-empty",
+                    where=doc.doc_path,
+                    message=(
+                        f"`only` ({anchor.only.display}) не совпал ни с одной записью"
+                        f" якоря {anchor.kind} {anchor.display}."
+                        f" Сейчас на якоре: {holders}.{reason}"
+                    ),
+                )
+            )
+
     # 2. Процесс без точки входа: либо не дописан, либо это не процесс.
     for doc in catalog.docs:
         if doc.kind == "process" and not doc.entry:
@@ -170,7 +200,7 @@ def lint(
     for doc in catalog.docs:
         for anchor in hashed_anchors(doc):
             resolution = resolve(anchor, ctx)
-            if resolution.candidates:
+            if resolution.candidates and not resolution.selector_missed:
                 found = ", ".join(resolution.candidates)
                 findings.append(
                     Finding(

@@ -230,8 +230,10 @@ def test_registry_unlinked_is_a_finding(tree: Path) -> None:
 def test_uncovered_entry_points_are_counted(tree: Path) -> None:
     result = report(tree)
 
-    assert result.entry_points == 10
-    assert result.covered == 4
+    # Обе записи пары «UserTasks + ItemAdded» считаются входами и обе покрыты
+    # одним документом: он ссылается на пару, а не на класс подписчика.
+    assert result.entry_points == 11
+    assert result.covered == 5
     assert dict(result.uncovered_by_kind) == {"grid_service": 3, "job": 1, "list_event": 2}
 
 
@@ -304,7 +306,7 @@ def test_cli_is_green_on_clean_catalog(tree: Path) -> None:
     result = _run(tree)
 
     assert result.exit_code == 0
-    assert "Точек входа: 10, описано: 4, осталось: 6" in result.stdout
+    assert "Точек входа: 11, описано: 5, осталось: 6" in result.stdout
 
 
 def test_cli_fails_on_unresolved(tree: Path) -> None:
@@ -370,4 +372,102 @@ def test_cli_reads_paths_from_config(tree: Path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "Точек входа: 10" in result.stdout
+    assert "Точек входа: 11" in result.stdout
+
+
+# --------------------------------------------------------------------------------------
+# `selector-empty`: сузили в пустоту
+# --------------------------------------------------------------------------------------
+
+
+def test_selector_empty_is_its_own_finding(tree: Path) -> None:
+    """Промах селектора — не «точка входа не найдена».
+
+    Якорь на месте, сужение не совпало; чинится одной строкой в документе.
+    Слить это с `unresolved` значило бы отправить автора искать пропавшую
+    точку входа, которой никуда не девалось.
+    """
+    write_doc(
+        tree,
+        BUSINESS,
+        {
+            "id": "bp.valuation.narrow",
+            "kind": "process",
+            "title": "Сужено мимо",
+            "entry": [
+                {
+                    "kind": "list_event",
+                    "ref": "ItemAdded",
+                    "scope": "UserTasks",
+                    "only": {"assembly": "Sbt.Nobody"},
+                }
+            ],
+        },
+        filled=True,
+    )
+    result = report(tree)
+    found = [f for f in result.findings if f.check == "selector-empty"]
+
+    assert len(found) == 1
+    assert "Sbt.Cashflow.ML.EventReceivers" in found[0].message
+    assert "unresolved" not in checks_of(result)
+
+
+def test_selector_empty_fails_the_run(tree: Path) -> None:
+    """Это дефект каталога — то, что автор документа может починить сам,
+    поэтому код возврата он меняет."""
+    assert "selector-empty" not in INFORMATIONAL
+    assert "selector-empty" in CHECKS
+
+
+def test_selector_empty_says_when_ownership_is_missing(tree: Path) -> None:
+    """`only.team` без правил владения не сужает ничего, и это надо назвать:
+    иначе находка выглядит как «наш обработчик с якоря ушёл»."""
+    write_doc(
+        tree,
+        BUSINESS,
+        {
+            "id": "bp.valuation.byteam",
+            "kind": "process",
+            "title": "Сужено по команде",
+            "entry": [
+                {
+                    "kind": "list_event",
+                    "ref": "ItemAdded",
+                    "scope": "UserTasks",
+                    "only": {"team": "ml"},
+                }
+            ],
+        },
+        filled=True,
+    )
+    found = [f for f in report(tree).findings if f.check == "selector-empty"]
+
+    assert len(found) == 1
+    assert "ownership.yaml" in found[0].message
+
+
+def test_narrowed_anchor_is_not_reported_as_ambiguous(tree: Path) -> None:
+    """Кандидаты у промаха селектора означают «кто сейчас на якоре», а не
+    «версии workflow». Спутать их — значит послать автора искать `version`
+    там, где его не бывает."""
+    write_doc(
+        tree,
+        BUSINESS,
+        {
+            "id": "bp.valuation.narrow",
+            "kind": "process",
+            "title": "Сужено мимо",
+            "entry": [
+                {
+                    "kind": "list_event",
+                    "ref": "ItemAdded",
+                    "scope": "UserTasks",
+                    "only": {"assembly": "Sbt.Nobody"},
+                }
+            ],
+        },
+        filled=True,
+    )
+
+    assert "ambiguous-version" not in checks_of(report(tree))

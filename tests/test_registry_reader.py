@@ -319,10 +319,31 @@ def test_event_receivers_are_read_per_event_type(root: Path) -> None:
     tasks = next(item for item in result.items if item.ref == "UserTasks")
     events = [child for child in tasks.children if child.kind == "list_event"]
 
-    assert [child.ref for child in events] == ["ItemAdding", "ItemUpdating", "ItemAdded"]
+    assert [child.ref for child in events] == [
+        "ItemAdding",
+        "ItemUpdating",
+        "ItemAdded",
+        "ItemAdded",
+    ]
     assert {child.fields["assembly"] for child in events} == {
         "Sbt.Cashflow.Reports.EventReceivers",
         "Sbt.Cashflow.ML.EventReceivers",
+    }
+
+
+def test_repeated_event_type_gives_two_records(root: Path) -> None:
+    """Два обработчика на одной паре «список + EventType» — не дубль и не
+    ошибка чтения: платформа вызывает всех подписчиков, поэтому обе записи
+    обязаны дойти до разрешения. Реализация, схлопывающая их по `ref`,
+    молча потеряла бы половину участников события."""
+    result = read_registry(structure_spec(), root)
+    tasks = next(item for item in result.items if item.ref == "UserTasks")
+    added = [c for c in tasks.children if c.kind == "list_event" and c.ref == "ItemAdded"]
+
+    assert len(added) == 2
+    assert {child.fields["impl_fqn"] for child in added} == {
+        "Sbt.Cashflow.Reports.EventReceivers.UserTasksAddedAuditEventReceiver",
+        "Sbt.Cashflow.ML.EventReceivers.UserTasksAddedTriggerSampleWorkflowEventReceiver",
     }
 
 

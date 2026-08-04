@@ -12,6 +12,7 @@ import pytest
 
 from docpipe.business import ANCHOR_KINDS, Catalog, doc_path_for, load_catalog
 from docpipe.materialize import assemble, is_section_empty, parse_document, read_document
+from tests.business_support import write_doc
 
 ROOT = Path("tests/fixtures")
 BUSINESS = "business"
@@ -304,3 +305,60 @@ def test_business_document_parses_as_step_two_zones() -> None:
 
     assert doc.generated is not None
     assert "purpose" in doc.section_names
+
+
+# --------------------------------------------------------------------------------------
+# Селектор `only`: проверки при загрузке
+# --------------------------------------------------------------------------------------
+
+
+def _with_only(tmp_path: Path, only: dict[str, object], verify: bool = True) -> list[str]:
+    write_doc(
+        tmp_path,
+        BUSINESS,
+        {
+            "id": "bp.valuation.narrow",
+            "kind": "process",
+            "title": "Сужение",
+            "entry": [
+                {
+                    "kind": "list_event",
+                    "ref": "ItemAdded",
+                    "scope": "UserTasks",
+                    "verify": verify,
+                    "only": only,
+                }
+            ],
+        },
+    )
+    return load_catalog(tmp_path, BUSINESS).errors
+
+
+def test_empty_selector_is_a_catalog_error(tmp_path: Path) -> None:
+    """Пустой `only` сузил бы якорь в ничто, и выглядело бы это как
+    «точка входа исчезла»."""
+    errors = _with_only(tmp_path, {})
+
+    assert any("пустой `only`" in error for error in errors)
+
+
+def test_two_selectors_at_once_are_a_catalog_error(tmp_path: Path) -> None:
+    """Два селектора — два источника истины о том, какая часть общей точки
+    входа наша, и разойдутся они на первом же переезде между сборками."""
+    errors = _with_only(tmp_path, {"assembly": "Sbt.A", "team": "ml"})
+
+    assert any("сразу с assembly и team" in error for error in errors)
+
+
+def test_selector_on_unverified_anchor_is_a_catalog_error(tmp_path: Path) -> None:
+    """`verify: false` не разрешается вовсе — сужать в нём нечего, и молча
+    принятый селектор выглядел бы работающим."""
+    errors = _with_only(tmp_path, {"assembly": "Sbt.A"}, verify=False)
+
+    assert any("не разрешается" in error for error in errors)
+
+
+def test_document_with_a_broken_selector_does_not_enter_the_catalog(tmp_path: Path) -> None:
+    _with_only(tmp_path, {})
+
+    assert load_catalog(tmp_path, BUSINESS).docs == []

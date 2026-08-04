@@ -6,6 +6,13 @@
         а не выведенная;
      3. обработчики событий приходят из ДВУХ сборок и включают повтор класса
         с разным EventType;
+     3a. на пару «UserTasks + ItemAdded» повешено ДВА обработчика из РАЗНЫХ
+        сборок. Так в АС CF и бывает: платформа вызывает всех подписчиков
+        события, поэтому пара «список + EventType» — одна точка входа на всех,
+        и разделить их якорем нельзя. Первым в файле идёт обработчик из
+        сборки, которая при сортировке окажется второй: иначе утверждение
+        «порядок записей в XML на business_hash не влияет» проверялось бы
+        на уже упорядоченных данных и не проверяло бы ничего;
      4. <Forms> присутствуют, чтобы проверить, что они не подбираются как поля. -->
 <Project InnerName="CashflowCms" DisplayName="Cashflow CMS">
     <Lists>
@@ -36,6 +43,9 @@
                 <EventReceiver Class="Sbt.Cashflow.Reports.EventReceivers.UserTasksValidatingEventReceiver"
                                Assembly="Sbt.Cashflow.Reports.EventReceivers"
                                EventType="ItemUpdating" />
+                <EventReceiver Class="Sbt.Cashflow.Reports.EventReceivers.UserTasksAddedAuditEventReceiver"
+                               Assembly="Sbt.Cashflow.Reports.EventReceivers"
+                               EventType="ItemAdded" />
                 <EventReceiver Class="Sbt.Cashflow.ML.EventReceivers.UserTasksAddedTriggerSampleWorkflowEventReceiver"
                                Assembly="Sbt.Cashflow.ML.EventReceivers"
                                EventType="ItemAdded" />

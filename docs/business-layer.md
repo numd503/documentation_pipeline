@@ -1,7 +1,8 @@
 # Бизнес-слой: каталог, якоря, статусы
 
 Справочник по бизнес-документации: что лежит в файлах и какими командами с этим
-работать. Обоснование решений — в
+работать. Пошаговое заполнение `entry` — в [`entry-guide.md`](entry-guide.md);
+правила владения — в [`ownership.md`](ownership.md). Обоснование решений — в
 [`business-implementation-plan.md`](business-implementation-plan.md); факты
 о боевом репозитории — в
 [`findings-cashflow-registries.md`](findings-cashflow-registries.md).
@@ -151,7 +152,29 @@ cap.<домен>[.<под>]       возможность  cap.valuation
 | `http` | маршрут | — | эндпоинты манифеста |
 | `type` | FQN | — | узлы документации |
 
-Поля якоря: `kind`, `ref`, `scope`, `version`, `member`, `owner`, `verify`, `note`.
+Поля якоря: `kind`, `ref`, `scope`, `version`, `only`, `owner`, `verify`, `note`.
+Модель — `extra="forbid"`, поэтому лишний ключ во front matter не игнорируется,
+а называется ошибкой каталога.
+
+**`only` — своя часть общей точки входа.** На паре «список + `EventType`»
+подписчиков бывает несколько, и якорь их не различает: он адресует контракт,
+а не класс. Селектор не участвует в поиске — он отбирает из уже найденного:
+
+```yaml
+  - kind: list_event
+    scope: UserTasks
+    ref: ItemAdded
+    only:
+      assembly: Sbt.Cashflow.ML.EventReceivers   # либо team: ml, по ownership.yaml
+```
+
+Сужение влияет на «Реализацию» и на `business_hash`: чужая подписка перестаёт
+давать вам `drifted`. На покрытие не влияет — пара остаётся покрытой целиком,
+иначе отчёт требовал бы документ на чужой обработчик. Ровно один ключ из двух;
+`only` на якоре с `verify: false` запрещён. Промах селектора — отдельная
+находка `selector-empty` с перечнем того, кто сейчас на якоре: якорь на месте,
+сузили в пустоту, и чинится это одной строкой. Подробно —
+[`entry-guide.md`](entry-guide.md).
 
 **`verify: false` — объявленная граница зоны ответственности.** Такой якорь
 не разрешается вовсе, находкой линта не становится и в `business_hash` не входит.
@@ -176,6 +199,40 @@ cap.<домен>[.<под>]       возможность  cap.valuation
 
 Аналитик пишет `table` и `kafka` — слова предметной области; реестр объявляет
 `list` и `kafka_topic` — слова платформы. Мост между наборами внутри инструмента.
+
+### Обратный поиск: от типа к якорю
+
+`anchors list` идёт от реестра к коду. Аналитик чаще начинает с другого конца:
+он знает свой класс и не знает, какой строкой его вызывают. На это отвечает
+`anchors which` — по FQN, `doc_path` или простому имени типа:
+
+```bash
+docpipe anchors which artifacts/doc-tree.json UserTasksAddedTriggerEventReceiver \
+    --registries registries.yaml --root .
+```
+
+```
+list_event  UserTasks/ItemAdded
+  совпало: impl_fqn = Sbt.Cashflow.ML.EventReceivers.UserTasksAddedTriggerEventReceiver
+  на том же якоре ещё: Sbt.Cashflow.Reports.EventReceivers.AuditEventReceiver
+  якорь общий на всех: он адресует контракт, а не класс
+
+  entry:
+  - kind: list_event
+    ref: ItemAdded
+    scope: UserTasks
+```
+
+Печатается **готовый кусок `entry`**, а не описание того, что надо вставить:
+строка показа собрана для человека и обратно не разбирается, поэтому собирать
+её глазами в поля никто не обязан. Вид в сниппете — на языке каталога
+(`table`, а не `list`).
+
+Ищутся и вложенные записи: команда чаще владеет шагом workflow, чем процессом
+целиком, а шаги на верхний уровень не поднимаются.
+
+Отсутствие якорей — код **0**: точка входа есть не у всякого типа, и «ниоткуда
+не вызывается» — нормальное состояние почти всего дерева.
 
 ## Разрешение якоря
 
@@ -241,12 +298,13 @@ cap.<домен>[.<под>]       возможность  cap.valuation
 
 ## Линт
 
-Восемь проверок фиксированным порядком. **Роняют прогон только дефекты каталога** —
+Девять проверок фиксированным порядком. **Роняют прогон только дефекты каталога** —
 то, что автор документа может починить сам:
 
 | Проверка | О чём |
 |---|---|
 | `unresolved` | якорь не разрешается; перечислены пробованные ступени |
+| `selector-empty` | `only` не совпал ни с одной записью якоря; перечислено, кто на нём сейчас |
 | `no-entry` | процесс без `entry`: не дописан или это не процесс |
 | `ambiguous-version` | ссылка на workflow без `version` при нескольких версиях |
 | `unknown-capability` | ссылка на необъявленную возможность |
@@ -273,6 +331,8 @@ cap.<домен>[.<под>]       возможность  cap.valuation
 docpipe anchors list MANIFEST --registries FILE [--root PATH]
                               [--kind K] [--team T] [--format text|json]
 docpipe anchors explain MANIFEST REF --registries FILE
+docpipe anchors which   MANIFEST QUERY --registries FILE [--root PATH]
+                              [--format text|json]
 
 docpipe business new ID --title "…" [--root PATH] [--config FILE]
                         [--business-root DIR] [--templates DIR]

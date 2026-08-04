@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from docpipe.business import load_catalog, resolve_all
 from docpipe.business.build import backlinks, cell, generated_block, relative
-from docpipe.business.model import Anchor, BusinessDoc
+from docpipe.business.model import Anchor, BusinessDoc, Selector
 from docpipe.business.resolve import ResolveContext
 from docpipe.cli import app
 from docpipe.materialize.ownership import Ownership, load_ownership
@@ -183,6 +183,24 @@ def test_table_survives_colons_and_cyrillic(tree: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
+def test_all_handlers_of_one_event_are_printed(tree: Path) -> None:
+    """У пары «UserTasks + ItemAdded» два подписчика, и в «Реализации» обязаны
+    стоять оба.
+
+    Печать одного — худший вид ошибки: раздел выглядит заполненным, а половина
+    участников события из документа пропала, и заметить это нечем.
+    """
+    text = block(tree)
+    entries, implementation = text.split("### Реализация")[0], text.split("### Реализация")[1]
+    rows = [line for line in implementation.splitlines() if "UserTasks/ItemAdded" in line]
+
+    # В «Точках входа» пара — одна строка: точка входа одна, подписчиков много.
+    assert sum("UserTasks/ItemAdded" in line for line in entries.splitlines()) == 1
+    assert len(rows) == 2
+    assert any("UserTasksAddedTriggerSampleWorkflowEventReceiver" in row for row in rows)
+    assert any("UserTasksAddedAuditEventReceiver" in row for row in rows)
+
+
 def test_two_calls_give_the_same_text(tree: Path, ownership: Ownership) -> None:
     assert block(tree, ownership) == block(tree, ownership)
 
@@ -282,3 +300,32 @@ def test_materialize_adds_business_context_when_catalog_is_configured(tree: Path
     assert "### Бизнес-контекст" in text
     assert "Онлайн УФН" in text
     assert "\\" not in text
+
+
+def test_narrowing_is_visible_in_the_document(tree: Path) -> None:
+    """Сужение обязано быть видно читателю.
+
+    Без отметки он решит, что в «Реализации» перечислено всё, что вызывается
+    по этому якорю, — а там только наша часть, и остальное описано не здесь.
+    """
+    doc = scoring(tree)
+    narrowed = doc.model_copy(
+        update={
+            "entry": [
+                anchor.model_copy(
+                    update={"only": Selector(assembly="Sbt.Cashflow.ML.EventReceivers")}
+                )
+                if anchor.kind == "list_event"
+                else anchor
+                for anchor in doc.entry
+            ]
+        }
+    )
+    ctx = context(tree)
+    text = generated_block(narrowed, resolve_all(narrowed.anchors, ctx), ctx)
+    implementation = text.split("### Реализация")[1].split("### Участники")[0]
+
+    assert "Сужено до своей части" in text
+    assert "сборка Sbt.Cashflow.ML.EventReceivers" in text
+    assert "UserTasksAddedTriggerSampleWorkflowEventReceiver" in implementation
+    assert "UserTasksAddedAuditEventReceiver" not in implementation

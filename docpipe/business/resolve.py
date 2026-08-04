@@ -26,7 +26,8 @@ from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from docpipe.business.model import Anchor
+from docpipe.business.model import Anchor, Selector
+from docpipe.materialize.ownership import Ownership, owner_of
 from docpipe.model import DocNode, Manifest
 from docpipe.registry.anchors import AnchorTarget, ResolvedAnchor
 from docpipe.registry.parse import parse_schedule
@@ -46,6 +47,14 @@ REGISTRY_KIND: Final[dict[str, str]] = {
     "list_event": "list_event",
     "table": "list",
     "kafka": "kafka_topic",
+}
+
+# Обратный мост, для перевода найденной записи реестра в вид якоря документа.
+# Строится из `REGISTRY_KIND`, а не пишется руками: два словаря про одно
+# и то же разошлись бы на первой же новой паре, и `anchors which` начал бы
+# предлагать вид, которого каталог не знает.
+ANCHOR_KIND_BY_REGISTRY: Final[dict[str, str]] = {
+    registry: anchor for anchor, registry in REGISTRY_KIND.items()
 }
 
 # Виды, для которых литеральная ступень пуста структурно: диспетчеризация
@@ -85,6 +94,11 @@ class Resolution(_Base):
     candidates: list[str] = Field(default_factory=list)
     tried: list[str] = Field(default_factory=list)
 
+    # Якорь нашёлся, а `only` не совпал ни с одной записью. Это отдельное
+    # состояние, а не «точка входа исчезла»: чинится одной строкой в документе,
+    # и находка линта у него своя, с перечнем того, что сейчас на якоре.
+    selector_missed: bool = False
+
     @property
     def resolved(self) -> bool:
         return self.confidence != "unresolved"
@@ -104,13 +118,21 @@ class ResolveContext(_Base):
     source_paths: list[str] = Field(default_factory=list)
     root: Path | None = None
 
+    # Нужно только селектору `only.team`. Без правил владения он не сужает
+    # ничего и обязан сказать это вслух: молча пустой результат неотличим
+    # от «на якоре нет наших записей».
+    ownership: Ownership | None = None
+
 
 def _key(kind: str, scope: str | None, ref: str) -> tuple[str, str, str]:
     return (kind, scope or "", ref)
 
 
 def build_context(
-    anchors: list[ResolvedAnchor], manifest: Manifest, root: Path | None = None
+    anchors: list[ResolvedAnchor],
+    manifest: Manifest,
+    root: Path | None = None,
+    ownership: Ownership | None = None,
 ) -> ResolveContext:
     """Собрать индексы по инвентаризации и манифесту.
 
@@ -139,6 +161,7 @@ def build_context(
         nodes_by_id={node.id: node for node in manifest.nodes},
         source_paths=sorted(paths),
         root=root,
+        ownership=ownership,
     )
 
 
@@ -252,6 +275,40 @@ def _facts(kind: str, matches: list[ResolvedAnchor], ctx: ResolveContext) -> dic
 # --------------------------------------------------------------------------------------
 
 
+def _holder(match: ResolvedAnchor) -> str:
+    """Кто сейчас занимает запись якоря — для сообщения о промахе селектора.
+
+    Печатается сборка и класс: по ним человек либо поправит `only`, либо
+    увидит, что его обработчик с якоря ушёл.
+    """
+    fqn = match.fields.get("impl_fqn") or match.fields.get("contract_fqn") or "—"
+    assembly = match.fields.get("assembly")
+    return f"{fqn} (сборка {assembly})" if assembly else fqn
+
+
+def _selected(match: ResolvedAnchor, selector: Selector, ctx: ResolveContext) -> bool:
+    """Попадает ли запись под селектор.
+
+    Сборка сравнивается точным равенством, а не префиксом: `Sbt.Cashflow.ML`
+    как префикс поймал бы и `Sbt.Cashflow.MLOps`, и заметили бы это не сразу.
+
+    Команда считается по реализации через `ownership.yaml` — у обработчиков
+    событий, джобов и workflow поля `@team` в реестре нет вовсе, оно есть
+    только в `services.config`.
+    """
+    if selector.assembly:
+        return match.fields.get("assembly") == selector.assembly
+
+    if ctx.ownership is None:
+        return False
+
+    for target in match.targets:
+        node = ctx.nodes_by_id.get(target.node_id or "")
+        if node is not None and owner_of(node, ctx.ownership).team == selector.team:
+            return True
+    return False
+
+
 def _registry_rung(anchor: Anchor, ctx: ResolveContext) -> Resolution | None:
     """Ступень 1: запись объявлена в реестре."""
     registry_kind = REGISTRY_KIND.get(anchor.kind)
@@ -266,6 +323,22 @@ def _registry_rung(anchor: Anchor, ctx: ResolveContext) -> Resolution | None:
         matches = [match for match in matches if match.version == anchor.version]
         if not matches:
             return None
+
+    # Сужение идёт ДО проверки на неоднозначность: две записи на якоре — норма,
+    # если наша из них одна. Проверять раньше значило бы объявить чужого
+    # подписчика неоднозначностью в нашем документе.
+    if anchor.only is not None:
+        narrowed = [match for match in matches if _selected(match, anchor.only, ctx)]
+        if not narrowed:
+            return Resolution(
+                anchor=anchor,
+                confidence="unresolved",
+                candidates=[_holder(match) for match in matches],
+                sources=sorted({match.source_path for match in matches}),
+                tried=["реестр"],
+                selector_missed=True,
+            )
+        matches = narrowed
 
     # Несколько записей на один якорь — норма только для обработчиков события:
     # у одной пары «список + EventType» бывает несколько обработчиков, и весь

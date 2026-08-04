@@ -50,6 +50,29 @@ class _Base(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
 
+class Selector(_Base):
+    """Сужение якоря до своей части общей точки входа.
+
+    У одной пары «список + `EventType`» бывает несколько подписчиков, и якорь
+    их не различает: он адресует контракт, а не класс. Селектор не заменяет
+    якорь и не участвует в поиске — он отбирает из уже найденного, поэтому
+    ошибка в нём означает «сузили в пустоту», а не «точка входа исчезла».
+
+    `assembly` работает сразу и переживает переименование класса: сборка —
+    единица поставки, а не имя типа. `team` устойчивее (переживает и переезд
+    между сборками), но требует заполненного `ownership.yaml`.
+
+    Два селектора сразу — два источника истины, поэтому запрещено.
+    """
+
+    assembly: str | None = None
+    team: str | None = None
+
+    @property
+    def display(self) -> str:
+        return f"сборка {self.assembly}" if self.assembly else f"команда {self.team}"
+
+
 class Anchor(_Base):
     """Точка контракта, на которую ссылается документ.
 
@@ -68,7 +91,7 @@ class Anchor(_Base):
     ref: str
     scope: str | None = None
     version: str | None = None
-    member: str | None = None
+    only: Selector | None = None
     owner: str | None = None
     verify: bool = True
     note: str | None = None
