@@ -298,13 +298,14 @@ list_event  UserTasks/ItemAdded
 
 ## Линт
 
-Девять проверок фиксированным порядком. **Роняют прогон только дефекты каталога** —
+Десять проверок фиксированным порядком. **Роняют прогон только дефекты каталога** —
 то, что автор документа может починить сам:
 
 | Проверка | О чём |
 |---|---|
 | `unresolved` | якорь не разрешается; перечислены пробованные ступени |
-| `selector-empty` | `only` не совпал ни с одной записью якоря; перечислено, кто на нём сейчас |
+| `selector-empty` | `only` не совпал ни с одной записью якоря; перечислено, кто на нём сейчас — с классом, сборкой и командой |
+| `unknown-team` | `only.team` называет команду, не объявленную в `ownership.yaml` |
 | `no-entry` | процесс без `entry`: не дописан или это не процесс |
 | `ambiguous-version` | ссылка на workflow без `version` при нескольких версиях |
 | `unknown-capability` | ссылка на необъявленную возможность |
@@ -325,6 +326,12 @@ list_event  UserTasks/ItemAdded
 `--fail-on` со значением вне перечня — код 2, а не пустой фильтр: опечатка в CI
 иначе дала бы вечно зелёную проверку.
 
+**`--scope catalog` убирает инвентарь** — блоки `registry-unlinked` и «Точек
+входа: N, описано: M». На боевом репозитории они занимают сотни строк, и пока
+описано пять точек входа из пятисот, находка по своему документу в них тонет.
+Отчёт, который перестают читать целиком, перестаёт работать и той частью,
+которая про дефекты.
+
 ## Команды
 
 ```bash
@@ -341,7 +348,7 @@ docpipe business build  MANIFEST [--registries FILE] [--config FILE] [--root PAT
                                  [--business-root DIR] [--ownership FILE] [--dry-run]
 docpipe business status MANIFEST [PATH...] [--action write|review|skip]
                                  [--team T] [--fail-on STATUS] [--format text|json]
-docpipe business lint   MANIFEST [--fail-on CHECK]
+docpipe business lint   MANIFEST [--fail-on CHECK] [--scope all|catalog]
 docpipe business accept MANIFEST [PATH...] [--all] [--force] [--dry-run]
 ```
 

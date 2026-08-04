@@ -18,7 +18,12 @@ from docpipe.business.resolve import ANCHOR_KIND_BY_REGISTRY, resolve
 from docpipe.cli import app
 from docpipe.model import DocNode, Manifest, ParserVersions, Relation, Symbol
 from docpipe.registry import load_registries, read_registry, resolve_anchors
-from docpipe.registry.anchors import ENTRY_KINDS, ResolvedAnchor, find_by_implementation
+from docpipe.registry.anchors import (
+    ENTRY_KINDS,
+    ResolvedAnchor,
+    find_by_implementation,
+    similar_names,
+)
 from tests.business_support import context
 
 ROOT = Path("tests/fixtures/registries")
@@ -539,3 +544,70 @@ def test_which_json_carries_the_snippet(manifest_file: Path) -> None:
 
 def test_which_rejects_unknown_format(manifest_file: Path) -> None:
     assert _which(manifest_file, "X", "--format", "yaml").exit_code == 2
+
+
+def test_which_suggests_close_names(anchors: list[ResolvedAnchor]) -> None:
+    """Опечатка в одну букву давала «не найдено», и человек шёл проверять
+    реестры, которые в порядке. «Не найдено» и «нашлось похожее» — разные
+    ответы."""
+    names = similar_names(anchors, "UserTasksAddedTriggerSampleWorkflowEventReceive")
+
+    assert any("UserTasksAddedTriggerSampleWorkflowEventReceiver" in name for name in names)
+
+
+def test_which_cli_prints_the_suggestion(manifest_file: Path) -> None:
+    result = _which(manifest_file, "UserTasksAddedTriggerSampleWorkflowEventReceive")
+
+    assert result.exit_code == 0
+    assert "Похожие имена" in result.stdout
+    assert "UserTasksAddedTriggerSampleWorkflowEventReceiver" in result.stdout
+
+
+def test_which_says_nothing_extra_when_nothing_is_close(manifest_file: Path) -> None:
+    """Подсказка на всё подряд обесценивает саму подсказку."""
+    result = _which(manifest_file, "Совершенно.Другое.Имя")
+
+    assert "Похожие имена" not in result.stdout
+
+
+def test_explain_shows_how_to_narrow_a_shared_anchor(manifest_file: Path) -> None:
+    """На паре подписчиков несколько, и `only` пишут по этому выводу.
+    Без подсказки его составляют наугад из перечня полей."""
+    result = runner.invoke(
+        app,
+        [
+            "anchors",
+            "explain",
+            str(manifest_file),
+            "UserTasks/ItemAdded",
+            "--registries",
+            str(REGISTRIES),
+            "--root",
+            str(ROOT),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Совпало записей: 2" in result.stdout
+    assert "сузить до этой записи:" in result.stdout
+    assert "only: {assembly: Sbt.Cashflow.ML.EventReceivers}" in result.stdout
+
+
+def test_explain_does_not_offer_narrowing_for_a_single_record(manifest_file: Path) -> None:
+    """Сужать нечего — подсказка была бы шумом."""
+    result = runner.invoke(
+        app,
+        [
+            "anchors",
+            "explain",
+            str(manifest_file),
+            "UserTasks/ItemAdding",
+            "--registries",
+            str(REGISTRIES),
+            "--root",
+            str(ROOT),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "сузить до этой записи:" not in result.stdout

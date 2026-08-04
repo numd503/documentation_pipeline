@@ -13,7 +13,15 @@ import pytest
 from typer.testing import CliRunner
 
 from docpipe.business import load_catalog
-from docpipe.business.lint import CHECKS, INFORMATIONAL, LintReport, lint
+from docpipe.business.lint import (
+    CHECKS,
+    INFORMATIONAL,
+    LintReport,
+    lint,
+)
+from docpipe.business.lint import (
+    format_report as format_lint_report,
+)
 from docpipe.cli import app
 from docpipe.materialize.ownership import load_ownership
 from tests.business_support import (
@@ -40,10 +48,13 @@ def report(tree: Path, ownership_yaml: str | None = None) -> LintReport:
         path.write_text(ownership_yaml, encoding="utf-8")
         ownership = load_ownership(path)
 
+    # Правила владения идут и в контекст разрешения: селектор `only.team`
+    # считает команду там, а не в самом линте. Передать их только вторым
+    # аргументом значило бы проверять конфигурацию, которой в проде нет.
     return lint(
         load_catalog(tree, BUSINESS),
         registry_anchors(tree),
-        context(tree),
+        context(tree, ownership=ownership),
         BUSINESS,
         ownership,
     )
@@ -471,3 +482,97 @@ def test_narrowed_anchor_is_not_reported_as_ambiguous(tree: Path) -> None:
     )
 
     assert "ambiguous-version" not in checks_of(report(tree))
+
+
+# --------------------------------------------------------------------------------------
+# `unknown-team` и отчёт без инвентаря
+# --------------------------------------------------------------------------------------
+
+TEAMS_ML = """
+version: "1"
+ownership_version: "test"
+teams:
+  - id: ML
+    title: ML
+rules:
+  - id: ml.receivers
+    team: ML
+    priority: 10
+    when:
+      fqn_prefix: ["Sbt.Cashflow.ML"]
+"""
+
+
+def _doc_with_team(tree: Path, team: str) -> None:
+    write_doc(
+        tree,
+        BUSINESS,
+        {
+            "id": "bp.valuation.byteam",
+            "kind": "process",
+            "title": "Сужено по команде",
+            "entry": [
+                {
+                    "kind": "list_event",
+                    "ref": "ItemAdded",
+                    "scope": "UserTasks",
+                    "only": {"team": team},
+                }
+            ],
+        },
+        filled=True,
+    )
+
+
+def test_unknown_team_in_selector_is_named(tree: Path) -> None:
+    """Симметрично `load_ownership`, который отвергает правило с неизвестной
+    командой. Без этой проверки `ml` при объявленной `ML` просто ничего
+    не отбирает, и выглядит это как оборванная связь с технической
+    документацией — разница в регистре нигде не видна.
+    """
+    _doc_with_team(tree, "ml")
+    found = [f for f in report(tree, TEAMS_ML).findings if f.check == "unknown-team"]
+
+    assert len(found) == 1
+    assert "'ml'" in found[0].message
+    assert "объявлены: ML" in found[0].message
+
+
+def test_known_team_in_selector_is_silent(tree: Path) -> None:
+    _doc_with_team(tree, "ML")
+
+    assert "unknown-team" not in checks_of(report(tree, TEAMS_ML))
+
+
+def test_unknown_team_needs_ownership_to_be_decided(tree: Path) -> None:
+    """Без правил владения объявленных команд не существует, и назвать `ml`
+    неизвестной нельзя: про это говорит `selector-empty`."""
+    _doc_with_team(tree, "ml")
+
+    assert "unknown-team" not in checks_of(report(tree))
+
+
+def test_selector_miss_shows_the_team_of_each_holder(tree: Path) -> None:
+    """Ради разницы `ml`/`ML` сообщение и переписано: перечень из FQN
+    и сборок её не показывает вовсе."""
+    _doc_with_team(tree, "ml")
+    found = [f for f in report(tree, TEAMS_ML).findings if f.check == "selector-empty"]
+
+    assert len(found) == 1
+    assert "команда ML" in found[0].message
+
+
+def test_catalog_scope_drops_the_inventory(tree: Path) -> None:
+    """На боевом репозитории инвентарь — сотни строк, и находка по своему
+    документу в нём тонет; отчёт перестают читать целиком."""
+    _doc_with_team(tree, "ml")
+    result = report(tree, TEAMS_ML)
+
+    full = format_lint_report(result, [], inventory=True)
+    only_catalog = format_lint_report(result, [], inventory=False)
+
+    assert "Точек входа:" in full
+    assert "registry-unlinked" in full
+    assert "Точек входа:" not in only_catalog
+    assert "registry-unlinked" not in only_catalog
+    assert "unknown-team" in only_catalog

@@ -12,7 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from docpipe.business import load_catalog, resolve_all
-from docpipe.business.build import backlinks, cell, generated_block, relative
+from docpipe.business.build import backlinks, cell, generated_block, link_warnings, relative
 from docpipe.business.model import Anchor, BusinessDoc, Selector
 from docpipe.business.resolve import ResolveContext
 from docpipe.cli import app
@@ -329,3 +329,69 @@ def test_narrowing_is_visible_in_the_document(tree: Path) -> None:
     assert "сборка Sbt.Cashflow.ML.EventReceivers" in text
     assert "UserTasksAddedTriggerSampleWorkflowEventReceiver" in implementation
     assert "UserTasksAddedAuditEventReceiver" not in implementation
+
+
+# --------------------------------------------------------------------------------------
+# Предупреждения о том, что ссылки не будет
+# --------------------------------------------------------------------------------------
+#
+# Сборка молчала об этом сама по себе: «Точки входа» заполнены, «Где объявлено»
+# указывает на файл реестра, а «Реализация» пуста. Три разные причины дают один
+# и тот же вид, и различить их обязан инструмент.
+
+
+def _anchor_doc(anchors: list[Anchor]) -> BusinessDoc:
+    return BusinessDoc(
+        schema="business/1",
+        id="bp.valuation.warn",
+        kind="process",
+        title="Предупреждения",
+        doc_path="business/processes/valuation/warn.md",
+        entry=anchors,
+    )
+
+
+def test_warning_when_the_selector_missed(tree: Path) -> None:
+    doc = _anchor_doc(
+        [
+            Anchor(
+                kind="list_event",
+                ref="ItemAdded",
+                scope="UserTasks",
+                only=Selector(assembly="Sbt.Nobody"),
+            )
+        ]
+    )
+    ctx = context(tree)
+    warnings = link_warnings(doc, resolve_all(doc.anchors, ctx))
+
+    assert len(warnings) == 1
+    assert "`only`" in warnings[0]
+    assert "ссылки на технический документ не будет" in warnings[0]
+    assert "Сейчас на якоре" in warnings[0]
+
+
+def test_warning_when_the_registry_record_has_no_class(tree: Path) -> None:
+    """`table` объявляет состав списка, но класса реализации у записи нет —
+    ссылке взяться неоткуда, и это надо сказать, а не показать пустой раздел."""
+    doc = _anchor_doc([Anchor(kind="table", ref="UserTasks")])
+    ctx = context(tree)
+    warnings = link_warnings(doc, resolve_all(doc.anchors, ctx))
+
+    assert len(warnings) == 1
+    assert "не объявлен класс реализации" in warnings[0]
+
+
+def test_no_warning_when_the_link_will_be_there(tree: Path) -> None:
+    doc = _anchor_doc([Anchor(kind="list_event", ref="ItemAdded", scope="UserTasks")])
+    ctx = context(tree)
+
+    assert link_warnings(doc, resolve_all(doc.anchors, ctx)) == []
+
+
+def test_unverified_anchor_never_warns(tree: Path) -> None:
+    """`verify: false` — объявленная чужая зона: ссылки там не ждут."""
+    doc = _anchor_doc([Anchor(kind="kafka", ref="pricing.eod", verify=False)])
+    ctx = context(tree)
+
+    assert link_warnings(doc, resolve_all(doc.anchors, ctx)) == []

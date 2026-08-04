@@ -8,15 +8,15 @@ from typing import Annotated
 import typer
 
 from docpipe import __version__
-from docpipe.business import Catalog, doc_path_for, load_catalog
+from docpipe.business import Catalog, doc_path_for, load_catalog, resolve_all
 from docpipe.business import build_context as build_resolve_context
-from docpipe.business.build import backlinks, compose, entry_snippet
+from docpipe.business.build import backlinks, compose, entry_snippet, link_warnings
 from docpipe.business.catalog import ID_RE
 from docpipe.business.lint import CHECKS as LINT_CHECKS
 from docpipe.business.lint import format_report as format_lint_report
 from docpipe.business.lint import lint as lint_catalog
 from docpipe.business.model import KIND_BY_PREFIX
-from docpipe.business.resolve import ResolveContext
+from docpipe.business.resolve import ResolveContext, holder_team
 from docpipe.business.status import ACTIONS as BUSINESS_ACTIONS
 from docpipe.business.status import STATUSES as BUSINESS_STATUSES
 from docpipe.business.status import DocumentStatus as BusinessStatus
@@ -68,6 +68,7 @@ from docpipe.registry.anchors import (
     format_explain,
     format_which,
     resolve_anchors,
+    similar_names,
 )
 from docpipe.stats import (
     STATE_TITLES,
@@ -994,6 +995,10 @@ def anchors_explain(
     ref: Annotated[str, typer.Argument(help="Якорь: `ref` или строка показа.")],
     registries: Annotated[Path, typer.Option("--registries", help="Описание реестров.")],
     root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
+    ownership_file: Annotated[
+        Path | None, typer.Option("--ownership", help="Правила владения: показать команды.")
+    ] = None,
 ) -> None:
     """Показать всё, что известно про один якорь.
 
@@ -1008,7 +1013,36 @@ def anchors_explain(
         typer.echo(f"Якорь не найден: {ref}", err=True)
         raise typer.Exit(code=1)
 
-    typer.echo("\n\n".join(format_explain(anchor) for anchor in found))
+    settings = load_config(config)
+    ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
+    try:
+        ownership = load_ownership(ownership_path) if ownership_path else None
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Правила владения не прочитаны, команды не показаны: {exc}", err=True)
+        ownership = None
+
+    manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    ctx = build_resolve_context(anchors, manifest, root=root, ownership=ownership)
+
+    # Записей на якоре бывает несколько: голый `ItemAdded` совпадает с событием
+    # у каждого списка, а пара «список + EventType» — с каждым подписчиком.
+    # Во втором случае сузить якорь нужно, и подсказка про `only` печатается
+    # только там, где выбор действительно есть.
+    keys = Counter((anchor.kind, anchor.scope or "", anchor.ref) for anchor in anchors)
+
+    if len(found) > 1:
+        typer.echo(f"Совпало записей: {len(found)}. Уточнить можно парой `Область/Якорь`.\n")
+
+    typer.echo(
+        "\n\n".join(
+            format_explain(
+                anchor,
+                team=holder_team(anchor, ctx),
+                shared=keys[(anchor.kind, anchor.scope or "", anchor.ref)] > 1,
+            )
+            for anchor in found
+        )
+    )
 
 
 @anchors_app.command("which")
@@ -1052,7 +1086,14 @@ def anchors_which(
             )
         )
     else:
-        typer.echo(format_which(found, query, [entry_snippet(m) for m in found]))
+        typer.echo(
+            format_which(
+                found,
+                query,
+                [entry_snippet(m) for m in found],
+                similar_names(anchors, query) if not found else None,
+            )
+        )
 
     for error in errors:
         typer.echo(f"Замечание при чтении реестров: {error}", err=True)
@@ -1172,6 +1213,7 @@ def business_build(
     written: list[str] = []
     unchanged: list[str] = []
     errors: list[str] = []
+    warnings: list[str] = []
 
     for doc in loaded.catalog.docs:
         path = root / doc.doc_path
@@ -1180,6 +1222,8 @@ def business_build(
         except OSError as exc:
             errors.append(f"{doc.doc_path}: {exc}")
             continue
+
+        warnings += link_warnings(doc, resolve_all(doc.anchors, loaded.ctx))
 
         text = compose(doc, loaded.ctx, existing, loaded.ownership)
         if text == existing:
@@ -1195,6 +1239,12 @@ def business_build(
         typer.echo(f"  {line}")
     for line in sorted(loaded.catalog.errors) + sorted(errors):
         typer.echo(f"  {line}", err=True)
+
+    # Предупреждения не роняют прогон: документ собран, и текст в нём остаётся
+    # полезным. Но сказать о них обязательно — «Реализация: Нет.» неотличима
+    # от поломки связности, пока не названа причина.
+    for line in sorted(warnings):
+        typer.echo(f"Внимание: {line}", err=True)
 
     if errors:
         raise typer.Exit(code=1)
@@ -1425,6 +1475,9 @@ def business_lint(
         list[str] | None,
         typer.Option("--fail-on", help=f"Ронять на этих проверках: {', '.join(LINT_CHECKS)}."),
     ] = None,
+    scope: Annotated[
+        str, typer.Option("--scope", help="all или catalog: с инвентарём или без.")
+    ] = "all",
 ) -> None:
     """Проверить каталог: что сломано и сколько ещё писать.
 
@@ -1434,6 +1487,10 @@ def business_lint(
     дефект. Требование покрытия 100 % не ставится — линт, красный с первого
     дня, выключат на второй.
     """
+    if scope not in ("all", "catalog"):
+        typer.echo(f"Неизвестный --scope: {scope}. Известны: all, catalog", err=True)
+        raise typer.Exit(code=2)
+
     selected = list(fail_on or [])
 
     # Значение вне перечня — ошибка, а не пустой фильтр: опечатка
@@ -1451,7 +1508,7 @@ def business_lint(
     )
     report = lint_catalog(loaded.catalog, loaded.anchors, loaded.ctx, loaded.root, loaded.ownership)
 
-    typer.echo(format_lint_report(report, selected))
+    typer.echo(format_lint_report(report, selected, inventory=scope == "all"))
     for error in loaded.registry_errors:
         typer.echo(f"Замечание при чтении реестров: {error}", err=True)
 
