@@ -230,8 +230,10 @@ def test_registry_unlinked_is_a_finding(tree: Path) -> None:
 def test_uncovered_entry_points_are_counted(tree: Path) -> None:
     result = report(tree)
 
-    assert result.entry_points == 10
-    assert result.covered == 4
+    # Обе записи пары «UserTasks + ItemAdded» считаются входами и обе покрыты
+    # одним документом: он ссылается на пару, а не на класс подписчика.
+    assert result.entry_points == 11
+    assert result.covered == 5
     assert dict(result.uncovered_by_kind) == {"grid_service": 3, "job": 1, "list_event": 2}
 
 
@@ -304,7 +306,7 @@ def test_cli_is_green_on_clean_catalog(tree: Path) -> None:
     result = _run(tree)
 
     assert result.exit_code == 0
-    assert "Точек входа: 10, описано: 4, осталось: 6" in result.stdout
+    assert "Точек входа: 11, описано: 5, осталось: 6" in result.stdout
 
 
 def test_cli_fails_on_unresolved(tree: Path) -> None:
@@ -370,4 +372,4 @@ def test_cli_reads_paths_from_config(tree: Path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "Точек входа: 10" in result.stdout
+    assert "Точек входа: 11" in result.stdout

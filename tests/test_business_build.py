@@ -183,6 +183,24 @@ def test_table_survives_colons_and_cyrillic(tree: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
+def test_all_handlers_of_one_event_are_printed(tree: Path) -> None:
+    """У пары «UserTasks + ItemAdded» два подписчика, и в «Реализации» обязаны
+    стоять оба.
+
+    Печать одного — худший вид ошибки: раздел выглядит заполненным, а половина
+    участников события из документа пропала, и заметить это нечем.
+    """
+    text = block(tree)
+    entries, implementation = text.split("### Реализация")[0], text.split("### Реализация")[1]
+    rows = [line for line in implementation.splitlines() if "UserTasks/ItemAdded" in line]
+
+    # В «Точках входа» пара — одна строка: точка входа одна, подписчиков много.
+    assert sum("UserTasks/ItemAdded" in line for line in entries.splitlines()) == 1
+    assert len(rows) == 2
+    assert any("UserTasksAddedTriggerSampleWorkflowEventReceiver" in row for row in rows)
+    assert any("UserTasksAddedAuditEventReceiver" in row for row in rows)
+
+
 def test_two_calls_give_the_same_text(tree: Path, ownership: Ownership) -> None:
     assert block(tree, ownership) == block(tree, ownership)
 

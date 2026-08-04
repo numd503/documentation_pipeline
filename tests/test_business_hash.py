@@ -246,6 +246,32 @@ def test_new_handler_assembly_changes_hash_but_rename_inside_it_does_not(
     assert digest([EVENT], context(renamed)) == before
 
 
+def test_handler_leaving_the_pair_changes_hash(tree: Path, ctx: ResolveContext) -> None:
+    """Ушедший подписчик — тоже смена состава участников.
+
+    Якорь при этом продолжает разрешаться: пара «список + EventType» на месте,
+    исчез один из двух обработчиков. Реализация, считающая факты по первой
+    найденной записи, этого не заметила бы, и документ остался бы `current`,
+    хотя половина участников события из процесса вышла.
+    """
+    before = digest([EVENT], ctx)
+
+    left = registries_copy(tree.parent / "handler-left")
+    edit(
+        left / "Structure.xml",
+        '<EventReceiver Class="Sbt.Cashflow.Reports.EventReceivers.'
+        'UserTasksAddedAuditEventReceiver"\n'
+        '                               Assembly="Sbt.Cashflow.Reports.EventReceivers"\n'
+        '                               EventType="ItemAdded" />\n                ',
+        "",
+    )
+    after = digest([EVENT], context(left))
+
+    assert after != before
+    # Якорь не «пропал», а изменился составом: разрешение осталось реестровым.
+    assert resolve_all([EVENT], context(left))[0].confidence == "registry"
+
+
 def test_disappeared_entry_point_changes_hash(tree: Path, ctx: ResolveContext) -> None:
     """Точка входа перестала находиться — это событие, а не тишина.
 

@@ -106,7 +106,9 @@ def test_counts_by_kind(anchors: list[ResolvedAnchor]) -> None:
         "grid_service": 3,
         "job": 2,
         "workflow": 2,
-        "list_event": 3,
+        # Четыре записи на три события: на `UserTasks + ItemAdded` подписаны
+        # двое, и инвентаризация считает записи реестра, а не пары.
+        "list_event": 4,
         "list": 2,
     }
 
@@ -115,7 +117,7 @@ def test_list_is_not_an_entry_point(anchors: list[ResolvedAnchor]) -> None:
     """Список — сущность, а вход — объявленный на нём обработчик события."""
     entries = [a for a in anchors if a.kind in ENTRY_KINDS]
 
-    assert len(entries) == 10
+    assert len(entries) == 11
     assert all(a.kind != "list" for a in entries)
 
 
@@ -123,11 +125,12 @@ def test_event_receivers_are_lifted_to_top_level(anchors: list[ResolvedAnchor]) 
     """Обработчик — вход, поэтому он отдельный якорь со ссылкой на свой список."""
     events = [a for a in anchors if a.kind == "list_event"]
 
-    assert {a.display for a in events} == {
+    assert sorted(a.display for a in events) == [
+        "UserTasks/ItemAdded",
+        "UserTasks/ItemAdded",
         "UserTasks/ItemAdding",
         "UserTasks/ItemUpdating",
-        "UserTasks/ItemAdded",
-    }
+    ]
     assert all(a.scope == "UserTasks" for a in events)
 
 
@@ -203,10 +206,21 @@ def test_workflow_state_type_resolves(anchors: list[ResolvedAnchor]) -> None:
 
 
 def test_event_receiver_resolves(anchors: list[ResolvedAnchor]) -> None:
-    added = next(a for a in anchors if a.display == "UserTasks/ItemAdded")
+    """Каждая запись пары разрешается сама по себе.
 
-    assert added.targets[0].via == "direct"
-    assert added.targets[0].doc_path is not None
+    Проверяются обе: `next()` брал бы произвольную из двух, и тест был бы
+    зелёным независимо от того, разрешается ли обработчик, который в манифесте
+    действительно есть.
+    """
+    added = [a for a in anchors if a.display == "UserTasks/ItemAdded"]
+    resolved = [a for a in added if a.targets and a.targets[0].via == "direct"]
+
+    assert len(added) == 2
+    assert len(resolved) == 1
+    assert resolved[0].targets[0].doc_path is not None
+    # Второй обработчик в манифест не попал — и это нормальное состояние,
+    # а не ошибка: узлами становятся только enrolled и классифицированные типы.
+    assert [a.targets[0].via for a in added if a not in resolved] == ["unresolved"]
 
 
 def test_steps_keep_declaration_order(anchors: list[ResolvedAnchor]) -> None:
@@ -244,7 +258,7 @@ def test_list_exits_zero_despite_unresolved(manifest_file: Path) -> None:
     result = _invoke(manifest_file)
 
     assert result.exit_code == 0
-    assert "Точек входа: 10" in result.stdout
+    assert "Точек входа: 11" in result.stdout
     assert "не найден среди узлов документации" in result.stdout
 
 

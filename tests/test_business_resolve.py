@@ -91,13 +91,37 @@ def test_grid_service_resolves_to_public_methods(ctx: ResolveContext) -> None:
 
 
 def test_list_event_collects_assemblies_of_all_handlers(ctx: ResolveContext) -> None:
+    """На паре «UserTasks + ItemAdded» два обработчика из разных сборок, и в
+    факты идут ОБЕ. Сборки отсортированы, а в XML они лежат в обратном
+    порядке — значит проверяется сортировка, а не порядок записей."""
     resolution = resolve(Anchor(kind="list_event", ref="ItemAdded", scope="UserTasks"), ctx)
 
     assert resolution.facts == {
         "list": "UserTasks",
         "event": "ItemAdded",
-        "assemblies": ["Sbt.Cashflow.ML.EventReceivers"],
+        "assemblies": [
+            "Sbt.Cashflow.ML.EventReceivers",
+            "Sbt.Cashflow.Reports.EventReceivers",
+        ],
     }
+
+
+def test_two_handlers_on_one_pair_are_not_ambiguity(ctx: ResolveContext) -> None:
+    """Несколько записей на якорь — неоднозначность для всех видов, кроме
+    обработчиков события: платформа вызывает всех подписчиков, поэтому пара
+    «список + EventType» — одна точка входа на всех, и весь набор и есть факт.
+
+    Разделить их якорем нельзя и не нужно: класс подписчика в якорь не входит,
+    иначе его переименование ломало бы бизнес-документ.
+    """
+    resolution = resolve(Anchor(kind="list_event", ref="ItemAdded", scope="UserTasks"), ctx)
+
+    assert resolution.confidence == "registry"
+    assert not resolution.candidates
+    assert sorted(target.fqn for target in resolution.targets) == [
+        "Sbt.Cashflow.ML.EventReceivers.UserTasksAddedTriggerSampleWorkflowEventReceiver",
+        "Sbt.Cashflow.Reports.EventReceivers.UserTasksAddedAuditEventReceiver",
+    ]
 
 
 def test_table_resolves_to_field_composition(ctx: ResolveContext) -> None:
