@@ -40,6 +40,7 @@ CHECKS: Final[tuple[str, ...]] = (
     "no-entry",
     "ambiguous-version",
     "unknown-capability",
+    "unknown-team",
     "team-mismatch",
     "catalog",
     "registry-unlinked",
@@ -226,6 +227,30 @@ def lint(
             Finding(check="unknown-capability", where=line.split(":", 1)[0], message=line)
         )
 
+    # 4a. Селектор ссылается на необъявленную команду. Симметрично тому, как
+    #     `load_ownership` отвергает правило с неизвестной командой: там это
+    #     ошибка загрузки, а здесь молча ничего не отбиралось бы. Разный
+    #     регистр (`ml` против `ML`) — два разных идентификатора, и склеить
+    #     их значило бы завести два написания одного имени.
+    declared_teams = {team.id for team in ownership.teams} if ownership else set()
+    for doc in catalog.docs:
+        for anchor in doc.anchors:
+            wanted = anchor.only.team if anchor.only else None
+            if not wanted or ownership is None or wanted in declared_teams:
+                continue
+            known = ", ".join(sorted(declared_teams)) or "(список пуст)"
+            findings.append(
+                Finding(
+                    check="unknown-team",
+                    where=doc.doc_path,
+                    message=(
+                        f"якорь {anchor.kind} {anchor.display}: `only.team` называет"
+                        f" команду {wanted!r}, которой нет в `ownership.yaml`;"
+                        f" объявлены: {known}"
+                    ),
+                )
+            )
+
     # 5. Расхождение команд: `@team` реестра против `ownership.yaml`
     #    по реализации. Отвечает на вопрос «сервис объявлен нашим, а код чей».
     if ownership is not None:
@@ -306,14 +331,20 @@ def lint(
     )
 
 
-def format_report(report: LintReport, fail_on: list[str]) -> str:
+def format_report(report: LintReport, fail_on: list[str], inventory: bool = True) -> str:
     """Текстовый отчёт. Порядок блоков несёт смысл: сначала сломанное,
-    потом то, чего ещё нет."""
+    потом то, чего ещё нет.
+
+    `inventory=False` оставляет только находки по документам каталога. Инвентарь
+    считается по реестрам и на боевом репозитории занимает сотни строк: пока
+    описано пять точек входа из пятисот, единственная нужная строка в нём тонет,
+    и отчёт перестают читать целиком — вместе с той частью, которая про дефекты.
+    """
     lines: list[str] = []
     failing = {finding.check for finding in report.failing(fail_on)}
 
     for check in CHECKS:
-        if check == "uncovered":
+        if check == "uncovered" or (not inventory and check in INFORMATIONAL):
             continue
         found = [finding for finding in report.findings if finding.check == check]
         if not found:
@@ -321,6 +352,9 @@ def format_report(report: LintReport, fail_on: list[str]) -> str:
         mark = "" if check in failing else "  (не влияет на код возврата)"
         lines += ["", f"{check}: {len(found)}{mark}"]
         lines += [f"  {finding.where}: {finding.message}" for finding in found]
+
+    if not inventory:
+        return "\n".join(lines).strip() or "Находок по документам каталога нет."
 
     lines += [
         "",

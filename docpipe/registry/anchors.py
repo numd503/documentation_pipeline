@@ -10,6 +10,7 @@
 """
 
 from collections import Counter, defaultdict
+from difflib import get_close_matches
 from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -236,6 +237,33 @@ def _matches(anchor: ResolvedAnchor, query: str) -> tuple[str, str] | None:
     return None
 
 
+def similar_names(anchors: list[ResolvedAnchor], query: str, limit: int = 5) -> list[str]:
+    """Близкие имена типов среди тех, что вызываются по данным.
+
+    Нужны ровно в одном случае: запрос отличается от настоящего имени
+    на опечатку. Тогда «не найдено» отправляет человека проверять реестры,
+    которые в порядке, — а надо всего лишь дописать букву.
+
+    Сравниваются и полные имена, и простые: человек ошибается чаще в коротком.
+    """
+    pool: set[str] = set()
+    for anchor in anchors:
+        for candidate in [anchor, *anchor.children]:
+            for target in candidate.targets:
+                pool.add(target.fqn)
+                pool.add(target.fqn.rsplit(".", 1)[-1])
+
+    matched = get_close_matches(query, sorted(pool), n=limit, cutoff=0.7)
+    # Полное имя информативнее простого, поэтому при совпадении хвоста
+    # короткая форма убирается: две строки про один тип ничего не добавляют.
+    full = {name for name in matched if "." in name}
+    return [
+        name
+        for name in matched
+        if "." in name or not any(other.endswith(f".{name}") for other in full)
+    ]
+
+
 def find_by_implementation(anchors: list[ResolvedAnchor], query: str) -> list[AnchorMatch]:
     """Обратный поиск: от типа к якорям, которые на него ссылаются.
 
@@ -294,7 +322,12 @@ def counts(anchors: list[ResolvedAnchor]) -> dict[str, int]:
     return dict(sorted(Counter(anchor.kind for anchor in anchors).items()))
 
 
-def format_which(matches: list[AnchorMatch], query: str, snippets: list[str]) -> str:
+def format_which(
+    matches: list[AnchorMatch],
+    query: str,
+    snippets: list[str],
+    similar: list[str] | None = None,
+) -> str:
     """Отчёт обратного поиска.
 
     Готовые куски `entry` приходят снаружи по одному на совпадение: формат
@@ -302,12 +335,19 @@ def format_which(matches: list[AnchorMatch], query: str, snippets: list[str]) ->
     зависимость пойдёт в обратную сторону.
     """
     if not matches:
-        return (
-            f"Якорей на {query} не найдено.\n"
-            "  Это нормальное состояние: точка входа есть не у всякого типа.\n"
-            "  Если тип точно вызывается по данным — проверьте, описан ли\n"
-            "  соответствующий реестр в registries.yaml."
-        )
+        lines = [
+            f"Якорей на {query} не найдено.",
+            "  Это нормальное состояние: точка входа есть не у всякого типа.",
+            "  Если тип точно вызывается по данным — проверьте, описан ли",
+            "  соответствующий реестр в registries.yaml.",
+        ]
+        # «Не найдено» и «нашлось похожее» — разные ответы. Опечатка в одну
+        # букву даёт первый на второй случай, и человек идёт проверять реестры,
+        # которые в порядке.
+        if similar:
+            lines += ["", "  Похожие имена среди тех, что вызываются по данным:"]
+            lines += [f"    {name}" for name in similar]
+        return "\n".join(lines)
 
     # Один и тот же якорь, объявленный в нескольких файлах, — это версии
     # workflow. Сниппет для такого шага вставлять нельзя: без `version` он
@@ -396,8 +436,14 @@ def format_anchors(anchors: list[ResolvedAnchor], errors: list[str]) -> str:
     return "\n".join(lines)
 
 
-def format_explain(anchor: ResolvedAnchor) -> str:
-    """Подробности по одному якорю: откуда прочитан и что его реализует."""
+def format_explain(anchor: ResolvedAnchor, team: str | None = None, shared: bool = False) -> str:
+    """Подробности по одному якорю: откуда прочитан и что его реализует.
+
+    `shared` означает, что на якоре несколько записей. Тогда печатается ещё
+    и то, каким селектором сузить его до **этой** записи: писать `only` наугад
+    по перечню полей — лишний шаг, на котором ошибаются, а промах селектора
+    выглядит как оборванная связность.
+    """
     lines = [
         f"{anchor.kind}  {anchor.display}",
         f"  реестр:  {anchor.registry}",
@@ -407,9 +453,20 @@ def format_explain(anchor: ResolvedAnchor) -> str:
         lines.append(f"  заголовок: {anchor.title}")
     if anchor.team:
         lines.append(f"  команда: {anchor.team}")
+    if team:
+        lines.append(f"  команда по ownership.yaml: {team}")
 
     for name, value in sorted(anchor.fields.items()):
         lines.append(f"  {name}: {value}")
+
+    if shared:
+        lines.append("  сузить до этой записи:")
+        if assembly := anchor.fields.get("assembly"):
+            lines.append(f"    only: {{assembly: {assembly}}}")
+        if team:
+            lines.append(f"    only: {{team: {team}}}")
+        if not anchor.fields.get("assembly") and not team:
+            lines.append("    нечем: у записи нет ни `assembly`, ни команды по ownership.yaml")
 
     lines.append("  реализация:")
     if not anchor.targets:

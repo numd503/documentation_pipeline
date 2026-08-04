@@ -275,15 +275,34 @@ def _facts(kind: str, matches: list[ResolvedAnchor], ctx: ResolveContext) -> dic
 # --------------------------------------------------------------------------------------
 
 
-def _holder(match: ResolvedAnchor) -> str:
+def holder_team(match: ResolvedAnchor, ctx: ResolveContext) -> str | None:
+    """Команда записи по правилам владения, через её реализацию."""
+    if ctx.ownership is None:
+        return None
+    for target in match.targets:
+        node = ctx.nodes_by_id.get(target.node_id or "")
+        if node is not None:
+            decision = owner_of(node, ctx.ownership)
+            if decision.team:
+                return decision.team
+    return None
+
+
+def _holder(match: ResolvedAnchor, ctx: ResolveContext) -> str:
     """Кто сейчас занимает запись якоря — для сообщения о промахе селектора.
 
-    Печатается сборка и класс: по ним человек либо поправит `only`, либо
-    увидит, что его обработчик с якоря ушёл.
+    Печатается всё, по чему селектор мог бы сработать: класс, сборка и команда.
+    Без команды сообщение бесполезно ровно в том случае, ради которого оно
+    и пишется: `only: {team: ml}` при объявленной `ML` не совпадает, и увидеть
+    это в перечне из FQN и сборок нельзя — там разницы в регистре просто нет.
     """
     fqn = match.fields.get("impl_fqn") or match.fields.get("contract_fqn") or "—"
-    assembly = match.fields.get("assembly")
-    return f"{fqn} (сборка {assembly})" if assembly else fqn
+    parts = []
+    if assembly := match.fields.get("assembly"):
+        parts.append(f"сборка {assembly}")
+    if team := holder_team(match, ctx):
+        parts.append(f"команда {team}")
+    return f"{fqn} ({', '.join(parts)})" if parts else fqn
 
 
 def _selected(match: ResolvedAnchor, selector: Selector, ctx: ResolveContext) -> bool:
@@ -333,7 +352,7 @@ def _registry_rung(anchor: Anchor, ctx: ResolveContext) -> Resolution | None:
             return Resolution(
                 anchor=anchor,
                 confidence="unresolved",
-                candidates=[_holder(match) for match in matches],
+                candidates=[_holder(match, ctx) for match in matches],
                 sources=sorted({match.source_path for match in matches}),
                 tried=["реестр"],
                 selector_missed=True,

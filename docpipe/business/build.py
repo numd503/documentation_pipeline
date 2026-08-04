@@ -361,6 +361,49 @@ def compose(
     return head + "".join(segment.text for segment in segments)
 
 
+def link_warnings(doc: BusinessDoc, resolutions: list[Resolution]) -> list[str]:
+    """Якоря документа, которые не дадут ссылки на техническую документацию.
+
+    Сборка молчит об этом сама по себе: «Точки входа» заполнены, «Где объявлено»
+    указывает на файл реестра — документ выглядит собранным. А «Реализация»
+    при этом пуста, и понять, почему, можно только прочитав её глазами и зная,
+    как устроен резолв. Три причины дают ровно один и тот же вид, и различить
+    их обязан инструмент, а не человек.
+    """
+    warnings: list[str] = []
+    for item in resolutions:
+        anchor = item.anchor
+
+        # `verify: false` — объявленная чужая зона, ссылки там не ждут.
+        # Неразрешённый якорь тоже молчит здесь: про него говорит `unresolved`
+        # в линте, а дублирование приучает пролистывать оба сообщения.
+        if not anchor.verify:
+            continue
+
+        if item.selector_missed:
+            assert anchor.only is not None
+            holders = ", ".join(item.candidates) or "никто"
+            warnings.append(
+                f"{doc.doc_path}: якорь {anchor.kind} {anchor.display} разрешён, но"
+                f" `only` ({anchor.only.display}) не совпал ни с одной записью —"
+                f" ссылки на технический документ не будет. Сейчас на якоре: {holders}"
+            )
+        elif item.confidence == "registry" and not item.targets:
+            warnings.append(
+                f"{doc.doc_path}: якорь {anchor.kind} {anchor.display} разрешён, но"
+                " в записи реестра не объявлен класс реализации — ссылки"
+                " на технический документ не будет"
+            )
+        elif item.targets and not any(target.node_id for target in item.targets):
+            missing = ", ".join(sorted({target.fqn for target in item.targets}))
+            warnings.append(
+                f"{doc.doc_path}: якорь {anchor.kind} {anchor.display} разрешён, но"
+                f" реализация не найдена среди узлов документации ({missing}) —"
+                " ссылки на технический документ не будет"
+            )
+    return warnings
+
+
 def backlinks(catalog: Catalog, ctx: ResolveContext) -> dict[str, list[tuple[str, str]]]:
     """Обратный индекс «узел документации → бизнес-документы».
 

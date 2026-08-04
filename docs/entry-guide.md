@@ -142,6 +142,35 @@ docpipe business lint   artifacts/doc-tree.json --config docpipe.yaml --root .
 `verify: false` запрещён (там нечего сужать). Оба нарушения — ошибка каталога
 при загрузке, документ в каталог не попадает.
 
+### Как узнать, чем сужать
+
+`anchors explain` по **паре**, а не по голому `ref` — иначе совпадут события
+всех списков сразу:
+
+```bash
+docpipe anchors explain artifacts/doc-tree.json "UserTasks/ItemAdded" \
+    --registries registries.yaml --root . --config docpipe.yaml
+```
+
+Когда записей несколько, по каждой печатается готовый селектор:
+
+```
+list_event  UserTasks/ItemAdded
+  команда по ownership.yaml: ML
+  assembly: Sbt.Cashflow.ML.EventReceivers
+  impl_fqn: Sbt.Cashflow.ML.EventReceivers.UserTasksAddedTriggerEventReceiver
+  сузить до этой записи:
+    only: {assembly: Sbt.Cashflow.ML.EventReceivers}
+    only: {team: ML}
+```
+
+Копируйте строку целиком. **Регистр имеет значение:** `ml` и `ML` — разные
+идентификаторы, и `only: {team: ml}` при объявленной `ML` не отберёт ничего.
+Про это скажет находка `unknown-team`, но лучше не доводить.
+
+`--config` (или `--ownership`) нужен, чтобы показалась команда: без правил
+владения печатается только вариант со сборкой.
+
 ### Когда `only` не нужен
 
 Если на якоре только ваша запись — не пишите его. Лишний селектор добавляет
@@ -161,6 +190,28 @@ docpipe business lint   artifacts/doc-tree.json --config docpipe.yaml --root .
 вовсе, находкой линта не становится и в хэш не входит. Чтобы запись попала
 в «Вне зоны ответственности», её надо положить в `upstream`.
 
+### Если ссылки на технический документ нет
+
+`business build` называет причину сам — предупреждением в stderr:
+
+```
+Внимание: business/…/quote.md: якорь list_event UserTasks/ItemAdded разрешён,
+но `only` (команда ml) не совпал ни с одной записью — ссылки на технический
+документ не будет. Сейчас на якоре: …PricingService (сборка …, команда ML)
+```
+
+Три причины дают одинаковый вид — пустой раздел «Реализация», — и различает
+их только это сообщение:
+
+| Что сказано | Что чинить |
+|---|---|
+| `only` не совпал | селектор в вашем документе |
+| в записи реестра не объявлен класс реализации | отображение полей в `registries.yaml` |
+| реализация не найдена среди узлов документации | `enrolled` в `docpipe.yaml` либо имя класса в реестре |
+
+Предупреждение не роняет прогон: документ собран, и текст в нём остаётся
+полезным.
+
 ## Пять ошибок, на которых спотыкаются
 
 1. **Имя класса вместо якоря.** `ref: UserTasksAddedTriggerEventReceiver`
@@ -171,7 +222,10 @@ docpipe business lint   artifacts/doc-tree.json --config docpipe.yaml --root .
 3. **Двоеточие в `JOBTITLE` без кавычек.** `ref: PM: Load limits` — YAML
    разберёт как вложенный словарь. Нужно `ref: 'PM: Load limits'`.
 4. **`version` числом.** `version: 2` — ошибка валидации; нужно `version: '2'`.
-5. **Реестры и манифест из разных корней.** `--root` один и тот же для `scan`
+5. **Разный регистр в `only.team` и `ownership.yaml`.** `ml` против `ML` —
+   два разных идентификатора; склеивать их инструмент не будет, иначе у одного
+   имени появилось бы два написания. Ловится проверкой `unknown-team`.
+6. **Реестры и манифест из разных корней.** `--root` один и тот же для `scan`
    и для `business build`: литеральная ступень (`kafka`, `http`, `type`) ищет
    по путям из манифеста относительно `--root`.
 
