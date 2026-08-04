@@ -84,7 +84,8 @@ docpipe business lint   artifacts/doc-tree.json --config docpipe.yaml       # ч
 docpipe business status artifacts/doc-tree.json --config docpipe.yaml       # что разошлось с реализацией
 ```
 
-Как вести бизнес-документацию — [`docs/business-layer.md`](docs/business-layer.md),
+Как вести бизнес-документацию — [`docs/business-layer.md`](docs/business-layer.md)
+и [`docs/entry-guide.md`](docs/entry-guide.md),
 образец каталога — [`business.example/`](business.example/).
 
 ## Как этим пользоваться
@@ -727,6 +728,8 @@ tests/fixtures/
 | [`docs/manifest.md`](docs/manifest.md) | справочник по манифесту: что лежит в `doc-tree.json` |
 | [`docs/materialize.md`](docs/materialize.md) | **справочник по шагу 2: устройство документа, статусы, команды, цикл работы** |
 | [`docs/business-layer.md`](docs/business-layer.md) | **справочник по бизнес-слою: каталог, якоря, `business_hash`, статусы, цикл работы аналитика** |
+| [`docs/entry-guide.md`](docs/entry-guide.md) | **как заполнять `entry`: от своего класса до рабочей ссылки, сужение общей точки входа** |
+| [`docs/ownership.md`](docs/ownership.md) | справочник по `ownership.yaml`: предикаты, приоритеты, диагностика |
 | [`business.example/`](business.example/) | минимальный каталог-образец: возможности, процесс, сущность |
 | [`templates/README.md`](templates/README.md) | как устроены скелеты и что переживает прогон |
 | [`docs/implementation-log.md`](docs/implementation-log.md) | журнал: что сделано, что проверено, где план разошёлся с реальностью |

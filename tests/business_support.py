@@ -13,6 +13,7 @@ import yaml
 
 from docpipe.business import build_context, doc_path_for
 from docpipe.business.resolve import ResolveContext
+from docpipe.materialize.ownership import Ownership, OwnershipRule, Team
 from docpipe.model import DocNode, Manifest, Member, ParserVersions, Relation, SourceSpan, Symbol
 from docpipe.registry import load_registries, read_registry, resolve_anchors
 from docpipe.registry.anchors import ResolvedAnchor
@@ -83,6 +84,7 @@ def nodes() -> list[DocNode]:
         node("Sbt.Sample.Steps.MapStep", params=["TIn", "TOut"]),
         node("Sbt.Sample.Models.SampleAggregate"),
         node("Sbt.Cashflow.ML.EventReceivers.UserTasksAddedTriggerSampleWorkflowEventReceiver"),
+        node("Sbt.Cashflow.Reports.EventReceivers.UserTasksAddedAuditEventReceiver"),
     ]
 
 
@@ -102,10 +104,31 @@ def registry_anchors(
     return resolve_anchors([read_registry(spec, tree) for spec in specs], resolved or manifest())
 
 
-def context(tree: Path = REGISTRIES_ROOT, resolved: Manifest | None = None) -> ResolveContext:
+def owners(rules: dict[str, list[str]]) -> Ownership:
+    """Правила владения по префиксу FQN: `{команда: [префиксы]}`.
+
+    Собирается объектами, а не через файл: предмет проверки — селектор
+    `only.team`, а не разбор YAML, который проверяется своими тестами.
+    """
+    return Ownership(
+        version="1",
+        ownership_version="test",
+        teams=[Team(id=team, title=team.upper()) for team in sorted(rules)],
+        rules=[
+            OwnershipRule(id=f"{team}.rule", team=team, priority=10, when={"fqn_prefix": prefixes})
+            for team, prefixes in sorted(rules.items())
+        ],
+    )
+
+
+def context(
+    tree: Path = REGISTRIES_ROOT,
+    resolved: Manifest | None = None,
+    ownership: Ownership | None = None,
+) -> ResolveContext:
     """Инвентаризация плюс манифест, свёрнутые в индексы."""
     resolved = resolved or manifest()
-    return build_context(registry_anchors(tree, resolved), resolved, root=tree)
+    return build_context(registry_anchors(tree, resolved), resolved, root=tree, ownership=ownership)
 
 
 def registries_copy(tmp_path: Path) -> Path:

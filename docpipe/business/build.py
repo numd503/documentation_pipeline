@@ -147,6 +147,17 @@ def _entries(resolutions: list[Resolution]) -> list[str]:
     for item in resolutions:
         where = ", ".join(item.sources) if item.sources else "не найдено"
         lines.append(f"| {cell(item.anchor.kind)} | {cell(item.anchor.display)} | {cell(where)} |")
+
+    # Сужение обязано быть видно в самом документе. Иначе читатель решит, что
+    # в «Реализации» перечислено всё, что вызывается по этому якорю, — а там
+    # только наша часть, и остальное описано в другом месте или нигде.
+    narrowed = [item.anchor for item in resolutions if item.anchor.only is not None]
+    if narrowed:
+        lines.append("")
+        for anchor in narrowed:
+            assert anchor.only is not None
+            lines.append(f"Сужено до своей части: {cell(anchor.display)} — {anchor.only.display}.")
+        lines.append("Остальные участники этих точек входа описаны не здесь.")
     return lines
 
 

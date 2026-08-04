@@ -604,6 +604,22 @@ def docs_status(
         raise typer.Exit(code=1)
 
 
+def _load_ownership_quietly(settings: DocpipeConfig) -> Ownership | None:
+    """Правила владения для селектора `only.team` на шаге 2.
+
+    Нечитаемые правила здесь не роняют прогон и не печатают ничего: шаг 2
+    материализует техническую документацию, и отказывать ему из-за файла,
+    нужного одному селектору бизнес-слоя, — наказание не за то. Скажет об этом
+    `business lint`, где это и есть предмет разговора.
+    """
+    if not settings.ownership:
+        return None
+    try:
+        return load_ownership(Path(settings.ownership))
+    except (OSError, ValueError):
+        return None
+
+
 def _with_business_links(
     context: BuildContext, manifest: Manifest, root: Path, settings: DocpipeConfig
 ) -> BuildContext:
@@ -624,7 +640,10 @@ def _with_business_links(
         specs = load_registries(Path(settings.registries))
         anchors = resolve_anchors([read_registry(spec, root) for spec in specs], manifest)
         catalog = load_catalog(root, settings.business_root)
-        links = backlinks(catalog, build_resolve_context(anchors, manifest, root=root))
+        ownership = _load_ownership_quietly(settings)
+        links = backlinks(
+            catalog, build_resolve_context(anchors, manifest, root=root, ownership=ownership)
+        )
     except (OSError, ValueError) as exc:
         typer.echo(f"Бизнес-каталог не прочитан, раздел не собран: {exc}", err=True)
         return context
@@ -1381,7 +1400,7 @@ def _business_context(
     return BusinessInputs(
         catalog=load_catalog(root, where),
         anchors=anchors,
-        ctx=build_resolve_context(anchors, manifest, root=root),
+        ctx=build_resolve_context(anchors, manifest, root=root, ownership=ownership),
         ownership=ownership,
         root=where,
         registry_errors=registry_errors,

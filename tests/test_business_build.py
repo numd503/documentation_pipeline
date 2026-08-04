@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from docpipe.business import load_catalog, resolve_all
 from docpipe.business.build import backlinks, cell, generated_block, relative
-from docpipe.business.model import Anchor, BusinessDoc
+from docpipe.business.model import Anchor, BusinessDoc, Selector
 from docpipe.business.resolve import ResolveContext
 from docpipe.cli import app
 from docpipe.materialize.ownership import Ownership, load_ownership
@@ -300,3 +300,32 @@ def test_materialize_adds_business_context_when_catalog_is_configured(tree: Path
     assert "### Бизнес-контекст" in text
     assert "Онлайн УФН" in text
     assert "\\" not in text
+
+
+def test_narrowing_is_visible_in_the_document(tree: Path) -> None:
+    """Сужение обязано быть видно читателю.
+
+    Без отметки он решит, что в «Реализации» перечислено всё, что вызывается
+    по этому якорю, — а там только наша часть, и остальное описано не здесь.
+    """
+    doc = scoring(tree)
+    narrowed = doc.model_copy(
+        update={
+            "entry": [
+                anchor.model_copy(
+                    update={"only": Selector(assembly="Sbt.Cashflow.ML.EventReceivers")}
+                )
+                if anchor.kind == "list_event"
+                else anchor
+                for anchor in doc.entry
+            ]
+        }
+    )
+    ctx = context(tree)
+    text = generated_block(narrowed, resolve_all(narrowed.anchors, ctx), ctx)
+    implementation = text.split("### Реализация")[1].split("### Участники")[0]
+
+    assert "Сужено до своей части" in text
+    assert "сборка Sbt.Cashflow.ML.EventReceivers" in text
+    assert "UserTasksAddedTriggerSampleWorkflowEventReceiver" in implementation
+    assert "UserTasksAddedAuditEventReceiver" not in implementation

@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from docpipe.business import load_catalog, resolve
-from docpipe.business.model import Anchor
+from docpipe.business import business_hash, load_catalog, resolve
+from docpipe.business.model import Anchor, Selector
 from docpipe.business.resolve import DATA_DISPATCHED, ResolveContext
 from docpipe.model import DocNode
-from tests.business_support import BUSINESS_ROOT, context, node
+from tests.business_support import BUSINESS_ROOT, context, node, owners
 
 
 @pytest.fixture
@@ -265,3 +265,91 @@ def test_resolution_is_stable_across_calls(ctx: ResolveContext) -> None:
     anchor = Anchor(kind="workflow", ref="SampleWorkflow", version="2")
 
     assert resolve(anchor, ctx).model_dump_json() == resolve(anchor, ctx).model_dump_json()
+
+
+# --------------------------------------------------------------------------------------
+# Селектор `only`: своя часть общей точки входа
+# --------------------------------------------------------------------------------------
+#
+# Якорь адресует контракт, а не класс, поэтому на паре «список + EventType»
+# он накрывает всех подписчиков. Селектор не заменяет якорь и не участвует
+# в поиске: он отбирает из уже найденного.
+
+EVENT = Anchor(kind="list_event", ref="ItemAdded", scope="UserTasks")
+ML = "Sbt.Cashflow.ML.EventReceivers"
+REPORTS = "Sbt.Cashflow.Reports.EventReceivers"
+
+
+def test_selector_by_assembly_narrows_to_one_handler(ctx: ResolveContext) -> None:
+    narrowed = resolve(EVENT.model_copy(update={"only": Selector(assembly=ML)}), ctx)
+
+    assert narrowed.confidence == "registry"
+    assert narrowed.facts["assemblies"] == [ML]
+    assert [target.fqn for target in narrowed.targets] == [
+        "Sbt.Cashflow.ML.EventReceivers.UserTasksAddedTriggerSampleWorkflowEventReceiver"
+    ]
+
+
+def test_selector_makes_a_foreign_handler_stop_changing_our_hash(ctx: ResolveContext) -> None:
+    """Ради этого селектор и заводится.
+
+    Без сужения состав участников события — общий факт, и подписка чужой
+    команды гонит наш документ в `drifted`. С сужением наша часть от чужой
+    правки не зависит.
+    """
+    wide = business_hash([resolve(EVENT, ctx)])
+    narrow = business_hash([resolve(EVENT.model_copy(update={"only": Selector(assembly=ML)}), ctx)])
+
+    assert wide != narrow
+    assert business_hash([resolve(EVENT, ctx)]) == wide
+
+
+def test_selector_by_team_uses_ownership_rules(ctx: ResolveContext) -> None:
+    """Команда считается по реализации: `@team` в реестре есть только
+    у grid-сервисов, у обработчиков событий его нет вовсе."""
+    rules = context(ownership=owners({"ml": [ML], "reports": [REPORTS]}))
+    narrowed = resolve(EVENT.model_copy(update={"only": Selector(team="ml")}), rules)
+
+    assert narrowed.confidence == "registry"
+    assert narrowed.facts["assemblies"] == [ML]
+
+
+def test_selector_by_team_without_ownership_does_not_pretend(ctx: ResolveContext) -> None:
+    """Без правил владения `only.team` не сужает ничего — и обязан сказать
+    это промахом, а не молча отдать пустой набор, неотличимый от «наших
+    записей на якоре нет»."""
+    missed = resolve(EVENT.model_copy(update={"only": Selector(team="ml")}), ctx)
+
+    assert missed.selector_missed
+    assert missed.confidence == "unresolved"
+
+
+def test_selector_miss_names_who_holds_the_anchor(ctx: ResolveContext) -> None:
+    """Промах чинится одной строкой, но только если видно, чем её заменить."""
+    missed = resolve(EVENT.model_copy(update={"only": Selector(assembly="Sbt.Nobody")}), ctx)
+
+    assert missed.selector_missed
+    assert any(ML in candidate for candidate in missed.candidates)
+    assert any("сборка" in candidate for candidate in missed.candidates)
+
+
+def test_selector_miss_is_not_the_same_as_a_missing_anchor(ctx: ResolveContext) -> None:
+    """Разные состояния и разные починки: у одного правится документ,
+    у другого — исчезла точка входа."""
+    gone = resolve(Anchor(kind="list_event", ref="NoSuchEvent", scope="UserTasks"), ctx)
+    missed = resolve(EVENT.model_copy(update={"only": Selector(assembly="Sbt.Nobody")}), ctx)
+
+    assert not gone.selector_missed
+    assert missed.selector_missed
+
+
+def test_selector_narrows_before_ambiguity_is_decided(ctx: ResolveContext) -> None:
+    """Сужение идёт ДО проверки на неоднозначность.
+
+    Иначе чужой подписчик на общей паре объявлялся бы неоднозначностью
+    в нашем документе, хотя наша запись там ровно одна.
+    """
+    narrowed = resolve(EVENT.model_copy(update={"only": Selector(assembly=REPORTS)}), ctx)
+
+    assert not narrowed.candidates
+    assert narrowed.confidence == "registry"

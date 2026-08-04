@@ -112,6 +112,28 @@ def _check_anchors(doc: BusinessDoc, where: str) -> list[str]:
         if anchor.kind not in ANCHOR_KINDS:
             known = ", ".join(sorted(ANCHOR_KINDS))
             errors.append(f"{where}: неизвестный вид якоря `{anchor.kind}`; известны: {known}")
+
+        # Пустой и двойной селектор проверяются при загрузке, а не при первом
+        # применении: пустой сузил бы якорь в ничто, и выглядело бы это как
+        # «точка входа исчезла», а двойной — это два источника истины о том,
+        # какая часть общей точки входа наша.
+        if anchor.only is not None:
+            chosen = [name for name in ("assembly", "team") if getattr(anchor.only, name)]
+            if not chosen:
+                errors.append(
+                    f"{where}: якорь `{anchor.display}` объявляет пустой `only`;"
+                    " нужен `assembly` или `team`"
+                )
+            elif len(chosen) > 1:
+                errors.append(
+                    f"{where}: якорь `{anchor.display}` объявляет `only` сразу с"
+                    f" {' и '.join(chosen)}; нужен ровно один"
+                )
+            if not anchor.verify:
+                errors.append(
+                    f"{where}: якорь `{anchor.display}` с `verify: false` не разрешается"
+                    " вовсе, поэтому сужать в нём нечего"
+                )
     return errors
 
 
