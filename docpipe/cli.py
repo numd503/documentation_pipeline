@@ -10,7 +10,7 @@ import typer
 from docpipe import __version__
 from docpipe.business import Catalog, doc_path_for, load_catalog
 from docpipe.business import build_context as build_resolve_context
-from docpipe.business.build import backlinks, compose
+from docpipe.business.build import backlinks, compose, entry_snippet
 from docpipe.business.catalog import ID_RE
 from docpipe.business.lint import CHECKS as LINT_CHECKS
 from docpipe.business.lint import format_report as format_lint_report
@@ -63,8 +63,10 @@ from docpipe.registry.anchors import (
     ResolvedAnchor,
     counts,
     filter_anchors,
+    find_by_implementation,
     format_anchors,
     format_explain,
+    format_which,
     resolve_anchors,
 )
 from docpipe.stats import (
@@ -988,6 +990,59 @@ def anchors_explain(
         raise typer.Exit(code=1)
 
     typer.echo("\n\n".join(format_explain(anchor) for anchor in found))
+
+
+@anchors_app.command("which")
+def anchors_which(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    query: Annotated[str, typer.Argument(help="FQN, `doc_path` или простое имя типа.")],
+    registries: Annotated[Path, typer.Option("--registries", help="Описание реестров.")],
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+    output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
+) -> None:
+    """Какими якорями вызывается этот тип.
+
+    Обратное к `anchors list`: тот идёт от реестра к коду, а аналитик знает
+    свой класс и не знает, какой строкой его вызывают. Печатается готовый
+    кусок `entry` — строка показа якоря собрана для человека и обратно
+    не разбирается, поэтому собирать её глазами в поля никто не обязан.
+
+    Ищутся и вложенные записи: команда чаще владеет шагом workflow, чем
+    процессом целиком, а шаги на верхний уровень не поднимаются.
+    """
+    if output_format not in ("text", "json"):
+        typer.echo(f"Неизвестный формат: {output_format}. Известны: text, json", err=True)
+        raise typer.Exit(code=2)
+
+    anchors, errors = _load_anchors(manifest_path, registries, root)
+    found = find_by_implementation(anchors, query)
+
+    if output_format == "json":
+        typer.echo(
+            stable_json_dumps(
+                {
+                    "query": query,
+                    "matches": [
+                        {
+                            **match.model_dump(mode="json"),
+                            "entry_snippet": entry_snippet(match),
+                        }
+                        for match in found
+                    ],
+                }
+            )
+        )
+    else:
+        typer.echo(format_which(found, query, [entry_snippet(m) for m in found]))
+
+    for error in errors:
+        typer.echo(f"Замечание при чтении реестров: {error}", err=True)
+
+    # Отсутствие якорей — не ошибка пользователя и не поломка: у большей части
+    # кода точки входа нет вовсе. Код 1 здесь означал бы, что «не вызывается
+    # ниоткуда» надо чинить, а это нормальное состояние для почти всего дерева.
+    if not found:
+        raise typer.Exit(code=0)
 
 
 business_app = typer.Typer(

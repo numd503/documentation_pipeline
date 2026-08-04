@@ -199,6 +199,85 @@ def resolve_anchors(results: list[RegistryResult], manifest: Manifest) -> list[R
     return sorted(anchors, key=lambda a: (a.kind, a.scope or "", a.ref, a.version or ""))
 
 
+class AnchorMatch(_Base):
+    """Якорь, найденный по реализации, и то, чем именно он совпал.
+
+    `scope` берётся у родителя, а не у самой записи: шаги workflow и поля
+    списка на верхний уровень не поднимаются, но искать по ним надо — команда
+    чаще владеет шагом, чем процессом целиком.
+
+    `siblings` — остальные записи того же якоря. У пары «список + EventType»
+    подписчиков бывает несколько, и увидеть их в момент выбора якоря важнее,
+    чем потом объяснять, откуда в документе чужой класс.
+    """
+
+    anchor: ResolvedAnchor
+    scope: str | None
+    matched_field: str
+    matched_fqn: str
+    siblings: list[ResolvedAnchor] = Field(default_factory=list)
+
+    @property
+    def display(self) -> str:
+        text = f"{self.scope}/{self.anchor.ref}" if self.scope else self.anchor.ref
+        return f"{text}@{self.anchor.version}" if self.anchor.version else text
+
+
+def _matches(anchor: ResolvedAnchor, query: str) -> tuple[str, str] | None:
+    """Совпадение записи с запросом: FQN, `doc_path` или простое имя типа.
+
+    Простое имя разрешено намеренно: человек помнит `PricingService`, а не
+    полное имя с namespace. Двусмысленность при этом не скрывается — совпавших
+    печатается столько, сколько нашлось.
+    """
+    for target in anchor.targets:
+        if query in (target.fqn, target.doc_path, target.fqn.rsplit(".", 1)[-1]):
+            return target.field, target.fqn
+    return None
+
+
+def find_by_implementation(anchors: list[ResolvedAnchor], query: str) -> list[AnchorMatch]:
+    """Обратный поиск: от типа к якорям, которые на него ссылаются.
+
+    Направление «реестр → код» даёт `anchors list`, но аналитик начинает
+    с другого конца: он знает свой класс и не знает, какой строкой его
+    вызывают. Без этой команды остаётся глазами просматривать перечень
+    на сотни записей, а данные для ответа уже посчитаны.
+    """
+    found: list[AnchorMatch] = []
+
+    # Соседи ищутся в том же наборе, откуда пришёл кандидат: у поднятого
+    # обработчика события это верхний уровень, у шага workflow — дети своего
+    # workflow. Единый перебор по `anchors` не нашёл бы вторых вовсе.
+    pools: list[tuple[list[ResolvedAnchor], str | None]] = [(anchors, None)]
+    pools += [(anchor.children, anchor.ref) for anchor in anchors if anchor.children]
+
+    for pool, parent_ref in pools:
+        for candidate in pool:
+            matched = _matches(candidate, query)
+            if matched is None:
+                continue
+            scope = parent_ref if parent_ref is not None else candidate.scope
+            siblings = [
+                other
+                for other in pool
+                if other is not candidate
+                and other.kind == candidate.kind
+                and other.ref == candidate.ref
+            ]
+            found.append(
+                AnchorMatch(
+                    anchor=candidate,
+                    scope=scope,
+                    matched_field=matched[0],
+                    matched_fqn=matched[1],
+                    siblings=siblings,
+                )
+            )
+
+    return sorted(found, key=lambda m: (m.anchor.kind, m.scope or "", m.anchor.ref, m.matched_fqn))
+
+
 def filter_anchors(
     anchors: list[ResolvedAnchor], kinds: list[str], teams: list[str]
 ) -> list[ResolvedAnchor]:
@@ -213,6 +292,63 @@ def filter_anchors(
 
 def counts(anchors: list[ResolvedAnchor]) -> dict[str, int]:
     return dict(sorted(Counter(anchor.kind for anchor in anchors).items()))
+
+
+def format_which(matches: list[AnchorMatch], query: str, snippets: list[str]) -> str:
+    """Отчёт обратного поиска.
+
+    Готовые куски `entry` приходят снаружи по одному на совпадение: формат
+    документа — знание бизнес-слоя, и реестр о нём знать не должен, иначе
+    зависимость пойдёт в обратную сторону.
+    """
+    if not matches:
+        return (
+            f"Якорей на {query} не найдено.\n"
+            "  Это нормальное состояние: точка входа есть не у всякого типа.\n"
+            "  Если тип точно вызывается по данным — проверьте, описан ли\n"
+            "  соответствующий реестр в registries.yaml."
+        )
+
+    # Один и тот же якорь, объявленный в нескольких файлах, — это версии
+    # workflow. Сниппет для такого шага вставлять нельзя: без `version` он
+    # неоднозначен, а `version` у записи шага нет. Молча напечатать его
+    # значило бы выдать заведомо нерабочий кусок за готовый к вставке.
+    seen = Counter((m.anchor.kind, m.scope or "", m.anchor.ref) for m in matches)
+
+    lines = [f"Найдено якорей: {len(matches)}"]
+    for match, snippet in zip(matches, snippets, strict=True):
+        lines += [
+            "",
+            f"{match.anchor.kind}  {match.display}",
+            f"  реестр:  {match.anchor.registry}",
+            f"  файл:    {match.anchor.source_path or '—'}",
+            f"  совпало: {match.matched_field} = {match.matched_fqn}",
+        ]
+        if match.anchor.team:
+            lines.append(f"  команда: {match.anchor.team}")
+        for sibling in match.siblings:
+            other = sibling.fields.get("impl_fqn") or sibling.fields.get("contract_fqn") or "—"
+            assembly = sibling.fields.get("assembly")
+            suffix = f"  (сборка {assembly})" if assembly else ""
+            lines.append(f"  на том же якоре ещё: {other}{suffix}")
+        if match.siblings:
+            # Сказать это надо в момент выбора якоря, а не когда чужой класс
+            # уже появился в собранном документе: якорь адресует контракт,
+            # а не подписчика, и разделить их нельзя.
+            lines.append("  якорь общий на всех: он адресует контракт, а не класс")
+
+        if seen[(match.anchor.kind, match.scope or "", match.anchor.ref)] > 1:
+            lines += [
+                "  ОСТОРОЖНО: такой якорь объявлен в нескольких файлах —"
+                " это разные версии workflow.",
+                "  Сниппет ниже неоднозначен: `version` у записи шага нет, и линт назовёт его",
+                "  `ambiguous-version`. Сошлитесь на workflow целиком"
+                " с `version` либо опишите шаг прозой.",
+            ]
+
+        lines += ["", *snippet.rstrip("\n").splitlines()]
+
+    return "\n".join(lines)
 
 
 def format_anchors(anchors: list[ResolvedAnchor], errors: list[str]) -> str:

@@ -68,7 +68,6 @@ class Anchor(_Base):
     ref: str
     scope: str | None = None
     version: str | None = None
-    member: str | None = None
     owner: str | None = None
     verify: bool = True
     note: str | None = None

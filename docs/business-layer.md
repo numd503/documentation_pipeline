@@ -151,7 +151,9 @@ cap.<домен>[.<под>]       возможность  cap.valuation
 | `http` | маршрут | — | эндпоинты манифеста |
 | `type` | FQN | — | узлы документации |
 
-Поля якоря: `kind`, `ref`, `scope`, `version`, `member`, `owner`, `verify`, `note`.
+Поля якоря: `kind`, `ref`, `scope`, `version`, `owner`, `verify`, `note`.
+Модель — `extra="forbid"`, поэтому лишний ключ во front matter не игнорируется,
+а называется ошибкой каталога.
 
 **`verify: false` — объявленная граница зоны ответственности.** Такой якорь
 не разрешается вовсе, находкой линта не становится и в `business_hash` не входит.
@@ -176,6 +178,40 @@ cap.<домен>[.<под>]       возможность  cap.valuation
 
 Аналитик пишет `table` и `kafka` — слова предметной области; реестр объявляет
 `list` и `kafka_topic` — слова платформы. Мост между наборами внутри инструмента.
+
+### Обратный поиск: от типа к якорю
+
+`anchors list` идёт от реестра к коду. Аналитик чаще начинает с другого конца:
+он знает свой класс и не знает, какой строкой его вызывают. На это отвечает
+`anchors which` — по FQN, `doc_path` или простому имени типа:
+
+```bash
+docpipe anchors which artifacts/doc-tree.json UserTasksAddedTriggerEventReceiver \
+    --registries registries.yaml --root .
+```
+
+```
+list_event  UserTasks/ItemAdded
+  совпало: impl_fqn = Sbt.Cashflow.ML.EventReceivers.UserTasksAddedTriggerEventReceiver
+  на том же якоре ещё: Sbt.Cashflow.Reports.EventReceivers.AuditEventReceiver
+  якорь общий на всех: он адресует контракт, а не класс
+
+  entry:
+  - kind: list_event
+    ref: ItemAdded
+    scope: UserTasks
+```
+
+Печатается **готовый кусок `entry`**, а не описание того, что надо вставить:
+строка показа собрана для человека и обратно не разбирается, поэтому собирать
+её глазами в поля никто не обязан. Вид в сниппете — на языке каталога
+(`table`, а не `list`).
+
+Ищутся и вложенные записи: команда чаще владеет шагом workflow, чем процессом
+целиком, а шаги на верхний уровень не поднимаются.
+
+Отсутствие якорей — код **0**: точка входа есть не у всякого типа, и «ниоткуда
+не вызывается» — нормальное состояние почти всего дерева.
 
 ## Разрешение якоря
 
@@ -273,6 +309,8 @@ cap.<домен>[.<под>]       возможность  cap.valuation
 docpipe anchors list MANIFEST --registries FILE [--root PATH]
                               [--kind K] [--team T] [--format text|json]
 docpipe anchors explain MANIFEST REF --registries FILE
+docpipe anchors which   MANIFEST QUERY --registries FILE [--root PATH]
+                              [--format text|json]
 
 docpipe business new ID --title "…" [--root PATH] [--config FILE]
                         [--business-root DIR] [--templates DIR]

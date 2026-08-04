@@ -17,9 +17,15 @@ from typing import Any
 import yaml
 
 from docpipe.business.model import Anchor, BusinessDoc, Catalog
-from docpipe.business.resolve import Resolution, ResolveContext, resolve_all
+from docpipe.business.resolve import (
+    ANCHOR_KIND_BY_REGISTRY,
+    Resolution,
+    ResolveContext,
+    resolve_all,
+)
 from docpipe.materialize.document import MANAGED_END, MANAGED_START, parse_document
 from docpipe.materialize.ownership import Ownership, owner_of
+from docpipe.registry.anchors import AnchorMatch
 
 NOT_OWNED = "(не задан)"
 
@@ -98,6 +104,34 @@ def front_matter(
         mapping, allow_unicode=True, sort_keys=False, default_flow_style=False, width=10**6
     )
     return f"---\n{dumped}---\n"
+
+
+def entry_snippet(match: AnchorMatch) -> str:
+    """Готовый кусок `entry` для найденного якоря.
+
+    Печатается ровно то, что вставляется в документ, а не описание того, что
+    надо вставить. Половина вопросов при настройке — «что именно из вывода
+    переносить»: строка показа собрана для человека и обратно **не
+    разбирается**, поэтому собирать её глазами обратно в поля никто не обязан.
+    """
+    kind = ANCHOR_KIND_BY_REGISTRY.get(match.anchor.kind, match.anchor.kind)
+
+    # Порядок ключей — как в `Anchor`, потому что `front_matter` пересоберёт
+    # проекцию через `model_dump`. Иначе первый же `business build` переставил
+    # бы строки, и человек решил бы, что вставил что-то не то.
+    item: dict[str, Any] = {"kind": kind, "ref": match.anchor.ref}
+    if match.scope:
+        item["scope"] = match.scope
+    if match.anchor.version:
+        item["version"] = match.anchor.version
+
+    dumped = yaml.safe_dump(
+        [item], allow_unicode=True, sort_keys=False, default_flow_style=False, width=10**6
+    )
+    # Отступ уровня `docpipe:` уже здесь: сниппет вставляется в front matter
+    # как есть, и требовать от человека досчитать пробелы — это ещё один шаг,
+    # на котором ошибаются.
+    return "  entry:\n" + "".join(f"  {line}\n" for line in dumped.strip().splitlines())
 
 
 # --------------------------------------------------------------------------------------

@@ -9,12 +9,17 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
+from docpipe.business.build import entry_snippet
+from docpipe.business.model import Anchor
+from docpipe.business.resolve import ANCHOR_KIND_BY_REGISTRY, resolve
 from docpipe.cli import app
 from docpipe.model import DocNode, Manifest, ParserVersions, Relation, Symbol
 from docpipe.registry import load_registries, read_registry, resolve_anchors
-from docpipe.registry.anchors import ENTRY_KINDS, ResolvedAnchor
+from docpipe.registry.anchors import ENTRY_KINDS, ResolvedAnchor, find_by_implementation
+from tests.business_support import context
 
 ROOT = Path("tests/fixtures/registries")
 REGISTRIES = ROOT / "registries.yaml"
@@ -376,3 +381,161 @@ def test_broken_registries_is_user_error(manifest_file: Path, tmp_path: Path) ->
     )
 
     assert result.exit_code == 2
+
+
+# --------------------------------------------------------------------------------------
+# Обратный поиск: от типа к якорю
+# --------------------------------------------------------------------------------------
+#
+# Направление «реестр → код» даёт `anchors list`, но аналитик начинает
+# с другого конца: он знает свой класс и не знает, какой строкой его вызывают.
+
+
+def _which(manifest_file: Path, query: str, *extra: str) -> object:
+    return runner.invoke(
+        app,
+        [
+            "anchors",
+            "which",
+            str(manifest_file),
+            query,
+            "--registries",
+            str(REGISTRIES),
+            "--root",
+            str(ROOT),
+        ]
+        + list(extra),
+    )
+
+
+def test_which_finds_anchor_by_fqn(anchors: list[ResolvedAnchor]) -> None:
+    found = find_by_implementation(
+        anchors, "Sbt.Cashflow.ML.EventReceivers.UserTasksAddedTriggerSampleWorkflowEventReceiver"
+    )
+
+    assert [(m.anchor.kind, m.scope, m.anchor.ref) for m in found] == [
+        ("list_event", "UserTasks", "ItemAdded")
+    ]
+    assert found[0].matched_field == "impl_fqn"
+
+
+def test_which_finds_anchor_by_simple_name(anchors: list[ResolvedAnchor]) -> None:
+    """Человек помнит имя класса, а не полное имя с namespace."""
+    found = find_by_implementation(anchors, "UserTasksAddedTriggerSampleWorkflowEventReceiver")
+
+    assert [m.anchor.ref for m in found] == ["ItemAdded"]
+
+
+def test_which_finds_anchor_by_doc_path(anchors: list[ResolvedAnchor]) -> None:
+    """Отправной точкой бывает и документ шага 2: человек читает его и хочет
+    знать, каким процессом эта штука запускается."""
+    found = find_by_implementation(
+        anchors, "docs/modules/App/services/usertasksaddedtriggersampleworkfloweventreceiver.md"
+    )
+
+    assert [m.anchor.ref for m in found] == ["ItemAdded"]
+
+
+def test_which_finds_nested_workflow_step(anchors: list[ResolvedAnchor]) -> None:
+    """Шаг workflow на верхний уровень не поднимается, а команда чаще владеет
+    шагом, чем процессом целиком. Не искать по детям значило бы не отвечать
+    на самый частый вопрос."""
+    found = find_by_implementation(anchors, "Sbt.Sample.Steps.ScoreStep")
+
+    assert [(m.anchor.kind, m.scope, m.anchor.ref) for m in found] == [
+        ("workflow_step", "SampleWorkflow", "ScoreStep"),
+        ("workflow_step", "SampleWorkflow", "ScoreStep"),
+    ]
+    # Версий у workflow две, и обе объявляют этот шаг: показываются обе,
+    # потому что выбор версии — решение автора документа, а не инструмента.
+    assert {m.anchor.source_path for m in found} == {
+        "deployment/Data/Items/Workflows/Sample.v1.json",
+        "deployment/Data/Items/Workflows/Sample.v2.json",
+    }
+
+
+def test_which_names_the_other_holders_of_the_same_anchor(anchors: list[ResolvedAnchor]) -> None:
+    """Про общий якорь надо сказать в момент выбора, а не когда чужой класс
+    уже появился в собранном документе."""
+    found = find_by_implementation(
+        anchors, "Sbt.Cashflow.ML.EventReceivers.UserTasksAddedTriggerSampleWorkflowEventReceiver"
+    )
+    siblings = found[0].siblings
+
+    assert [s.fields["impl_fqn"] for s in siblings] == [
+        "Sbt.Cashflow.Reports.EventReceivers.UserTasksAddedAuditEventReceiver"
+    ]
+
+
+def test_which_prints_a_snippet_that_actually_resolves(anchors: list[ResolvedAnchor]) -> None:
+    """Печатается не описание того, что надо вставить, а то, что вставляется.
+
+    Проверяется кругом: сниппет разбирается как YAML, превращается в якорь
+    и разрешается реестром. Иначе команда учила бы форме, которая не работает.
+    """
+    found = find_by_implementation(
+        anchors, "Sbt.Cashflow.ML.EventReceivers.UserTasksAddedTriggerSampleWorkflowEventReceiver"
+    )
+    parsed = yaml.safe_load(entry_snippet(found[0]))
+
+    anchor = Anchor.model_validate(parsed["entry"][0])
+    assert anchor == Anchor(kind="list_event", ref="ItemAdded", scope="UserTasks")
+    assert resolve(anchor, context()).confidence == "registry"
+
+
+def test_which_warns_when_the_step_anchor_is_ambiguous(manifest_file: Path) -> None:
+    """Шаг объявлен в двух версиях workflow. Сниппет для него неоднозначен:
+    `version` у записи шага нет, и вставленный якорь даст `ambiguous-version`.
+
+    Напечатать его молча значило бы выдать заведомо нерабочий кусок
+    за готовый к вставке — ровно та ошибка, которую команда должна убирать.
+    """
+    result = _which(manifest_file, "Sbt.Sample.Steps.ScoreStep")
+
+    assert result.exit_code == 0
+    assert "ОСТОРОЖНО" in result.stdout
+    assert "ambiguous-version" in result.stdout
+
+
+def test_which_snippet_uses_the_dictionary_of_the_catalog(anchors: list[ResolvedAnchor]) -> None:
+    """Реестр объявляет `list`, аналитик пишет `table`. Сниппет обязан быть
+    на языке каталога, иначе вставленное никогда не разрешится."""
+    found = find_by_implementation(anchors, "Sbt.Cashflow.Grid.Services.CalcResult.CalcResult")
+    parsed = yaml.safe_load(entry_snippet(found[0]))
+
+    assert parsed["entry"][0]["kind"] == "grid_service"
+    assert ANCHOR_KIND_BY_REGISTRY["list"] == "table"
+
+
+def test_which_cli_prints_snippet_and_siblings(manifest_file: Path) -> None:
+    result = _which(manifest_file, "UserTasksAddedTriggerSampleWorkflowEventReceiver")
+
+    assert result.exit_code == 0
+    assert "list_event  UserTasks/ItemAdded" in result.stdout
+    assert "UserTasksAddedAuditEventReceiver" in result.stdout
+    assert "  entry:\n  - kind: list_event\n    ref: ItemAdded\n    scope: UserTasks" in (
+        result.stdout
+    )
+
+
+def test_which_exits_zero_when_nothing_found(manifest_file: Path) -> None:
+    """«Ниоткуда не вызывается» — нормальное состояние почти всего дерева,
+    а не то, что надо чинить. Код 1 здесь означал бы обратное."""
+    result = _which(manifest_file, "Sbt.Nothing.Calls.This")
+
+    assert result.exit_code == 0
+    assert "не найдено" in result.stdout
+
+
+def test_which_json_carries_the_snippet(manifest_file: Path) -> None:
+    result = _which(manifest_file, "Sbt.Sample.Steps.ScoreStep", "--format", "json")
+    payload = json.loads(result.stdout)
+
+    assert payload["query"] == "Sbt.Sample.Steps.ScoreStep"
+    assert payload["matches"][0]["entry_snippet"].startswith("  entry:")
+    again = _which(manifest_file, "Sbt.Sample.Steps.ScoreStep", "--format", "json")
+    assert result.stdout == again.stdout
+
+
+def test_which_rejects_unknown_format(manifest_file: Path) -> None:
+    assert _which(manifest_file, "X", "--format", "yaml").exit_code == 2
