@@ -47,7 +47,7 @@ artifacts/doc-tree.run.json   сидкар — всё про конкретны�
   "name": "Sample.Pricing.Api",
   "csproj": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
   "target_frameworks": ["net8.0"],
-  "project_references": ["module:src/Sample.Common/Sample.Common.csproj"],
+  "project_references": ["src/Sample.Common/Sample.Common.csproj"],
   "package_references": ["Microsoft.AspNetCore.OpenApi"],
   "domain": "pricing",
   "enrolled": true
@@ -57,6 +57,10 @@ artifacts/doc-tree.run.json   сидкар — всё про конкретны�
 - **`id` строится от пути, а не от имени.** Имена проектов не уникальны — в ABP
   39 повторов;
 - `name` — имя файла `.csproj` без расширения. Именно оно попадает в `doc_path`;
+- **`project_references` — пути к `.csproj`, а не `id`.** Сравнивать их нужно
+  с полем `csproj` другого модуля; сопоставление с `id` даёт ноль совпадений
+  на любом репозитории и выглядит как «граф модулей развалился». Неразрешённая
+  ссылка остаётся сырым текстом из `Include` (см. `csproj.resolve_references`);
 - `domain` — смысловая группировка из `domains` в `docpipe.yaml`, глоб по пути
   `.csproj`. Без совпадения равен `name`. На сам docpipe не влияет: это метаданные
   для навигации на шаге 2;
