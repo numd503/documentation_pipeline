@@ -5,13 +5,34 @@
 из него документировать*. Первое переносится между проектами, второе нет.
 """
 
-from pathlib import Path
+import posixpath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DocLayout = Literal["kind-first", "module-first"]
+
+
+def _repo_relative(value: str, field: str) -> str:
+    """Проверить, что путь репо-относительный и POSIX, и убрать лишние слэши.
+
+    Значения этих полей попадают в `doc_path` каждого узла манифеста, а тот
+    обязан быть репо-относительным с POSIX-разделителями даже на Windows.
+    Абсолютный путь или `..` дал бы манифест, который невозможно перенести
+    между машинами, и обнаружилось бы это не здесь, а на чужом компьютере.
+    """
+    if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute():
+        raise ValueError(
+            f"{field}: путь обязан быть относительным корня репозитория, дано {value!r}"
+        )
+    if "\\" in value:
+        raise ValueError(f"{field}: разделитель — только `/`, даже на Windows; дано {value!r}")
+    parts = [part for part in value.split("/") if part not in ("", ".")]
+    if ".." in parts:
+        raise ValueError(f"{field}: выход за корень (`..`) запрещён, дано {value!r}")
+    return "/".join(parts)
 
 
 class DocpipeConfig(BaseModel):
@@ -42,6 +63,16 @@ class DocpipeConfig(BaseModel):
     templates: str = "templates"
     ownership: str | None = None
     docs_root: str = "docs"
+
+    # Каталог технической документации ВНУТРИ `docs_root`, а не путь целиком.
+    # Пара вместо одного значения выбрана ради инварианта «то, что пишет
+    # `materialize`, лежит там, где ищет `docs status`»: он держится структурно
+    # и нарушить его нельзя. Одним значением (`modules_root: "other/modules"`
+    # при `docs_root: "docs"`) прогон писал бы документы туда, где их никто
+    # не ищет: каждый навсегда остался бы `missing` и переписывался бы заново
+    # на каждом прогоне, молча.
+    modules_dir: str = "modules"
+
     docs_scan_exclude: list[str] = Field(default_factory=list)
 
     # Раскладка документов. Обе — перестановка одной и той же тройки
@@ -70,6 +101,26 @@ class DocpipeConfig(BaseModel):
     # правка `doc_path` в каждом документе.
     registries: str | None = None
     business_root: str = "business"
+
+    # Шаг 3. Куда `docpipe worklist` кладёт очередь для внешнего исполнителя.
+    # Путь относительно текущего каталога, как `out`, а не относительно `--root`:
+    # очередь — артефакт прогона, а не часть документации, и на АС CF она лежит
+    # рядом с манифестом, вне дерева документов.
+    worklist: str = "artifacts/doc-worklist.json"
+
+    @field_validator("docs_root", "modules_dir", "business_root")
+    @classmethod
+    def _check_repo_relative(cls, value: str, info: Any) -> str:
+        return _repo_relative(value, str(info.field_name))
+
+    @property
+    def modules_root(self) -> str:
+        """Префикс `doc_path` технических документов.
+
+        Собирается здесь, а не в `tree.py`: пара полей и вывод из неё обязаны
+        жить в одном месте, иначе шаг 1 и шаг 2 однажды соберут её по-разному.
+        """
+        return posixpath.join(self.docs_root, self.modules_dir).strip("/")
 
 
 def load_config(path: Path | None) -> DocpipeConfig:

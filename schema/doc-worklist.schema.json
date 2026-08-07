@@ -1,0 +1,270 @@
+{
+  "$defs": {
+    "EntryChanges": {
+      "additionalProperties": false,
+      "description": "Что изменилось — чтобы исполнитель не перечитывал манифест.",
+      "properties": {
+        "kind_changed": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kind Changed"
+        },
+        "members_added": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Members Added",
+          "type": "array"
+        },
+        "members_removed": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Members Removed",
+          "type": "array"
+        },
+        "relocated_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relocated From"
+        }
+      },
+      "title": "EntryChanges",
+      "type": "object"
+    },
+    "SourceSpan": {
+      "additionalProperties": false,
+      "description": "Диапазон строк в файле. Пути репо-относительные POSIX, строки 1-based.",
+      "properties": {
+        "end": {
+          "title": "End",
+          "type": "integer"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "start": {
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "start",
+        "end"
+      ],
+      "title": "SourceSpan",
+      "type": "object"
+    },
+    "WorklistEntry": {
+      "additionalProperties": false,
+      "description": "Одна запись очереди.\n\nСобирается **только** через `document_json`, поэтому совпадает с записью\n`docs status --format json` поле в поле. `extra=\"forbid\"` держит это\nсвойство: новое поле там уронит валидацию здесь, и о расхождении станет\nизвестно на тестах, а не у потребителя.",
+      "properties": {
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "broken_links": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Broken Links",
+          "type": "array"
+        },
+        "changes": {
+          "$ref": "#/$defs/EntryChanges"
+        },
+        "doc_path": {
+          "title": "Doc Path",
+          "type": "string"
+        },
+        "empty_sections": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Empty Sections",
+          "type": "array"
+        },
+        "example_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Example Ref"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Node Id"
+        },
+        "orphan_sections": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Orphan Sections",
+          "type": "array"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/SourceSpan"
+          },
+          "title": "Sources",
+          "type": "array"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "team": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Team"
+        },
+        "template_ref": {
+          "title": "Template Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "reason",
+        "status",
+        "doc_path",
+        "node_id",
+        "kind",
+        "template_ref",
+        "example_ref",
+        "team"
+      ],
+      "title": "WorklistEntry",
+      "type": "object"
+    },
+    "WorklistTotals": {
+      "additionalProperties": false,
+      "description": "Без этой тройки внешний модуль не отличит «работы нет» от «работу отфильтровали».",
+      "properties": {
+        "documents": {
+          "title": "Documents",
+          "type": "integer"
+        },
+        "selected": {
+          "title": "Selected",
+          "type": "integer"
+        },
+        "truncated": {
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "documents",
+        "selected",
+        "truncated"
+      ],
+      "title": "WorklistTotals",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Файл очереди целиком.",
+  "properties": {
+    "counts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Counts",
+      "type": "object"
+    },
+    "docs_root": {
+      "title": "Docs Root",
+      "type": "string"
+    },
+    "documents": {
+      "items": {
+        "$ref": "#/$defs/WorklistEntry"
+      },
+      "title": "Documents",
+      "type": "array"
+    },
+    "manifest_partial": {
+      "title": "Manifest Partial",
+      "type": "boolean"
+    },
+    "manifest_sha256": {
+      "title": "Manifest Sha256",
+      "type": "string"
+    },
+    "modules_root": {
+      "title": "Modules Root",
+      "type": "string"
+    },
+    "needs_materialize": {
+      "title": "Needs Materialize",
+      "type": "boolean"
+    },
+    "ruleset_version": {
+      "title": "Ruleset Version",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "totals": {
+      "$ref": "#/$defs/WorklistTotals"
+    }
+  },
+  "required": [
+    "docs_root",
+    "modules_root",
+    "ruleset_version",
+    "manifest_sha256",
+    "manifest_partial",
+    "needs_materialize",
+    "counts",
+    "totals"
+  ],
+  "title": "Worklist",
+  "type": "object"
+}

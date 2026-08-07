@@ -461,9 +461,11 @@ docpipe docs owners MANIFEST [--explain NODE] [--lint] [--format text|json]
 
 docpipe worklist MANIFEST                   # M13: файл-очередь для внешнего исполнителя
     --root/--config/--templates/--ownership/--team
-    --out FILE                   куда писать [artifacts/doc-worklist.json]
+    --out FILE                   куда писать [ключ `worklist` из docpipe.yaml]
     --action write|review|skip   состав очереди; по умолчанию write и review
     --limit N                    первые N записей в порядке приоритета
+
+docpipe schema [--model doc-tree|worklist] [--out FILE]
 ```
 
 `docs` — под-typer (`app.add_typer(docs_app, name="docs")`); существующий `@app.callback()`
@@ -1460,7 +1462,7 @@ uv run pytest tests/test_materialize_template.py tests/test_materialize_plan.py 
 
 ---
 
-## M13 — `docpipe worklist`: файл-очередь для внешнего исполнителя шага 3
+## M13 — `docpipe worklist`: файл-очередь для внешнего исполнителя шага 3 ✅
 
 **Цель:** один файл на диске, который читает **чужой процесс** и по которому идёт
 агент шага 3: сводка состояния дерева плюс список документов к работе с причиной
@@ -1468,8 +1470,9 @@ uv run pytest tests/test_materialize_template.py tests/test_materialize_plan.py 
 
 **Создать:** `docpipe/materialize/worklist.py`, `schema/doc-worklist.schema.json`,
 `tests/test_worklist.py`
-**Изменить:** `docpipe/cli.py`, `docpipe/materialize/status.py`, `docs/materialize.md`,
-`README.md`
+**Изменить:** `docpipe/cli.py`, `docpipe/materialize/status.py`,
+`docpipe/materialize/plan.py`, `docpipe/config.py`, `docpipe/tree.py`,
+`docpipe.example.yaml`, `docs/materialize.md`, `README.md`
 
 **Зачем отдельная команда, а не `--out` у `docs status`.** У `docs status` два
 несовместимых с ролью артефакта свойства, и оба — не дефекты, а её контракт:
@@ -1495,8 +1498,9 @@ uv run pytest tests/test_materialize_template.py tests/test_materialize_plan.py 
 {
   "schema_version": "1.0",
   "docs_root": "docs",
+  "modules_root": "docs/modules",
   "ruleset_version": "dotnet/2026.02",
-  "manifest_sha256": "9f2c…",
+  "manifest_sha256": "sha256:9f2c…",
   "manifest_partial": false,
   "needs_materialize": true,
   "counts": {"missing": 12, "stale": 3, "empty": 5, "current": 1836},
@@ -1529,9 +1533,13 @@ uv run pytest tests/test_materialize_template.py tests/test_materialize_plan.py 
 в `documents`, `totals.truncated` — обрезал ли `--limit`. Без этой пары чисел
 внешний модуль не отличит «работы нет» от «работу отфильтровали».
 
-`manifest_sha256` — `hashing.content_hash` от **байт файла манифеста**. Он отвечает
-на единственный вопрос, который чужой процесс не может решить сам: соответствует
-ли очередь тому `doc-tree.json`, который лежит рядом сейчас.
+`manifest_sha256` — `hashing.content_hash` от **байт файла манифеста**, вместе
+с префиксом `sha256:`, как везде в проекте. Он отвечает на единственный вопрос,
+который чужой процесс не может решить сам: соответствует ли очередь тому
+`doc-tree.json`, который лежит рядом сейчас.
+
+`docs_root` и `modules_root` — оттуда же, откуда их берёт шаг 1, чтобы внешний
+модуль не выводил корень дерева из путей документов.
 
 **Порядок записей:** по приоритету статуса (`_STATUS_ORDER`: `broken`, `missing`,
 `stale`, `drifted`, `undeclared`, `empty`, `relocated`, `orphan`, `current`), при
@@ -1581,10 +1589,14 @@ schema/doc-worklist.schema.json`; у `--model` два значения, `doc-tre
 > этого прогона не касается.
 
 > **Ловушка. Множество, по которому считается `counts`, не сужается никогда.**
-> Ни `--action`, ни `--limit`, ни позиционные пути на него не влияют. Иначе прогон
+> Ни `--action`, ни `--limit`, ни `--team` на него не влияют. Иначе прогон
 > с `--team` объявил бы, что в дереве двадцать документов, и цифра ушла бы в отчёт.
 > Сужается только `documents`. Тот же довод, по которому `--team` в `materialize`
 > сужает записываемое, но не множество сравнения.
+>
+> Отсюда следствие, которое легко пропустить: план строится **без** `PlanOptions.teams`,
+> а команда отбирается уже среди готовых записей. Передав `--team` внутрь плана,
+> реализация получила бы дерево из чужих узлов и сводку по нему же — тихо и правдоподобно.
 
 > **Ловушка. `--limit` без устойчивого порядка бессмыслен.** Два прогона на одном
 > входе обязаны дать одну и ту же порцию. Порядок задаётся явным ключом
@@ -1613,12 +1625,42 @@ schema/doc-worklist.schema.json`; у `--model` два значения, `doc-tre
   `totals.selected` = 0, код 0;
 - манифест с дублем `doc_path` (блокирующая ошибка): код 1, stderr не пуст, ранее
   записанный файл не изменился ни на байт;
-- `manifest_sha256` меняется при правке манифеста и совпадает с `sha256sum` файла;
-- `docpipe schema --model worklist` даёт схему, которой валиден записанный файл.
+- `manifest_sha256` меняется при правке манифеста и совпадает с `content_hash` файла;
+- `docpipe schema --model worklist` даёт схему с `title: Worklist`; неизвестное
+  значение `--model` — код 2;
+- путь очереди берётся из `worklist` в `docpipe.yaml`, флаг `--out` его перекрывает;
+- `docs_root: documentation` + `modules_dir: tech` даёт документы под
+  `documentation/tech/**`, и `worklist` находит их там же — ни одного `missing`.
+
+### Настраиваемые пути
+
+Задача заодно убирает литерал `docs/modules` из `tree.py`. Префикс `doc_path`
+собирается из пары ключей `docpipe.yaml`: `docs_root` (был) и `modules_dir` (новый).
+
+Пара, а не один путь целиком, — намеренно.
+
+> **Ловушка. Одно значение позволило бы развести то, что писать, и то, где искать.**
+> `modules_root: "other/modules"` при `docs_root: "docs"` — и `materialize` пишет
+> документы туда, где `scan_docs` их не ищет: каждый навсегда `missing`, каждый
+> прогон переписывает их заново, и всё это молча. При паре инвариант «пишем туда,
+> где ищем» держится структурно, и нарушить его нельзя.
+
+> **Ловушка. Значения уходят в `doc_path` каждого узла манифеста.** Поэтому
+> абсолютный путь, `..` и `\` — ошибка загрузки конфигурации (валидатор в `config.py`),
+> а не молчаливо непереносимый между машинами манифест. Проверять это в `validate`
+> поздно: манифест к тому моменту уже записан и роздан.
+
+`doc_path_for` берёт префикс параметром, а не читает конфигурацию сама: иначе
+чистая функция построения пути начала бы зависеть от глобального состояния,
+и тесты раскладки пришлось бы гонять через загрузку файла.
+
+Смена любого из двух ключей меняет `doc_path` у всех узлов сразу — ровно как смена
+`doc_layout`, и переход тот же: документы находятся по `node_id` и переносятся,
+но каждый принятый встаёт в `relocated`.
 
 **Проверка**
 ```bash
-uv run pytest tests/test_worklist.py -q
+uv run pytest tests/test_worklist.py tests/test_docs_status.py tests/test_tree.py -q
 uv run docpipe worklist tests/golden/doc-tree.json --root /tmp/w --out /tmp/wl.json
 uv run docpipe worklist tests/golden/doc-tree.json --root /tmp/w --out /tmp/wl2.json
 cmp /tmp/wl.json /tmp/wl2.json
