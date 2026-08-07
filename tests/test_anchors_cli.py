@@ -611,3 +611,72 @@ def test_explain_does_not_offer_narrowing_for_a_single_record(manifest_file: Pat
 
     assert result.exit_code == 0
     assert "сузить до этой записи:" not in result.stdout
+
+
+# --------------------------------------------------------------------------------------
+# Ключ `registries` из конфигурации: команды anchors его не читали вовсе
+# --------------------------------------------------------------------------------------
+
+
+def test_list_takes_registries_from_config(manifest_file: Path, tmp_path: Path) -> None:
+    """Без `--registries`, но с `--config`.
+
+    Раньше у `list` не было даже параметра `--config`, поэтому настроенный
+    репозиторий всё равно требовал указывать реестры флагом руками.
+    """
+    config = tmp_path / "docpipe.yaml"
+    config.write_text(yaml.safe_dump({"registries": str(REGISTRIES)}), encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["anchors", "list", str(manifest_file), "--config", str(config), "--root", str(ROOT)],
+    )
+    assert result.exit_code == 0
+    assert "Точек входа: 11" in result.stdout
+
+
+def test_explain_takes_registries_from_config(manifest_file: Path, tmp_path: Path) -> None:
+    config = tmp_path / "docpipe.yaml"
+    config.write_text(yaml.safe_dump({"registries": str(REGISTRIES)}), encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "anchors",
+            "explain",
+            str(manifest_file),
+            "ICalcResult",
+            "--config",
+            str(config),
+            "--root",
+            str(ROOT),
+        ],
+    )
+    assert result.exit_code == 0
+
+
+def test_registries_flag_wins_over_config(manifest_file: Path, tmp_path: Path) -> None:
+    """Флаг важнее конфигурации: иначе разовый прогон по другому набору невозможен."""
+    config = tmp_path / "docpipe.yaml"
+    config.write_text(yaml.safe_dump({"registries": "no-such-file.yaml"}), encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "anchors",
+            "list",
+            str(manifest_file),
+            "--registries",
+            str(REGISTRIES),
+            "--config",
+            str(config),
+            "--root",
+            str(ROOT),
+        ],
+    )
+    assert result.exit_code == 0
+
+
+def test_registries_missing_everywhere_is_an_error(manifest_file: Path) -> None:
+    result = runner.invoke(app, ["anchors", "list", str(manifest_file), "--root", str(ROOT)])
+    assert result.exit_code == 2

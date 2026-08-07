@@ -14,6 +14,7 @@ from docpipe.materialize.plan import (
     ExistingDoc,
     PlanOptions,
     build_plan,
+    layout_drift,
     match_relocations,
     scan_docs,
 )
@@ -601,3 +602,41 @@ def test_relocated_document_keeps_its_text(  # type: ignore[no-untyped-def]
     assert doc.status == "relocated"
     assert doc.content is not None and "Написанный человеком текст." in doc.content
     assert not any(d.status == "orphan" for d in plan.documents)
+
+
+# --------------------------------------------------------------------------------------
+# Раскладка манифеста против текущей конфигурации
+# --------------------------------------------------------------------------------------
+
+
+def test_layout_drift_is_silent_when_prefix_matches(manifest: Manifest) -> None:
+    assert layout_drift(manifest, "docs/modules") is None
+
+
+def test_layout_drift_not_checked_without_modules_root(manifest: Manifest) -> None:
+    """Пустая строка — «не проверять»: план строят и там, где конфигурации нет."""
+    assert layout_drift(manifest, "") is None
+
+
+def test_layout_drift_names_the_expected_prefix_and_an_example(manifest: Manifest) -> None:
+    message = layout_drift(manifest, "docs/ml/tech-docs")
+    assert message is not None
+    assert "docs/ml/tech-docs/" in message
+    assert "docs/modules/" in message
+    assert "scan" in message
+
+
+def test_layout_drift_blocks_the_plan(manifest, templates, context, tmp_path: Path) -> None:
+    """Расхождение — блокирующая ошибка, а не замечание в отчёте.
+
+    Иначе `materialize` пишет документы по путям манифеста, `worklist` кладёт
+    в очередь `modules_root` из конфигурации, и внешний исполнитель получает
+    префикс, которого в очереди нет. Раньше это проходило молча.
+    """
+    plan = _plan(manifest, templates, context, tmp_path, modules_root="docs/ml/tech-docs")
+    assert plan.errors
+    assert plan.documents == []
+
+    ok = _plan(manifest, templates, context, tmp_path, modules_root="docs/modules")
+    assert ok.errors == []
+    assert ok.documents

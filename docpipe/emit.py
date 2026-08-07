@@ -243,7 +243,7 @@ def run(
     ruleset = ruleset or load_ruleset(Path(config.rules))
     versions = parser_versions()
 
-    found = discover(root, exclude_globs(config), scope)
+    found = discover(root, exclude_globs(config), scope, config.roots)
     modules: list[Module] = resolve_references(
         [parse_csproj(root / relative, root) for relative in found.csproj_files]
     )

@@ -317,3 +317,41 @@ def test_current_is_only_in_the_counter(tmp_path: Path) -> None:
 
     assert "current          1" in result.stdout
     assert CONTROLLER not in result.stdout
+
+
+# --------------------------------------------------------------------------------------
+# Проверка `--team`: раньше её делал только `materialize`
+# --------------------------------------------------------------------------------------
+
+
+def test_unknown_team_is_rejected_not_silently_empty(tmp_path: Path) -> None:
+    """Опечатка в `--team` обязана называться опечаткой.
+
+    Без проверки выборка сужалась до пустой, и команда отвечала «документов
+    нет» — то есть неотличимо от честного «у этой команды документов нет».
+    """
+    _materialize(tmp_path)
+    result = _status(tmp_path, "--team", "no-such-team")
+
+    assert result.exit_code == 2
+    assert "Неизвестные команды" in result.stderr
+
+
+def test_unknown_team_is_rejected_by_worklist(tmp_path: Path) -> None:
+    _materialize(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "worklist",
+            str(MANIFEST),
+            "--root",
+            str(tmp_path),
+            "--out",
+            str(tmp_path / "queue.json"),
+            "--team",
+            "no-such-team",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert not (tmp_path / "queue.json").exists()
