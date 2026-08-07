@@ -47,7 +47,13 @@ def filter_documents(
     return selected
 
 
-def _document_json(doc: PlannedDoc) -> dict[str, Any]:
+def document_json(doc: PlannedDoc) -> dict[str, Any]:
+    """Запись одного документа. Публичная: её же берёт `docpipe worklist`.
+
+    Копия этой функции разошлась бы с оригиналом на первом новом поле, и одна
+    и та же ситуация получила бы в двух отчётах разные причины — а причина
+    здесь единственное, по чему внешний исполнитель решает, что делать.
+    """
     return {
         "action": doc.agent_action,
         "reason": doc.reason,
@@ -76,7 +82,7 @@ def format_status_json(plan: MaterializePlan, documents: list[PlannedDoc]) -> st
         {
             "counts": dict(sorted(counted.items())),
             "documents": [
-                _document_json(doc) for doc in sorted(documents, key=lambda item: item.doc_path)
+                document_json(doc) for doc in sorted(documents, key=lambda item: item.doc_path)
             ],
             "errors": plan.errors,
             "manifest_partial": plan.manifest_partial,

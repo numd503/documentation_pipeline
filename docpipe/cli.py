@@ -3,9 +3,10 @@
 from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Final
 
 import typer
+from pydantic import BaseModel
 
 from docpipe import __version__
 from docpipe.business import Catalog, doc_path_for, load_catalog, resolve_all
@@ -29,7 +30,7 @@ from docpipe.diff import diff_manifests, format_changes
 from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.explain import ANY, format_selection, select, selection_json
-from docpipe.hashing import stable_json_dumps
+from docpipe.hashing import content_hash, stable_json_dumps
 from docpipe.materialize.apply import apply_plan, format_result, write_atomic
 from docpipe.materialize.build import BuildContext, build_context
 from docpipe.materialize.ownership import (
@@ -57,6 +58,12 @@ from docpipe.materialize.status import (
     format_status_json,
 )
 from docpipe.materialize.template import load_templates
+from docpipe.materialize.worklist import (
+    DEFAULT_ACTIONS,
+    Worklist,
+    build_worklist,
+    select_documents,
+)
 from docpipe.model import Manifest, RunMeta
 from docpipe.registry import load_registries, read_registry
 from docpipe.registry.anchors import (
@@ -104,21 +111,37 @@ def version() -> None:
     typer.echo(__version__)
 
 
+SCHEMA_MODELS: Final[dict[str, tuple[type[BaseModel], str]]] = {
+    "doc-tree": (Manifest, "schema/doc-tree.schema.json"),
+    "worklist": (Worklist, "schema/doc-worklist.schema.json"),
+}
+
+
 @app.command()
 def schema(
+    model: Annotated[
+        str, typer.Option("--model", help="Что описывать: doc-tree или worklist.")
+    ] = "doc-tree",
     out: Annotated[
-        Path,
-        typer.Option("--out", help="Куда записать JSON Schema манифеста."),
-    ] = Path("schema/doc-tree.schema.json"),
+        Path | None,
+        typer.Option("--out", help="Куда записать JSON Schema; без флага — путь по модели."),
+    ] = None,
 ) -> None:
-    """Сгенерировать JSON Schema манифеста из моделей.
+    """Сгенерировать JSON Schema из моделей.
 
-    Схема — производная от `model.py`, а не отдельно поддерживаемый файл.
-    Расхождение между ними невозможно по построению.
+    Схема — производная от `model.py` и `materialize/worklist.py`, а не отдельно
+    поддерживаемый файл. Расхождение между ними невозможно по построению.
     """
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(stable_json_dumps(Manifest.model_json_schema()), encoding="utf-8")
-    typer.echo(f"Схема записана: {out}")
+    if model not in SCHEMA_MODELS:
+        known = ", ".join(sorted(SCHEMA_MODELS))
+        typer.echo(f"--model: неизвестное значение {model}; известны: {known}", err=True)
+        raise typer.Exit(code=2)
+
+    described, default_out = SCHEMA_MODELS[model]
+    target = out or Path(default_out)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(stable_json_dumps(described.model_json_schema()), encoding="utf-8")
+    typer.echo(f"Схема записана: {target}")
 
 
 @app.command()
@@ -691,6 +714,92 @@ def _prepare(
         PlanOptions(docs_root=settings.docs_root, teams=teams, accept=accept),
     )
     return manifest, ownership, existing, plan
+
+
+@app.command()
+def worklist(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
+    templates_dir: Annotated[
+        Path | None, typer.Option("--templates", help="Каталог шаблонов.")
+    ] = None,
+    ownership_file: Annotated[
+        Path | None, typer.Option("--ownership", help="Правила владения.")
+    ] = None,
+    team: Annotated[
+        list[str] | None, typer.Option("--team", help="Только эти команды; можно повторять.")
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Куда писать очередь; без флага — `worklist` из конфигурации."),
+    ] = None,
+    action: Annotated[
+        list[str] | None,
+        typer.Option("--action", help="Состав очереди; по умолчанию write и review."),
+    ] = None,
+    limit: Annotated[
+        int | None, typer.Option("--limit", help="Первые N записей в порядке приоритета.")
+    ] = None,
+) -> None:
+    """Записать очередь документов для внешнего исполнителя шага 3.
+
+    В дерево документации не пишет ничего: `materialize` остаётся единственным
+    писателем документов, иначе появилась бы вторая реализация слияния зон.
+    """
+    unknown = sorted(set(action or ()) - AGENT_ACTIONS)
+    if unknown:
+        typer.echo(
+            f"--action: неизвестные значения {', '.join(unknown)};"
+            f" известны: {', '.join(sorted(AGENT_ACTIONS))}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if limit is not None and limit < 1:
+        typer.echo("--limit: ожидается положительное число", err=True)
+        raise typer.Exit(code=2)
+
+    settings = load_config(config)
+    target = out or Path(settings.worklist)
+
+    # План строится по ВСЕМУ дереву, без `--team`: сводка обязана описывать
+    # дерево целиком, а сужает `--team` только очередь. Иначе прогон одной
+    # команды объявил бы, что документов в репозитории двадцать.
+    manifest, _, existing, plan = _prepare(
+        manifest_path, root, config, templates_dir, ownership_file
+    )
+    plan = with_links(plan, check_links(existing, root))
+
+    if plan.errors:
+        # Файл не переписывается: прежняя очередь достовернее полупустой новой,
+        # а чужой процесс о коде возврата может и не узнать.
+        typer.echo("\n".join(["Блокирующие ошибки, очередь не записана:", *plan.errors]), err=True)
+        raise typer.Exit(code=1)
+
+    selected, truncated = select_documents(
+        plan.documents,
+        actions=tuple(action) if action else DEFAULT_ACTIONS,
+        teams=tuple(team or ()),
+        limit=limit,
+    )
+    queue = build_worklist(
+        plan,
+        selected,
+        docs_root=settings.docs_root,
+        modules_root=settings.modules_root,
+        ruleset_version=manifest.ruleset_version,
+        manifest_sha256=content_hash(manifest_path.read_bytes()),
+        truncated=truncated,
+    )
+
+    write_atomic(target, stable_json_dumps(queue.model_dump(mode="json")))
+    typer.echo(
+        f"Очередь записана: {target}"
+        f" (документов: {queue.totals.selected} из {queue.totals.documents})"
+    )
+    if queue.needs_materialize:
+        typer.echo("В очереди есть документы, которых на диске ещё нет: нужен `materialize`.")
 
 
 @docs_app.command("accept")

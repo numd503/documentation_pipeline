@@ -64,7 +64,10 @@ DEFAULT_DOCS_SCAN_EXCLUDE: Final[list[str]] = [
     "**/.git/**",
 ]
 
-_STATUS_ORDER: Final[list[Status]] = [
+# Порядок «сначала то, что важнее». Публичный: по нему же `worklist`
+# упорядочивает очередь, и второй список разошёлся бы с этим при первом
+# новом статусе.
+STATUS_ORDER: Final[list[Status]] = [
     "broken",
     "missing",
     "stale",
@@ -185,7 +188,7 @@ class MaterializePlan:
 
     def counts(self) -> dict[str, int]:
         counted = Counter(doc.status for doc in self.documents)
-        return {status: counted[status] for status in _STATUS_ORDER if counted[status]}
+        return {status: counted[status] for status in STATUS_ORDER if counted[status]}
 
 
 # --------------------------------------------------------------------------------------
@@ -841,6 +844,7 @@ __all__ = [
     "MaterializePlan",
     "PlanOptions",
     "PlannedDoc",
+    "STATUS_ORDER",
     "build_plan",
     "decide",
     "match_relocations",

@@ -122,6 +122,10 @@ docpipe docs accept MANIFEST [PATH...] [--node ID] [--team NAME] [--all]
 docpipe docs adopt  MANIFEST --from PATH --to PATH [--dry-run]
 
 docpipe docs owners MANIFEST [--explain NODE] [--lint]
+
+docpipe worklist MANIFEST [--root PATH] [--config FILE] [--templates DIR]
+                          [--ownership FILE] [--team NAME] [--out FILE]
+                          [--action write|review|skip] [--limit N]
 ```
 
 Коды возврата: **0** — успех, **1** — проверка не прошла или отказ, **2** — ошибка
@@ -163,8 +167,10 @@ docpipe docs owners MANIFEST [--explain NODE] [--lint]
 # 1. Создать или обновить скелеты
 docpipe materialize artifacts/doc-tree.json --root .
 
-# 2. Спросить, что делать. Это вход агента шага 3
-docpipe docs status artifacts/doc-tree.json --root . --format json
+# 2. Спросить, что делать. Человеку и CI — docs status,
+#    внешнему исполнителю шага 3 — файл очереди
+docpipe docs status artifacts/doc-tree.json --root .
+docpipe worklist    artifacts/doc-tree.json --root .
 
 # 3. Агент наполняет секции, front matter не трогает
 
@@ -184,6 +190,97 @@ docpipe docs status artifacts/doc-tree.json --root . --fail-on broken --fail-on 
 
 Значение вне перечня статусов — ошибка (код 2), а не пустой фильтр: опечатка
 `--fail-on statle` иначе дала бы вечно зелёную проверку.
+
+## Очередь для внешнего исполнителя (`docpipe worklist`)
+
+`docs status` отвечает человеку и CI, `worklist` — **чужому процессу**: он кладёт
+на диск один файл, который читает другой инструмент, и в дерево документации
+не пишет ничего.
+
+```bash
+docpipe worklist artifacts/doc-tree.json --root .          # путь из docpipe.yaml
+docpipe worklist artifacts/doc-tree.json --out /tmp/q.json --limit 50
+```
+
+```json
+{
+  "schema_version": "1.0",
+  "docs_root": "docs",
+  "modules_root": "docs/modules",
+  "ruleset_version": "dotnet/1.0",
+  "manifest_sha256": "sha256:9f2c…",
+  "manifest_partial": false,
+  "needs_materialize": false,
+  "counts": {"stale": 3, "empty": 5, "current": 1836},
+  "totals": {"documents": 1844, "selected": 8, "truncated": false},
+  "documents": [
+    {"action": "write", "status": "stale", "reason": "контракт изменился: добавлены …",
+     "doc_path": "docs/modules/controllers/…/pricing-controller.md",
+     "node_id": "type:src/…#…PricingController`0", "kind": "controller",
+     "template_ref": "templates/controller.md", "example_ref": null, "team": null,
+     "sources": [{"path": "src/…/PricingController.cs", "start": 8, "end": 26}],
+     "empty_sections": [], "orphan_sections": [], "broken_links": [],
+     "changes": {"members_added": ["RecalculateAsync"], "members_removed": [],
+                 "kind_changed": null, "relocated_from": null}}
+  ]
+}
+```
+
+| Поле | Что означает |
+|---|---|
+| `schema_version` | версия **формата очереди**; своя, не связана со `schema_version` манифеста |
+| `manifest_sha256` | по нему внешний модуль проверяет, что читает очередь от того самого `doc-tree.json` |
+| `needs_materialize` | в очереди есть документы, которых на диске ещё нет: сначала `materialize` |
+| `counts` | статусы по **всему** дереву; фильтры на них не влияют |
+| `totals` | `documents` — сколько в дереве, `selected` — сколько в очереди, `truncated` — обрезал ли `--limit` |
+
+Записи документов совпадают с записями `docs status --format json` поле в поле:
+их собирает одна и та же функция.
+
+Правила, которые легко нарушить, если читать файл невнимательно:
+
+- **времени в файле нет.** С ним он менялся бы на каждом прогоне; свежесть даёт
+  `manifest_sha256`, а время файла — файловая система;
+- **пустая очередь — это записанный файл с нулём записей.** Отсутствие файла
+  означает «прогон не состоялся», и путать эти два состояния нельзя;
+- **при блокирующих ошибках плана файл не переписывается** (код 1, причины
+  в stderr): прежняя очередь достовернее полупустой новой;
+- **порядок записей — по приоритету статуса**, затем по `doc_path`. Он отличается
+  от `docs status`, где сортировка только по пути: иначе `--limit` резал бы
+  очередь по алфавиту;
+- без `--action` в очередь попадают `write` и `review`; `skip` — никогда.
+
+Схема файла — производная от моделей:
+
+```bash
+docpipe schema --model worklist --out schema/doc-worklist.schema.json
+```
+
+## Где лежит дерево документации
+
+Префикс `doc_path` собирается из двух ключей `docpipe.yaml`:
+
+| Ключ | По умолчанию | Что задаёт |
+|---|---|---|
+| `docs_root` | `docs` | корень дерева документации относительно `--root` |
+| `modules_dir` | `modules` | каталог технической документации **внутри** `docs_root` |
+
+```
+docs_root: "documentation" + modules_dir: "tech" -> documentation/tech/controllers/…
+docs_root: "docs"          + modules_dir: ""     -> docs/controllers/…
+```
+
+Пара, а не один путь целиком, — намеренно: так инвариант «то, что пишет
+`materialize`, лежит там, где ищет `docs status`» держится структурно. Одним
+значением его можно было бы нарушить, и документы навсегда остались бы `missing`,
+переписываясь заново на каждом прогоне.
+
+Оба значения обязаны быть репо-относительными и POSIX: абсолютный путь, `..`
+или `\` — ошибка загрузки конфигурации, а не молчаливо непереносимый манифест.
+
+**Смена любого из них меняет `doc_path` у всех узлов сразу** — ровно как смена
+`doc_layout`. Документы при этом не теряются: `materialize` находит их по
+`node_id` и переносит, но каждый принятый встанет в `relocated`.
 
 ## Владение
 
