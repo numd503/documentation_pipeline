@@ -270,12 +270,8 @@
     },
     "Module": {
       "additionalProperties": false,
-      "description": "Проект .NET (`.csproj`).\n\n`enrolled` отвечает на вопрос «входит ли модуль в документацию».\nНеenrolled модули всё равно парсятся — их символы нужны для графа\nнаследования, — но узлов документации не порождают.\n\n`id` строится от пути, а не от имени: имена проектов не уникальны\n(в ABP 39 повторов, три разных `MyCompanyName.MyProjectName.csproj`),\nи ключ `module:{name}` молча склеил бы разные модули в один.\n\n`project_references` — тоже пути, сравнимые с полем `csproj` другого\nмодуля. Сопоставление по имени проекта при неуникальных именах давало бы\nребро графа в произвольный из одноимённых модулей.",
+      "description": "Единица сборки: проект .NET (`.csproj`) либо модуль фронта.\n\n`project_file` — файл, которым модуль объявлен: `.csproj` у .NET,\n`angular.json`, `project.json` или `package.json` у фронта. Имя поля\nне называет расширение намеренно: `csproj` у TypeScript-модуля врал бы\nв каждом отчёте, а отчёты идут в журнал и в CI.\n\n`lang` обязателен и значения по умолчанию не имеет. Умолчание `\"cs\"`\nозначало бы, что сборщик модулей фронта, забывший его выставить, отдаёт\nманифест, в котором все модули объявлены .NET-овскими, — и заметить это\nбыло бы нечем: остальные поля у него правильные.\n\n`enrolled` отвечает на вопрос «входит ли модуль в документацию».\nНеenrolled модули всё равно парсятся — их символы нужны для графа\nнаследования, — но узлов документации не порождают.\n\n`id` строится от пути, а не от имени: имена проектов не уникальны\n(в ABP 39 повторов, три разных `MyCompanyName.MyProjectName.csproj`),\nи ключ `module:{name}` молча склеил бы разные модули в один. На фронте\nто же самое: у nx имя проекта уникально только внутри одного workspace.\n\n`project_references` — тоже пути, сравнимые с полем `project_file` другого\nмодуля. Сопоставление по имени проекта при неуникальных именах давало бы\nребро графа в произвольный из одноимённых модулей.",
       "properties": {
-        "csproj": {
-          "title": "Csproj",
-          "type": "string"
-        },
         "domain": {
           "title": "Domain",
           "type": "string"
@@ -288,6 +284,14 @@
           "title": "Id",
           "type": "string"
         },
+        "lang": {
+          "enum": [
+            "cs",
+            "ts"
+          ],
+          "title": "Lang",
+          "type": "string"
+        },
         "name": {
           "title": "Name",
           "type": "string"
@@ -298,6 +302,10 @@
           },
           "title": "Package References",
           "type": "array"
+        },
+        "project_file": {
+          "title": "Project File",
+          "type": "string"
         },
         "project_references": {
           "items": {
@@ -317,7 +325,8 @@
       "required": [
         "id",
         "name",
-        "csproj",
+        "project_file",
+        "lang",
         "domain",
         "enrolled"
       ],
@@ -503,7 +512,9 @@
             "struct",
             "record",
             "record_struct",
-            "enum"
+            "enum",
+            "function",
+            "const"
           ],
           "title": "Type Kind",
           "type": "string"
@@ -575,8 +586,8 @@
       "type": "string"
     },
     "schema_version": {
-      "const": "1.1",
-      "default": "1.1",
+      "const": "2.0",
+      "default": "2.0",
       "title": "Schema Version",
       "type": "string"
     }

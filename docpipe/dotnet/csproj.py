@@ -144,7 +144,8 @@ def parse_csproj(path: Path, repo_root: Path) -> Module:
     return Module(
         id=f"module:{csproj}",
         name=name,
-        csproj=csproj,
+        project_file=csproj,
+        lang="cs",
         target_frameworks=frameworks,
         project_references=project_references,
         package_references=package_references,
@@ -166,10 +167,12 @@ def resolve_references(modules: list[Module]) -> list[Module]:
     не везде (в ABP 39 повторов), и угадывать между одноимёнными нельзя.
     Неразрешённое остаётся как есть — ребро видно, просто не привязано.
     """
-    known = {module.csproj for module in modules}
+    known = {module.project_file for module in modules}
     by_filename: dict[str, list[str]] = {}
     for module in modules:
-        by_filename.setdefault(module.csproj.rpartition("/")[2], []).append(module.csproj)
+        by_filename.setdefault(module.project_file.rpartition("/")[2], []).append(
+            module.project_file
+        )
 
     resolved = []
     for module in modules:

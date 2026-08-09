@@ -1,26 +1,28 @@
 {
   "modules": [
     {
-      "csproj": "src/Sample.Common/Sample.Common.csproj",
       "domain": "Sample.Common",
       "enrolled": true,
       "id": "module:src/Sample.Common/Sample.Common.csproj",
+      "lang": "cs",
       "name": "Sample.Common",
       "package_references": [],
+      "project_file": "src/Sample.Common/Sample.Common.csproj",
       "project_references": [],
       "target_frameworks": [
         "net8.0"
       ]
     },
     {
-      "csproj": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
       "domain": "Sample.Pricing.Api",
       "enrolled": true,
       "id": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+      "lang": "cs",
       "name": "Sample.Pricing.Api",
       "package_references": [
         "Apache.Ignite"
       ],
+      "project_file": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
       "project_references": [
         "src/Sample.Common/Sample.Common.csproj"
       ],
@@ -598,5 +600,5 @@
   },
   "partial": null,
   "ruleset_version": "2026-07-30.1",
-  "schema_version": "1.1"
+  "schema_version": "2.0"
 }

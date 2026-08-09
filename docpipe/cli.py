@@ -423,7 +423,7 @@ def symbols(
         result.index,
         result.manifest.nodes,
         ruleset,
-        {module.csproj for module in result.manifest.modules if module.enrolled},
+        {module.project_file for module in result.manifest.modules if module.enrolled},
         state=state,
         module=module,
         namespace=namespace,

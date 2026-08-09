@@ -40,7 +40,7 @@ def test_manifest_is_valid(sample_solution: Path, tmp_path: Path) -> None:
     manifest = Manifest.model_validate_json(out.read_text(encoding="utf-8"))
     assert len(manifest.nodes) == 6
     assert len(manifest.modules) == 2
-    assert manifest.schema_version == "1.1"
+    assert manifest.schema_version == "2.0"
     assert manifest.partial is None
 
 

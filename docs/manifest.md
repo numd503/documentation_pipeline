@@ -28,7 +28,7 @@ artifacts/doc-tree.run.json   сидкар — всё про конкретны�
 
 | Поле | Что |
 |---|---|
-| `schema_version` | версия формата, сейчас `"1.1"` |
+| `schema_version` | версия формата, сейчас `"2.0"` |
 | `ruleset_version` | метка набора правил — меняйте при правке `rules.yaml`, иначе `diff` покажет изменения без причины |
 | `parser` | версии `tree-sitter` и грамматики: их апгрейд может законно изменить вывод |
 | `partial` | заполнено только у прогона со `--scope` |
@@ -45,7 +45,8 @@ artifacts/doc-tree.run.json   сидкар — всё про конкретны�
 {
   "id": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
   "name": "Sample.Pricing.Api",
-  "csproj": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+  "project_file": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+  "lang": "cs",
   "target_frameworks": ["net8.0"],
   "project_references": ["module:src/Sample.Common/Sample.Common.csproj"],
   "package_references": ["Microsoft.AspNetCore.OpenApi"],
@@ -57,9 +58,19 @@ artifacts/doc-tree.run.json   сидкар — всё про конкретны�
 - **`id` строится от пути, а не от имени.** Имена проектов не уникальны — в ABP
   39 повторов;
 - `name` — имя файла `.csproj` без расширения. Именно оно попадает в `doc_path`;
+- **`project_file`** — файл, которым модуль объявлен. У .NET это `.csproj`,
+  у фронта — `angular.json`, `project.json` или `package.json`. Поле называется
+  не по расширению намеренно: `csproj` у TypeScript-модуля врал бы в каждом
+  отчёте, а отчёты идут в журнал и в CI. До схемы `2.0` поле называлось `csproj`;
+- **`lang`** — `"cs"` либо `"ts"`. Значения по умолчанию нет: с умолчанием
+  сборщик модулей фронта, забывший его выставить, отдал бы манифест, где все
+  модули объявлены .NET-овскими, и заметить это было бы нечем — остальные поля
+  у такого модуля правильные. Манифесты двух языков лежат в **разных файлах**
+  (`doc-tree.json` и `doc-tree.web.json`) и имеют общую схему: `materialize`,
+  `docs status` и бизнес-слой работают от `Manifest` и про язык не знают;
 - `domain` — смысловая группировка из `domains` в `docpipe.yaml`, глоб по пути
-  `.csproj`. Без совпадения равен `name`. На сам docpipe не влияет: это метаданные
-  для навигации на шаге 2;
+  `project_file`. Без совпадения равен `name`. На сам docpipe не влияет: это
+  метаданные для навигации на шаге 2;
 - `enrolled` — входит ли в документацию (`enrolled` в `docpipe.yaml`). Узлы
   строятся только по enrolled-модулям;
 - `target_frameworks` может быть пуст: значение бывает подстановкой MSBuild,

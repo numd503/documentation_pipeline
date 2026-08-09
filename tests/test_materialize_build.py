@@ -273,7 +273,8 @@ def _artificial() -> tuple[Manifest, DocNode]:
             Module(
                 id="module:src/M/M.csproj",
                 name="M",
-                csproj="src/M/M.csproj",
+                project_file="src/M/M.csproj",
+                lang="cs",
                 domain="M",
                 enrolled=True,
             )

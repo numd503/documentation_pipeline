@@ -49,7 +49,7 @@ def _domain_of(module: Module, domains: dict[str, str]) -> str:
     на порядок записи в файле нельзя — перестановка строк изменила бы манифест.
     """
     for glob in sorted(domains):
-        if matches_glob(module.csproj, glob):
+        if matches_glob(module.project_file, glob):
             return domains[glob]
     return module.name
 
@@ -60,7 +60,7 @@ def _apply_config(modules: list[Module], config: DocpipeConfig) -> list[Module]:
             module.model_copy(
                 update={
                     "domain": _domain_of(module, config.domains),
-                    "enrolled": any(matches_glob(module.csproj, g) for g in config.enrolled),
+                    "enrolled": any(matches_glob(module.project_file, g) for g in config.enrolled),
                 }
             )
             for module in modules
@@ -351,7 +351,7 @@ def build_nodes(
     в тестах, не поднимая весь пайплайн.
     """
     configured = _apply_config(modules, config)
-    enrolled = {module.csproj: module for module in configured if module.enrolled}
+    enrolled = {module.project_file: module for module in configured if module.enrolled}
 
     known_fqns = {symbol.fqn for symbol in symbols.values()}
     interfaces = {s.fqn for s in symbols.values() if s.type_kind == "interface"}
@@ -374,7 +374,7 @@ def build_nodes(
         if classification is None:
             continue
 
-        identifier = node_id(module.csproj, symbol)
+        identifier = node_id(module.project_file, symbol)
         dependencies = _constructor_dependencies(symbol, known_fqns, simple_names)
         dependencies += _di_dependencies(symbol, all_registrations, known_fqns, simple_names)
 

@@ -132,11 +132,12 @@ jq '.nodes[].doc_path' /tmp/dt.json
 
 ```jsonc
 {
-  "schema_version": "1.1",
+  "schema_version": "2.0",
   "ruleset_version": "2026-07-30.1",
   "parser": { "tree_sitter": "0.26.0", "grammar_c_sharp": "0.23.5" },
   "modules": [
     { "id": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+      "project_file": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj", "lang": "cs",
       "name": "Sample.Pricing.Api", "domain": "Sample.Pricing.Api", "enrolled": true,
       "target_frameworks": ["net8.0", "net9.0"],
       "project_references": ["src/Sample.Common/Sample.Common.csproj"] }

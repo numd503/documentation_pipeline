@@ -16,20 +16,36 @@ from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from docpipe.route import RouteKey
+
 # --------------------------------------------------------------------------------------
 # Перечисления, вынесенные в псевдонимы: используются на нескольких уровнях сразу.
 # --------------------------------------------------------------------------------------
 
-TypeKind = Literal["class", "interface", "struct", "record", "record_struct", "enum"]
+# Вид объявления — **синтаксический**, а не классификационный. `component`,
+# `service`, `guard` и прочее — это `DocNode.kind`, результат работы правил;
+# положить их сюда значило бы, что решение классификации принимает парсер,
+# то есть тот, кто правил не читает. Из TypeScript добавлены две формы,
+# которых у C# нет: экспортируемая функция и экспортируемая константа —
+# в Angular так объявлены функциональные интерцепторы, guard'ы и таблицы роутов.
+TypeKind = Literal[
+    "class", "interface", "struct", "record", "record_struct", "enum", "function", "const"
+]
 MemberKind = Literal["method", "property", "field", "constructor", "event"]
 Lifetime = Literal["scoped", "singleton", "transient", "hosted", "unknown"]
 Confidence = Literal["high", "medium", "low"]
 DependencyVia = Literal["constructor", "di", "inheritance"]
 RelationKind = Literal["implements", "implemented_by", "uses"]
 
+Lang = Literal["cs", "ts"]
+
 # Аннотация обязательна: без неё константа выводится как `str`
-# и не подходит полю `Literal["1.1"]`.
-SCHEMA_VERSION: Final[Literal["1.1"]] = "1.1"
+# и не подходит полю `Literal["2.0"]`.
+#
+# 2.0 — переименование `Module.csproj` в `Module.project_file` и обязательное
+# `Module.lang`. Схема стала общей для двух языков, и старое имя врало бы
+# в каждом отчёте по фронту.
+SCHEMA_VERSION: Final[Literal["2.0"]] = "2.0"
 
 
 class _Base(BaseModel):
@@ -203,7 +219,17 @@ class Relation(_Base):
 
 
 class Module(_Base):
-    """Проект .NET (`.csproj`).
+    """Единица сборки: проект .NET (`.csproj`) либо модуль фронта.
+
+    `project_file` — файл, которым модуль объявлен: `.csproj` у .NET,
+    `angular.json`, `project.json` или `package.json` у фронта. Имя поля
+    не называет расширение намеренно: `csproj` у TypeScript-модуля врал бы
+    в каждом отчёте, а отчёты идут в журнал и в CI.
+
+    `lang` обязателен и значения по умолчанию не имеет. Умолчание `"cs"`
+    означало бы, что сборщик модулей фронта, забывший его выставить, отдаёт
+    манифест, в котором все модули объявлены .NET-овскими, — и заметить это
+    было бы нечем: остальные поля у него правильные.
 
     `enrolled` отвечает на вопрос «входит ли модуль в документацию».
     Неenrolled модули всё равно парсятся — их символы нужны для графа
@@ -211,16 +237,18 @@ class Module(_Base):
 
     `id` строится от пути, а не от имени: имена проектов не уникальны
     (в ABP 39 повторов, три разных `MyCompanyName.MyProjectName.csproj`),
-    и ключ `module:{name}` молча склеил бы разные модули в один.
+    и ключ `module:{name}` молча склеил бы разные модули в один. На фронте
+    то же самое: у nx имя проекта уникально только внутри одного workspace.
 
-    `project_references` — тоже пути, сравнимые с полем `csproj` другого
+    `project_references` — тоже пути, сравнимые с полем `project_file` другого
     модуля. Сопоставление по имени проекта при неуникальных именах давало бы
     ребро графа в произвольный из одноимённых модулей.
     """
 
     id: str
     name: str
-    csproj: str
+    project_file: str
+    lang: Lang
     target_frameworks: list[str] = Field(default_factory=list)
     project_references: list[str] = Field(default_factory=list)
     package_references: list[str] = Field(default_factory=list)
@@ -256,6 +284,39 @@ class DocNode(_Base):
     impl_hash: str = ""
 
 
+class WebCall(_Base):
+    """HTTP-вызов из кода фронта: кто зовёт, куда и с какой уверенностью.
+
+    Ключ — пара `(метод, маршрут)` с различителем, а не ссылка на узел
+    бэкенда: идентификатор узла содержит путь проекта и FQN, и переименование
+    контроллера рвало бы связь при неизменном HTTP-контракте.
+
+    `via_action` — тип экшена NGXS, если до вызова дошли по цепочке
+    «компонент диспатчит → стейт обрабатывает → сервис зовёт». Строка типа
+    экшена — единственное стабильное литеральное звено этой цепочки: имя
+    класса меняется при рефакторинге, строка нет.
+    """
+
+    file: str
+    line: int
+    key: RouteKey
+    confidence: Confidence
+    via_action: str | None = None
+
+
+class RouteEntry(_Base):
+    """Ветка таблицы роутов: полный путь страницы и компонент на нём.
+
+    `route_unresolved` — путь собрать не удалось (сегмент задан выражением).
+    Это **состояние**, а не отсутствие: пропав из вывода, такая ветка занизила
+    бы знаменатель покрытия страниц, и отчёт показал бы успех там, где его нет.
+    """
+
+    path: str
+    component: str
+    route_unresolved: bool = False
+
+
 class ParserVersions(_Base):
     """Версии парсера. Апгрейд грамматики может законно изменить вывод —
     поэтому версии попадают в манифест и видны в диффе."""
@@ -279,7 +340,7 @@ class Manifest(_Base):
     сравнению файлов без логики исключения полей.
     """
 
-    schema_version: Literal["1.1"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     ruleset_version: str
     parser: ParserVersions
     partial: PartialInfo | None = None

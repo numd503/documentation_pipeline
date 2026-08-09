@@ -5203,3 +5203,81 @@ uv run pytest tests/test_route.py -q  → 31 passed
 uv run pytest -q                      → 1242 passed
 uv run mypy docpipe                   → Success: no issues found in 48 source files
 ```
+
+---
+
+## F10 — модели и схема 2.0 ✅
+
+**Изменено:** `docpipe/model.py`, `docpipe/emit.py`, `docpipe/tree.py`, `docpipe/cli.py`,
+`docpipe/dotnet/csproj.py`, `docpipe/materialize/build.py`, `schema/doc-tree.schema.json`,
+`tests/golden/doc-tree.json`, `docs/manifest.md`, `README.md`, шесть тестов
+
+`Module.csproj` → `Module.project_file`, добавлен обязательный `Module.lang`,
+`schema_version` → `"2.0"`, заведены `WebCall` и `RouteEntry`.
+
+Задача сделана **до** F04 вопреки порядку в таблице (зависимостей у неё нет).
+Причина: парсер TypeScript обязан отдавать `type_kind` со значениями, которых
+`Literal` схемы 1.1 не допускает. Делать модель дважды — сначала временно
+расширить, потом переименовать — значило бы два сдвига байтов золотого файла
+вместо одного.
+
+### Дифф золотого файла
+
+Ровно то, что обещано планом, и ни одного изменённого узла:
+
+```
+-      "csproj": "src/Sample.Common/Sample.Common.csproj",
++      "lang": "cs",
++      "project_file": "src/Sample.Common/Sample.Common.csproj",
+-  "schema_version": "1.1"
++  "schema_version": "2.0"
+```
+
+Идентификаторы узлов и модулей содержат путь `.csproj` и потому не изменились:
+переименовано **поле**, а не значение. Золотое дерево документов
+`tests/golden/docs/**` не тронуто ни на байт.
+
+### Отклонение: `type_kind` расширен только синтаксическими видами
+
+План перечислял `component`, `service`, `directive`, `pipe`, `guard`, `interceptor`,
+`state`, `interface`, `enum`, `function`, `const`. Первые семь — не виды объявления,
+а **виды классификации**: их выдаёт `rules/*.yaml` полем `kind:`, и живут они
+в `DocNode.kind`, который и так свободная строка. Положить их в `type_kind` значит
+поручить решение классификации парсеру — тому, кто правил не читает. Заодно исчезла
+бы разница между «в коде объявлен класс» и «мы решили считать его компонентом»,
+а на ней стои́т весь отчёт о нерешённых символах.
+
+Добавлены поэтому две формы, которых у C# действительно нет: `function` и `const`
+(в Angular так объявлены функциональные интерцепторы, guard'ы и таблицы роутов).
+`interface` и `enum` в `TypeKind` уже были.
+
+### `lang` без значения по умолчанию
+
+Умолчание `"cs"` выглядит удобным и стоило бы одной строки в шести тестах. Но тогда
+сборщик модулей фронта, забывший выставить поле, отдал бы манифест, где все модули
+объявлены .NET-овскими, — и заметить это было бы нечем: остальные поля у такого
+модуля правильные. Обязательное поле делает эту ошибку невозможной структурно.
+
+### `WebCall` носит `RouteKey` целиком
+
+`RouteKey` — обычный `@dataclass(frozen=True)` из `route.py`, и pydantic принимает
+его как тип поля: круг через JSON проходит, лишнее поле **внутри ключа** отвергается
+(`extra="forbid"` действует на всю глубину). Проверено тестом: опечатка в имени
+различителя не должна проходить молча.
+
+### Названо, но не сделано: `module_csproj` во front matter
+
+Ключ генерируемого блока шага 2 врёт ровно так же, как врало поле модели. Его
+переименование перегенерирует **все** документы, включая боевые, поэтому в эту
+задачу оно не входит: решение принимается в F14, когда появятся web-документы.
+Записано в план — иначе следующий реализатор наткнётся на него на боевом дереве.
+
+### Проверено
+
+```
+uv run docpipe scan --root tests/fixtures/SampleSolution --out tests/golden/doc-tree.json --no-cache
+uv run docpipe schema --out schema/doc-tree.schema.json
+git diff --stat tests/golden/  → 8 +++++---, только модули и schema_version
+uv run pytest -q               → 1247 passed
+uv run mypy docpipe            → Success: no issues found in 48 source files
+```

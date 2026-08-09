@@ -111,7 +111,7 @@ def build_context(
             if relation.relation == "implements":
                 implementors[relation.target].append(node)
 
-    id_by_csproj = {module.csproj: module.id for module in manifest.modules}
+    id_by_csproj = {module.project_file: module.id for module in manifest.modules}
     module_refs = {
         module.id: {
             id_by_csproj[path] for path in module.project_references if path in id_by_csproj
@@ -177,7 +177,7 @@ def build_front_matter(
         template_ref=template_ref,
         example_ref=example_ref,
         module=node.module,
-        module_csproj=module.csproj if module else "",
+        module_csproj=module.project_file if module else "",
         domain=node.domain,
         team=team,
         signature_hash=node.signature_hash,

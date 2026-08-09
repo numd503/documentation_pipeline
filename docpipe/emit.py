@@ -279,7 +279,10 @@ def run(
     # Модули вне скоупа известны только из предыдущего манифеста — обход туда
     # не заходил. Без них файлы вне скоупа не привязались бы к проектам.
     known_csproj = sorted(
-        {*found.csproj_files, *(module.csproj for module in (previous.modules if previous else []))}
+        {
+            *found.csproj_files,
+            *(module.project_file for module in (previous.modules if previous else [])),
+        }
     )
     all_results = sorted(results + outside, key=lambda result: result.path)
     file_to_module = map_files_to_modules([r.path for r in all_results], known_csproj)
@@ -322,7 +325,7 @@ def run(
         index,
         manifest.nodes,
         ruleset,
-        {module.csproj for module in configured if module.enrolled},
+        {module.project_file for module in configured if module.enrolled},
     )
     meta = RunMeta(
         generated_at=datetime.now(UTC).isoformat(timespec="seconds"),

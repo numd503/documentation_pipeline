@@ -110,7 +110,8 @@ def _manifest(nodes: list[DocNode], references: dict[str, list[str]] | None = No
             Module(
                 id=f"module:src/{name}/{name}.csproj",
                 name=name,
-                csproj=f"src/{name}/{name}.csproj",
+                project_file=f"src/{name}/{name}.csproj",
+                lang="cs",
                 project_references=[
                     f"src/{other}/{other}.csproj" for other in (references or {}).get(name, [])
                 ],
