@@ -7,9 +7,44 @@ import yaml
 
 from docpipe.config import DocpipeConfig, load_config
 from docpipe.discovery import discover, in_scope, matches_glob, normalize_scope
-from docpipe.emit import exclude_globs
+from docpipe.emit import DEFAULT_EXCLUDE, exclude_globs
 
 EXCLUDE = ["**/obj/**", "**/bin/**", "**/*.g.cs"]
+
+# Обход фронта идёт с полным набором умолчаний: без `**/node_modules/**`
+# проверять там нечего.
+WEB_EXCLUDE = exclude_globs(DocpipeConfig())
+
+# 27 из 29: два файла под node_modules отсекаются обходом.
+EXPECTED_TS = [
+    "nx-app/apps/widget/src/app/widget.component.ts",
+    "nx-app/apps/widget/src/app/widget.service.ts",
+    "src/app/app.routes.ts",
+    "src/app/cf-api/interceptors/auth.interceptor.ts",
+    "src/app/cf-api/interceptors/fix-url.interceptor.ts",
+    "src/app/cf-api/resources/model.service.ts",
+    "src/app/cf-api/resources/model.ts",
+    "src/app/cf-api/services/url-decorator.service.ts",
+    "src/app/inner-debt/services/inner-debt.service.ts",
+    "src/app/inner-debt/state/debt.actions.ts",
+    "src/app/inner-debt/state/debt.state.ts",
+    "src/app/legacy/legacy.module.ts",
+    "src/app/routes/forecast/forecast.component.ts",
+    "src/app/routes/models/detail/detail.component.ts",
+    "src/app/routes/models/list/list.component.spec.ts",
+    "src/app/routes/models/list/list.component.ts",
+    "src/app/routes/models/quiz/quiz.component.ts",
+    "src/app/routes/shell.component.ts",
+    "src/app/routesPath/lazy.ts",
+    "src/app/routesPath/models.ts",
+    "src/app/shared/index.ts",
+    "src/app/shared/services/audit.service.ts",
+    "src/app/shared/services/base-api.service.ts",
+    "src/app/shared/services/items.service.ts",
+    "src/app/types/global.d.ts",
+    "src/environments/environment.ts",
+    "src/main.ts",
+]
 
 # 11 из 12: Sample.Generated.g.cs отсекается дважды — по obj/ и по *.g.cs.
 EXPECTED_CS = [
@@ -132,6 +167,112 @@ def test_discover_with_scope(sample_solution: Path) -> None:
 def test_discover_scope_does_not_match_prefix_of_sibling(sample_solution: Path) -> None:
     result = discover(sample_solution, EXCLUDE, scope=["src/Sample"])
     assert result.cs_files == []
+
+
+# --------------------------------------------------------------------------------------
+# discover на фронте (F02)
+# --------------------------------------------------------------------------------------
+
+
+def test_discover_ts_files(web_workspace: Path) -> None:
+    result = discover(web_workspace, WEB_EXCLUDE)
+    assert result.ts_files == EXPECTED_TS
+    assert len(result.ts_files) == 27
+
+
+def test_discover_excludes_node_modules_by_traversal(web_workspace: Path) -> None:
+    """`node_modules` вырезается обходом, а не правилом классификации.
+
+    Десятки тысяч файлов: правило разобрало бы их все, чтобы потом отсеять.
+    """
+    result = discover(web_workspace, WEB_EXCLUDE)
+    assert not any(path.startswith("node_modules/") for path in result.ts_files)
+    assert not any(path.startswith("node_modules/") for path in result.web_project_files)
+
+
+def test_discover_without_excludes_sees_node_modules(web_workspace: Path) -> None:
+    """Контрольная проверка: без исключений файлы под node_modules находятся.
+
+    Без неё предыдущий тест мог бы проходить просто потому, что каталог пуст
+    или выкинут из репозитория `.gitignore`.
+    """
+    result = discover(web_workspace, [])
+    assert "node_modules/junk/index.ts" in result.ts_files
+    assert "node_modules/exceljs/dist/exceljs.bare.d.ts" in result.ts_files
+    assert len(result.ts_files) == 29
+
+
+def test_discover_keeps_spec_and_declaration_files(web_workspace: Path) -> None:
+    """`*.spec.ts` и `*.d.ts` обходом НЕ исключаются.
+
+    Оба нужны резолву: тестовые базовые классы входят в граф наследования,
+    а декларации — в разрешение импортов. Документами они не становятся,
+    но отсеивает их правило с причиной, а не обход.
+    """
+    result = discover(web_workspace, WEB_EXCLUDE)
+    assert "src/app/routes/models/list/list.component.spec.ts" in result.ts_files
+    assert "src/app/types/global.d.ts" in result.ts_files
+
+
+def test_discover_html_files(web_workspace: Path) -> None:
+    """`.html` нужен не как язык, а как хэш: шаблон входит в `impl_hash` компонента."""
+    result = discover(web_workspace, WEB_EXCLUDE)
+    assert result.html_files == [
+        "src/app/routes/models/list/list.component.html",
+        "src/index.html",
+    ]
+
+
+def test_discover_web_project_files(web_workspace: Path) -> None:
+    """Обе формы объявления модуля фронта: `angular.json` и nx `project.json`."""
+    result = discover(web_workspace, WEB_EXCLUDE)
+    assert result.web_project_files == [
+        "angular.json",
+        "nx-app/apps/widget/project.json",
+        "nx-app/nx.json",
+        "package.json",
+    ]
+
+
+def test_web_project_files_are_matched_by_whole_name(tmp_path: Path) -> None:
+    """Имя сравнивается целиком, а не суффиксом.
+
+    Glob `*nx.json` ловит любой файл, чьё имя кончается на `nx.json`:
+    на разведке в раздел про nx первой строкой встал файл тестовых данных
+    `DuplicatedRecordsBugEvanx.json`, и раздел выглядел осмысленно.
+    """
+    (tmp_path / "DuplicatedRecordsBugEvanx.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "my-project.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "nx.json").write_text("{}", encoding="utf-8")
+
+    assert discover(tmp_path, WEB_EXCLUDE).web_project_files == ["nx.json"]
+
+
+def test_discover_web_scope_and_roots_apply(web_workspace: Path) -> None:
+    """Сужение работает на фронте так же, как на .NET, — теми же полями."""
+    result = discover(web_workspace, WEB_EXCLUDE, scope=["nx-app"])
+    assert result.ts_files == [
+        "nx-app/apps/widget/src/app/widget.component.ts",
+        "nx-app/apps/widget/src/app/widget.service.ts",
+    ]
+    assert result.html_files == []
+
+
+def test_discover_web_is_stable_across_calls(web_workspace: Path) -> None:
+    assert discover(web_workspace, WEB_EXCLUDE) == discover(web_workspace, WEB_EXCLUDE)
+
+
+@pytest.mark.parametrize("directory", ["dist", "coverage", ".angular"])
+def test_web_build_output_directories_are_excluded_by_default(
+    tmp_path: Path, directory: str
+) -> None:
+    """Копии исходников в выходных каталогах дали бы второе объявление символа."""
+    (tmp_path / directory).mkdir()
+    (tmp_path / directory / "app.ts").write_text("export class A {}", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.ts").write_text("export class A {}", encoding="utf-8")
+
+    assert discover(tmp_path, WEB_EXCLUDE).ts_files == ["src/app.ts"]
 
 
 # --------------------------------------------------------------------------------------
@@ -299,8 +440,11 @@ def test_config_missing_file_is_an_error(tmp_path: Path) -> None:
 
 
 def test_exclude_defaults_to_empty() -> None:
+    """Ключ пуст, но встроенные шаблоны действуют — и .NET, и фронта."""
     assert DocpipeConfig().exclude == []
-    assert exclude_globs(DocpipeConfig()) == sorted(EXCLUDE)
+    assert exclude_globs(DocpipeConfig()) == sorted(DEFAULT_EXCLUDE)
+    for builtin in [*EXCLUDE, "**/node_modules/**", "**/dist/**", "**/.angular/**"]:
+        assert builtin in exclude_globs(DocpipeConfig())
 
 
 def test_exclude_from_config_adds_to_builtin() -> None:

@@ -17,6 +17,7 @@ from docpipe.tree import build_nodes
 FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE_SOLUTION = FIXTURES / "SampleSolution"
 WILD_SOLUTION = FIXTURES / "WildSolution"
+WEB_WORKSPACE = FIXTURES / "WebWorkspace"
 
 EXCLUDE = ["**/obj/**", "**/bin/**", "**/*.g.cs"]
 
@@ -36,6 +37,17 @@ def wild_solution() -> Path:
     потребовало бы перенумеровать их все.
     """
     return WILD_SOLUTION
+
+
+@pytest.fixture
+def web_workspace() -> Path:
+    """Angular-workspace шага `web`.
+
+    Отдельная фикстура, а не расширение .NET-решений: пересечения между
+    языками нет ни в обходе, ни в разборе, а числа в критериях приёмки
+    F02–F17 завязаны на её состав так же, как T04–T20 — на SampleSolution.
+    """
+    return WEB_WORKSPACE
 
 
 def module_of(relative: str, csproj_files: list[str]) -> str | None:

@@ -175,7 +175,8 @@ F03 намеренно стои́т без зависимостей и рань�
 **Цель:** `discovery` находит исходники фронта, а тесты получают дерево, на котором
 воспроизводятся все известные ловушки.
 
-**Изменить:** `docpipe/discovery.py`, `docpipe/config.py`, `tests/test_discovery.py`
+**Изменить:** `docpipe/discovery.py`, `docpipe/emit.py`, `tests/conftest.py`,
+`tests/test_discovery.py`, `.gitignore`
 **Создать:** `tests/fixtures/WebWorkspace/**`, `tests/test_fixture_web.py`
 
 **Зачем.** Все последующие задачи проверяются на этой фикстуре. Если она не содержит
@@ -183,43 +184,90 @@ F03 намеренно стои́т без зависимостей и рань�
 
 **Спецификация**
 
-1. `_EXTENSIONS` дополняется: `ts_files: (".ts",)`, `html_files: (".html",)`,
-   `web_project_files: ("angular.json", "project.json", "package.json")` — последнее
-   по **имени файла**, а не по расширению, поэтому в `_EXTENSIONS` не влезает:
-   заводится отдельный список имён и отдельное поле `Discovered.web_project_files`.
-2. В умолчания исключений добавляются `**/node_modules/**`, `**/dist/**`,
-   `**/.angular/**`, `**/coverage/**`. Складываются со встроенными, а не замещают.
+1. `_EXTENSIONS` дополняется: `ts_files: (".ts",)`, `html_files: (".html",)`.
+   Файлы, объявляющие модуль фронта, отбираются по **полному имени**, а не по
+   расширению, поэтому в `_EXTENSIONS` не влезают: заводится отдельное множество
+   `_WEB_PROJECT_FILE_NAMES = {"angular.json", "nx.json", "project.json",
+   "package.json"}` и отдельное поле `Discovered.web_project_files`.
+2. В умолчания исключений (`emit.DEFAULT_EXCLUDE`) добавляются `**/node_modules/**`,
+   `**/dist/**`, `**/.angular/**`, `**/coverage/**`. Складываются со встроенными,
+   а не замещают.
 3. `*.spec.ts` и `*.d.ts` **не исключаются обходом** — они нужны резолву; отсев идёт
    правилом с причиной в F12.
+4. Обход остаётся **один** на оба языка: два прохода по дереву пришлось бы держать
+   согласованными по `exclude`, `scope` и `roots`, и разошлись бы они молча.
 
-**Состав фикстуры** (каждый пункт — воспроизведение факта из отчёта разведки):
+**Состав фикстуры** (каждый пункт — воспроизведение факта из отчёта разведки;
+27 файлов `.ts` вне `node_modules`, 29 всего):
 
 ```
 WebWorkspace/
-  angular.json                       один проект, root ""
-  package.json                       @angular/core 17, @ngxs/store 3.8
-  tsconfig.json                      paths: @cf-api/*, @shared/*, @env/*
-  proxy.conf.js                      context ['/**'], pathRewrite нет
+  angular.json                       один проект tr-p, root "", sourceRoot "src"
+  package.json                       @angular/core 17.3.12, @ngxs/store 3.8.2
+  tsconfig.json                      extends ./tsconfig.base.json, СВОИХ paths нет
+  tsconfig.base.json                 paths: @cf-api/*, @shared, @shared/*, @env/*,
+                                     @routes/*, exceljs → ../node_modules/…
+  proxy.conf.js                      context ['/**'], переписывания пути нет
+  src/index.html                     .html бывает не только шаблоном компонента
+  src/main.ts                        bootstrapApplication — top-level statements
   src/environments/environment.ts    apiRoot есть, apiUrl НЕТ
-  src/app/app.routes.ts              children: [...modelsPath] — спред
-  src/app/routesPath/models.ts       литеральные path, один ':id'
-  src/app/routesPath/lazy.ts         loadChildren с динамическим import()
+  src/app/app.routes.ts              children: [...modelsPath] — спред,
+                                     плюс loadChildren с динамическим import()
+  src/app/routesPath/models.ts       литеральные path, ':id', 'loader/quiz'
+                                     через loadComponent, сегмент-выражение,
+                                     redirectTo
+  src/app/routesPath/lazy.ts         короткая форма loadComponent: () => X
   src/app/cf-api/interceptors/fix-url.interceptor.ts
                                      класс с декоратором, ветка if (environment?.apiUrl)
+  src/app/cf-api/interceptors/auth.interceptor.ts
+                                     функциональный интерцептор: HttpInterceptorFn
+  src/app/cf-api/services/url-decorator.service.ts   выключенный конвейер URL
+  src/app/cf-api/resources/model.ts                  interface + enum
   src/app/cf-api/resources/model.service.ts
-                                     literal, template, `${this.baseUrl}`, переменная
+                                     literal, template, конкатенация,
+                                     `${this.baseUrl}`, URL из параметра
+  src/app/shared/index.ts            бочка: export * from './services/…'
+  src/app/shared/services/base-api.service.ts
+                                     два класса в файле, CoreService ← BaseApiService
   src/app/shared/services/audit.service.ts
                                      export const auditUrl = '...' и 3 вызова через него
   src/app/shared/services/items.service.ts
-                                     api/items?listInnerName=… собранный выражением
+                                     api/items/query с listInnerName в теле (два
+                                     разных значения), api/items?listInnerName=…
+                                     литералом и подстановкой
+  src/app/inner-debt/services/inner-debt.service.ts  extends через алиас и бочку
   src/app/inner-debt/state/debt.actions.ts, debt.state.ts
-                                     цепочка dispatch → @Action → сервис
-  src/app/routes/models/list/list.component.ts + list.component.html
-                                     standalone: true, templateUrl
+                                     цепочка dispatch → @Action → сервис,
+                                     @State<Model>({ и два декоратора на классе
+  src/app/routes/shell.component.ts  standalone с ВНУТРЕННИМ шаблоном
+  src/app/routes/models/list/list.component.{ts,html,scss,spec.ts}
+                                     standalone: true, templateUrl, приманки
+                                     Map.get и FormGroup.get
+  src/app/routes/models/detail/detail.component.ts   цель ':id'
+  src/app/routes/models/quiz/quiz.component.ts       цель '/models/loader/quiz'
+  src/app/routes/forecast/forecast.component.ts      цель короткой формы
+  src/app/types/global.d.ts          обходом не исключается
   src/app/legacy/legacy.module.ts    @NgModule и НЕэкспортируемый класс с декоратором
-  nx-app/project.json                вторая форма модуля
+  nx-app/nx.json                     вторая форма модуля целиком: nx.json рядом
+  nx-app/apps/widget/project.json    с apps/*/project.json
+  nx-app/apps/widget/src/app/widget.{component,service}.ts
+                                     литерал '/pm/api/limits/getperiods' — модуль,
+                                     не названный в url_rewrite
   node_modules/junk/index.ts         должен быть исключён обходом
+  node_modules/exceljs/dist/exceljs.bare.d.ts        цель алиаса, ведущего наружу
 ```
+
+> **Ловушка. `paths` дочернего `tsconfig` замещает родительский целиком, а не
+> дополняет его.** Поэтому в фикстуре алиасы объявлены **только** в
+> `tsconfig.base.json`, а `tsconfig.json` их не переобъявляет: иначе цепочка
+> `extends` была бы декорацией, и резолв, её игнорирующий, всё равно проходил бы
+> тесты. Реализация F05 обязана воспроизводить именно замещение, а не слияние.
+
+> **Ловушка. Комментарий внутри фикстуры ломает проверку по подстроке.** Тест
+> «`@State(` без дженерика в фикстуре не встречается» падал на комментарии,
+> объясняющем эту самую ловушку, а тест «в `proxy.conf` нет `pathRewrite`» —
+> на комментарии «`pathRewrite` нет». Пояснение в фикстуре не должно содержать
+> формы, отсутствие которой утверждается.
 
 > **Ловушка. Не добавлять `node_modules/` в `.gitignore`.** В фикстуре есть файл под
 > `node_modules/`, на котором проверяется исключение. Стандартный `.gitignore` Angular
@@ -232,12 +280,16 @@ WebWorkspace/
 > Иначе «упрощение» фикстуры оставит тесты зелёными и бессмысленными.
 
 **Критерии приёмки**
-- `discover` на `WebWorkspace` возвращает ровно ожидаемое число `.ts` (посчитать при
-  создании и зафиксировать константой в тесте), `node_modules/junk/index.ts` в списке
-  отсутствует;
-- `*.spec.ts` **присутствует** в результате обхода;
+- `discover` на `WebWorkspace` возвращает ровно 27 файлов `.ts` (список зафиксирован
+  константой `EXPECTED_TS`), файлы под `node_modules/` в нём отсутствуют, а без
+  исключений — присутствуют (контрольная проверка: иначе тест проходил бы просто
+  потому, что каталога нет);
+- `*.spec.ts` и `*.d.ts` **присутствуют** в результате обхода;
 - все списки отсортированы, пути POSIX-относительные;
-- `test_fixture_web.py` проверяет девять конструкций по существу, а не по именам файлов.
+- `test_fixture_web.py` проверяет конструкции по существу, а не по именам файлов.
+  Проверка ищет форму **по всему корпусу** `.ts`: перенести конструкцию в соседний
+  файл можно, удалить — нельзя. Поиск в конкретном файле дал бы тест, который
+  переживёт исчезновение конструкции при переименовании файла.
 
 **Проверка**
 ```bash

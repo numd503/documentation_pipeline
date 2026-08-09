@@ -40,7 +40,19 @@ from docpipe.model import (
 from docpipe.stats import Stats, collect_stats, kind_counts
 from docpipe.tree import build_nodes
 
-DEFAULT_EXCLUDE = ["**/obj/**", "**/bin/**", "**/*.g.cs"]
+DEFAULT_EXCLUDE = [
+    "**/obj/**",
+    "**/bin/**",
+    "**/*.g.cs",
+    # Выходные и вендоренные каталоги фронта. `node_modules` — десятки тысяч
+    # файлов, и это единственная причина, по которой обход фронта вообще
+    # укладывается в разумное время; остальные три хранят копии исходников,
+    # из-за которых один и тот же символ объявился бы дважды.
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/.angular/**",
+    "**/coverage/**",
+]
 
 
 def exclude_globs(config: DocpipeConfig) -> list[str]:

@@ -1,0 +1,22 @@
+{
+  "name": "tr-p",
+  "version": "0.0.0",
+  "scripts": {
+    "start": "ng serve --proxy-config proxy.conf.js",
+    "build": "ng build"
+  },
+  "dependencies": {
+    "@angular/common": "17.3.12",
+    "@angular/core": "17.3.12",
+    "@angular/forms": "17.3.12",
+    "@angular/router": "17.3.12",
+    "@ngxs/store": "^3.8.2",
+    "@ngxs/router-plugin": "^3.8.2",
+    "exceljs": "4.4.0",
+    "rxjs": "6.5.4"
+  },
+  "devDependencies": {
+    "@angular/cli": "17.3.8",
+    "typescript": "5.4.5"
+  }
+}

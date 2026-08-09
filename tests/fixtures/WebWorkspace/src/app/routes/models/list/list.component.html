@@ -1,0 +1,9 @@
+<section class="models-list">
+  <form [formGroup]="form">
+    <input formControlName="search" placeholder="Поиск модели" />
+  </form>
+
+  <ul>
+    <li *ngFor="let model of models">{{ model.title }}</li>
+  </ul>
+</section>

@@ -19,7 +19,20 @@ _EXTENSIONS: dict[str, tuple[str, ...]] = {
     "cs_files": (".cs",),
     "csproj_files": (".csproj",),
     "sln_files": (".sln", ".slnx"),
+    "ts_files": (".ts",),
+    "html_files": (".html",),
 }
+
+# Файлы, объявляющие модуль фронта. Отбираются по ПОЛНОМУ имени, а не по
+# расширению: `.json` в репозитории тысячи, и в `_EXTENSIONS` такой отбор
+# не помещается.
+#
+# Сравнение именно целого имени, а не суффикса: glob `*nx.json` ловит любой
+# файл, чьё имя кончается на `nx.json`, — на разведке первой строкой раздела
+# встал `DuplicatedRecordsBugEvanx.json` из тестовых данных .NET.
+_WEB_PROJECT_FILE_NAMES: frozenset[str] = frozenset(
+    {"angular.json", "nx.json", "project.json", "package.json"}
+)
 
 
 @dataclass(frozen=True)
@@ -29,6 +42,9 @@ class Discovered:
     cs_files: list[str]
     csproj_files: list[str]
     sln_files: list[str]  # и `.sln`, и `.slnx`
+    ts_files: list[str]  # включая `*.spec.ts` и `*.d.ts` — они нужны резолву
+    html_files: list[str]
+    web_project_files: list[str]  # angular.json, nx.json, project.json, package.json
 
 
 def matches_glob(path: str, glob: str) -> bool:
@@ -99,7 +115,11 @@ def discover(
     scope: list[str] | None = None,
     roots: list[str] | None = None,
 ) -> Discovered:
-    """Найти исходники .NET под `root`.
+    """Найти исходники под `root` — и .NET, и фронта, одним обходом.
+
+    Обход общий намеренно: два прохода по дереву репозитория пришлось бы держать
+    согласованными по исключениям, scope и roots, и разошлись бы они молча.
+    Шаг `web` читает `ts_files`/`html_files`/`web_project_files`, шаг 1 — остальные.
 
     Символические ссылки не разыменовываются: цикл через симлинк подвесил бы
     обход, а копия дерева по ссылке породила бы дубли символов.
@@ -116,6 +136,7 @@ def discover(
     normalized_scope = normalize_scope(scope)
     normalized_roots = normalize_scope(roots)
     found: dict[str, list[str]] = {field: [] for field in _EXTENSIONS}
+    found["web_project_files"] = []
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         relative_dir = Path(dirpath).relative_to(root).as_posix()
@@ -131,6 +152,8 @@ def discover(
         for filename in sorted(filenames):
             suffix = Path(filename).suffix
             field = next((f for f, exts in _EXTENSIONS.items() if suffix in exts), None)
+            if field is None and filename in _WEB_PROJECT_FILE_NAMES:
+                field = "web_project_files"
             if field is None:
                 continue
 
@@ -148,4 +171,7 @@ def discover(
         cs_files=sorted(found["cs_files"]),
         csproj_files=sorted(found["csproj_files"]),
         sln_files=sorted(found["sln_files"]),
+        ts_files=sorted(found["ts_files"]),
+        html_files=sorted(found["html_files"]),
+        web_project_files=sorted(found["web_project_files"]),
     )
