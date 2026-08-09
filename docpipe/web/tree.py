@@ -11,6 +11,7 @@
 склеил бы несколько модулей в один.
 """
 
+import posixpath
 import socket
 import time
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ from docpipe.classify import Ruleset, classify, load_ruleset
 from docpipe.config import DocpipeConfig
 from docpipe.discovery import discover
 from docpipe.emit import exclude_globs
-from docpipe.hashing import content_hash
+from docpipe.hashing import content_hash, stable_hash
 from docpipe.model import (
     DocNode,
     FileParseResult,
@@ -33,6 +34,7 @@ from docpipe.model import (
     ParserVersions,
     RouteEntry,
     RunMeta,
+    SourceSpan,
     Symbol,
     WebCall,
 )
@@ -176,6 +178,52 @@ def _calls_by_file(
     )
 
 
+def _with_templates(root: Path, index: dict[str, Symbol]) -> dict[str, Symbol]:
+    """Дописать компонентам их `.html`: в источники и в `impl_hash`.
+
+    Переписанный экран обязан помечать документ устаревшим, а правка `.scss`
+    — нет: стили смысла документа не меняют. Поэтому в хэш входит **шаблон**
+    и только он.
+
+    Путь шаблона попадает в `sources` рядом с `.ts`, а не в отдельное поле:
+    шаблон и есть часть исходника компонента, а список источников агент шага 3
+    и так читает — он же печатается в генерируемом блоке документа.
+    """
+    updated: dict[str, Symbol] = {}
+    for key, symbol in index.items():
+        template = next(
+            (
+                attribute.named_args["templateUrl"]
+                for attribute in symbol.attributes
+                if "templateUrl" in attribute.named_args
+            ),
+            None,
+        )
+        source = symbol.sources[0].path if symbol.sources else ""
+        relative = _normalize(posixpath.dirname(source), template) if template else ""
+        path = root / relative
+        if not relative or not path.is_file():
+            updated[key] = symbol
+            continue
+
+        content = path.read_bytes()
+        updated[key] = symbol.model_copy(
+            update={
+                "sources": [
+                    *symbol.sources,
+                    SourceSpan(path=relative, start=1, end=max(1, content.count(b"\n") + 1)),
+                ],
+                "impl_hash": stable_hash([symbol.impl_hash, content_hash(content)]),
+            }
+        )
+    return updated
+
+
+def _normalize(directory: str, relative: str) -> str:
+    joined = posixpath.join(directory, relative) if directory else relative
+    return posixpath.normpath(joined)
+
+
 def _routes_by_component(routes: RouteScan) -> dict[str, list[RouteEntry]]:
     grouped: dict[str, list[RouteEntry]] = {}
     for entry in routes.entries:
@@ -185,7 +233,7 @@ def _routes_by_component(routes: RouteScan) -> dict[str, list[RouteEntry]]:
 
 # Повышения вида, которые движок правил сделать не может: он видит только
 # `Symbol`, а таблица роутов и HTTP-вызовы разбираются отдельно и межфайлово.
-_PROMOTIONS: dict[str, tuple[str, str]] = {
+PROMOTIONS: dict[str, tuple[str, str]] = {
     "component": ("page", "page"),
     "service": ("api-service", "api-service"),
 }
@@ -205,9 +253,9 @@ def _promote(
     а не что получилось. Иначе по отчёту нельзя понять, какое правило настраивать.
     """
     if kind == "component" and routes:
-        return _PROMOTIONS["component"]
+        return PROMOTIONS["component"]
     if kind == "service" and calls:
-        return _PROMOTIONS["service"]
+        return PROMOTIONS["service"]
     return kind, template
 
 
@@ -306,7 +354,9 @@ def run(
     results = [item.result for item in parsed]
     context = _context(root, results, modules)
     file_to_module = map_files_to_modules([result.path for result in results], modules)
-    index = compute_closures(build_symbol_index(results, file_to_module, context))
+    index = _with_templates(
+        root, compute_closures(build_symbol_index(results, file_to_module, context))
+    )
 
     calls, calls_by_file = _calls_by_file(parsed, modules, config)
     sources = {relative: (root / relative).read_bytes() for relative in found.ts_files}

@@ -28,13 +28,13 @@ _PARAMETER_MODIFIERS = frozenset({"ref", "out", "in", "params", "this", "scoped"
 _ATTRIBUTE_PREFIX = re.compile(r"^\s*(\[[^\]]*\]\s*)+")
 
 
-def node_id(module_csproj: str, symbol: Symbol) -> str:
+def node_id(module_project_file: str, symbol: Symbol) -> str:
     """Идентификатор узла — тот же ключ, что и у символа, с префиксом `type:`.
 
     Схема ключа обязана совпадать с `resolve.symbol_key`: иначе узлы перестанут
     сопоставляться с символами, а FQN сам по себе типы не различает (см. T10).
     """
-    return f"type:{symbol_key(module_csproj, symbol.fqn, len(symbol.type_parameters))}"
+    return f"type:{symbol_key(module_project_file, symbol.fqn, len(symbol.type_parameters))}"
 
 
 # --------------------------------------------------------------------------------------

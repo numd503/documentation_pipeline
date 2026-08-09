@@ -44,7 +44,7 @@ docpipe:
   template_ref: templates/controller.md
   example_ref: templates/examples/controller.md
   module: Sample.Pricing.Api
-  module_csproj: src/Sample.Pricing.Api/Sample.Pricing.Api.csproj
+  module_project_file: src/Sample.Pricing.Api/Sample.Pricing.Api.csproj
   domain: Sample.Pricing.Api
   team: null
   signature_hash: sha256:0e29455f07023ae28072c3bef5b59c2725eead683869ad1b48c23170251613b4
