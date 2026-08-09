@@ -11,7 +11,6 @@ from collections import defaultdict
 from docpipe.classify import Ruleset, classify
 from docpipe.config import DocLayout, DocpipeConfig
 from docpipe.discovery import matches_glob
-from docpipe.dotnet.resolve import strip_generics, symbol_key
 from docpipe.hashing import slugify, stable_hash
 from docpipe.model import (
     Dependency,
@@ -22,6 +21,7 @@ from docpipe.model import (
     Relation,
     Symbol,
 )
+from docpipe.symbols import strip_generics, symbol_key
 
 # Слова, которые в списке параметров стоят перед типом и типом не являются.
 _PARAMETER_MODIFIERS = frozenset({"ref", "out", "in", "params", "this", "scoped", "readonly"})

@@ -285,34 +285,6 @@ class Module(_Base):
     enrolled: bool
 
 
-class DocNode(_Base):
-    """Один документ будущей документации.
-
-    `matched_rules` содержит **все** совпавшие правила, а не только победившее:
-    без этого классификация превращается в чёрный ящик.
-
-    `signature_hash` считается от нормализованных сигнатур и намеренно
-    **не включает** номера строк и пути — переформатирование файла не должно
-    заставлять агента на шаге 3 перегенерировать документ.
-    """
-
-    id: str
-    kind: str
-    template: str
-    title: str
-    doc_path: str
-    parent: str | None = None
-    module: str
-    domain: str
-    symbol: Symbol | None = None
-    endpoints: list[Endpoint] = Field(default_factory=list)
-    dependencies: list[Dependency] = Field(default_factory=list)
-    related: list[Relation] = Field(default_factory=list)
-    matched_rules: list[str] = Field(default_factory=list)
-    signature_hash: str
-    impl_hash: str = ""
-
-
 class WebCall(_Base):
     """HTTP-вызов из кода фронта: кто зовёт, куда и с какой уверенностью.
 
@@ -346,12 +318,54 @@ class RouteEntry(_Base):
     route_unresolved: bool = False
 
 
+class DocNode(_Base):
+    """Один документ будущей документации.
+
+    `matched_rules` содержит **все** совпавшие правила, а не только победившее:
+    без этого классификация превращается в чёрный ящик.
+
+    `signature_hash` считается от нормализованных сигнатур и намеренно
+    **не включает** номера строк и пути — переформатирование файла не должно
+    заставлять агента на шаге 3 перегенерировать документ.
+    """
+
+    id: str
+    kind: str
+    template: str
+    title: str
+    doc_path: str
+    parent: str | None = None
+    module: str
+    domain: str
+    symbol: Symbol | None = None
+    endpoints: list[Endpoint] = Field(default_factory=list)
+    dependencies: list[Dependency] = Field(default_factory=list)
+    related: list[Relation] = Field(default_factory=list)
+    matched_rules: list[str] = Field(default_factory=list)
+    signature_hash: str
+    impl_hash: str = ""
+
+    # Шаг `web`. У узлов .NET пусты всегда: поля общей модели, а не отдельной.
+    # Держать два `DocNode` нельзя — на них стоят `materialize`, `docs status`
+    # и бизнес-слой, и каждый из трёх пришлось бы учить обоим типам.
+    web_calls: list[WebCall] = Field(default_factory=list)
+    routes: list[RouteEntry] = Field(default_factory=list)
+
+
 class ParserVersions(_Base):
     """Версии парсера. Апгрейд грамматики может законно изменить вывод —
-    поэтому версии попадают в манифест и видны в диффе."""
+    поэтому версии попадают в манифест и видны в диффе.
+
+    Обе грамматики необязательны: манифест .NET не знает про TypeScript,
+    манифест фронта — про C#. Версия чужой грамматики в нём была бы шумом,
+    а `null` читается однозначно. Ключ кэша строится по этой же структуре,
+    поэтому апгрейд грамматики кэш сбрасывает — иначе прогон отдал бы разбор,
+    сделанный старой версией, без единого сообщения.
+    """
 
     tree_sitter: str
-    grammar_c_sharp: str
+    grammar_c_sharp: str | None = None
+    grammar_typescript: str | None = None
 
 
 class PartialInfo(_Base):

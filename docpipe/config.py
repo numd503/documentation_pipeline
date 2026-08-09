@@ -35,6 +35,77 @@ def _repo_relative(value: str, field: str) -> str:
     return "/".join(parts)
 
 
+class UrlRewrite(BaseModel):
+    """Что делает с URL прокси модуля по дороге к бэкенду.
+
+    Повторяет `pathRewrite` из `proxy.conf`: у PM `^/pm` → `''`, у админки
+    `^/api/` → `/admin/api/`. Пустые поля — законное значение: «проверено,
+    преобразования нет». **Отсутствие записи о модуле — другое**: это
+    ненастроенный модуль, и отчёт связи обязан назвать его вслух, иначе
+    забытая настройка выглядит как исправная связь.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    module: str
+    strip_prefix: str = ""
+    add_prefix: str = ""
+
+
+class Discriminator(BaseModel):
+    """Где лежит имя списка у обращения к реестру."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    where: Literal["body", "query"] = Field(alias="in")
+    name: str
+
+
+class RegistryCallConfig(BaseModel):
+    """Маршрут платформы, у которого смысл вызова определяет не маршрут.
+
+    `api/items/query` с `listInnerName` в теле и `api/items?listInnerName=…`
+    в query — один маршрут на много смыслов. Одного правила на оба случая
+    не хватает: их два у одного и того же API.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    route: str
+    discriminator: Discriminator
+    kind: str = ""
+
+
+class WebConfig(BaseModel):
+    """Секция `web` в `docpipe.yaml`: шаг разбора фронтенда.
+
+    Отдельная секция, а не поля верхнего уровня: ключи шага 1 читает и шаг 2,
+    и бизнес-слой, и подмешивать к ним настройки одного языка значило бы
+    показывать их всем троим.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    roots: list[str] = Field(default_factory=lambda: ["."])
+    rules: str = "rules/web.yaml"
+    out: str = "artifacts/doc-tree.web.json"
+    link_out: str = "artifacts/web-link.json"
+
+    # Пустой список — законное значение: значит, проверено и ничего
+    # не преобразуется. Читается сверху вниз, первое совпадение выигрывает.
+    url_rewrite: list[UrlRewrite] = Field(default_factory=list)
+    registry_calls: list[RegistryCallConfig] = Field(default_factory=list)
+
+    @field_validator("roots")
+    @classmethod
+    def _check_roots(cls, value: list[str]) -> list[str]:
+        return [_repo_relative(item, "web.roots") for item in value]
+
+    def rewrite_for(self, module: str) -> UrlRewrite | None:
+        """Правило модуля. `None` — модуль в таблице не назван вовсе."""
+        return next((item for item in self.url_rewrite if item.module == module), None)
+
+
 class DocpipeConfig(BaseModel):
     """Настройки прогона.
 
@@ -111,6 +182,10 @@ class DocpipeConfig(BaseModel):
     # очередь — артефакт прогона, а не часть документации, и на АС CF она лежит
     # рядом с манифестом, вне дерева документов.
     worklist: str = "artifacts/doc-worklist.json"
+
+    # Шаг `web`. Секция необязательна: репозиторий без фронта её не заводит,
+    # и умолчания дают рабочий прогон на репозитории, где фронт один.
+    web: WebConfig = Field(default_factory=lambda: WebConfig())
 
     # `cache_dir` здесь же, хотя в `doc_path` он не попадает: он единственный
     # из «путей прогона», который склеивается с `--root`, а не с текущим

@@ -15,7 +15,7 @@ from functools import cache
 from pathlib import Path
 
 import tree_sitter_typescript as tsts
-from tree_sitter import Language, Node, Parser, Query, QueryCursor
+from tree_sitter import Language, Node, Parser, Query, QueryCursor, Tree
 
 from docpipe.hashing import content_hash
 from docpipe.model import (
@@ -562,9 +562,19 @@ def _build_declaration(
     )
 
 
-def parse_source(source: bytes, path: str) -> FileParseResult:
+def parse_tree(source: bytes) -> Tree:
+    """Разобрать исходник в дерево.
+
+    Отдельная функция, потому что дерево нужно дважды: символам (`parse_source`)
+    и фактам о вызовах (`web/calls.py`). Второй разбор того же файла стоил бы
+    ровно столько же, сколько первый, а на 1300 файлах это заметно.
+    """
+    return _PARSER.parse(source)
+
+
+def parse_source(source: bytes, path: str, *, tree: Tree | None = None) -> FileParseResult:
     """Разобрать содержимое файла. `path` используется как метка и как namespace."""
-    tree = _PARSER.parse(source)
+    tree = tree if tree is not None else parse_tree(source)
     captures = QueryCursor(_query("declarations.scm")).captures(tree.root_node)
     member_captures = QueryCursor(_query("members.scm")).captures(tree.root_node)
 

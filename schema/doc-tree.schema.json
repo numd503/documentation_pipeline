@@ -133,6 +133,13 @@
           "title": "Related",
           "type": "array"
         },
+        "routes": {
+          "items": {
+            "$ref": "#/$defs/RouteEntry"
+          },
+          "title": "Routes",
+          "type": "array"
+        },
         "signature_hash": {
           "title": "Signature Hash",
           "type": "string"
@@ -155,6 +162,13 @@
         "title": {
           "title": "Title",
           "type": "string"
+        },
+        "web_calls": {
+          "items": {
+            "$ref": "#/$defs/WebCall"
+          },
+          "title": "Web Calls",
+          "type": "array"
         }
       },
       "required": [
@@ -335,11 +349,31 @@
     },
     "ParserVersions": {
       "additionalProperties": false,
-      "description": "Версии парсера. Апгрейд грамматики может законно изменить вывод —\nпоэтому версии попадают в манифест и видны в диффе.",
+      "description": "Версии парсера. Апгрейд грамматики может законно изменить вывод —\nпоэтому версии попадают в манифест и видны в диффе.\n\nОбе грамматики необязательны: манифест .NET не знает про TypeScript,\nманифест фронта — про C#. Версия чужой грамматики в нём была бы шумом,\nа `null` читается однозначно. Ключ кэша строится по этой же структуре,\nпоэтому апгрейд грамматики кэш сбрасывает — иначе прогон отдал бы разбор,\nсделанный старой версией, без единого сообщения.",
       "properties": {
         "grammar_c_sharp": {
-          "title": "Grammar C Sharp",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grammar C Sharp"
+        },
+        "grammar_typescript": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grammar Typescript"
         },
         "tree_sitter": {
           "title": "Tree Sitter",
@@ -347,8 +381,7 @@
         }
       },
       "required": [
-        "tree_sitter",
-        "grammar_c_sharp"
+        "tree_sitter"
       ],
       "title": "ParserVersions",
       "type": "object"
@@ -399,6 +432,55 @@
         "relation"
       ],
       "title": "Relation",
+      "type": "object"
+    },
+    "RouteEntry": {
+      "additionalProperties": false,
+      "description": "Ветка таблицы роутов: полный путь страницы и компонент на нём.\n\n`route_unresolved` — путь собрать не удалось (сегмент задан выражением).\nЭто **состояние**, а не отсутствие: пропав из вывода, такая ветка занизила\nбы знаменатель покрытия страниц, и отчёт показал бы успех там, где его нет.",
+      "properties": {
+        "component": {
+          "title": "Component",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "route_unresolved": {
+          "default": false,
+          "title": "Route Unresolved",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "component"
+      ],
+      "title": "RouteEntry",
+      "type": "object"
+    },
+    "RouteKey": {
+      "description": "Ключ, по которому сходятся вызов фронта и эндпоинт бэкенда.",
+      "properties": {
+        "discriminator": {
+          "default": "",
+          "title": "Discriminator",
+          "type": "string"
+        },
+        "http_method": {
+          "title": "Http Method",
+          "type": "string"
+        },
+        "route": {
+          "title": "Route",
+          "type": "string"
+        }
+      },
+      "required": [
+        "http_method",
+        "route"
+      ],
+      "title": "RouteKey",
       "type": "object"
     },
     "SourceSpan": {
@@ -547,6 +629,52 @@
         "module"
       ],
       "title": "Symbol",
+      "type": "object"
+    },
+    "WebCall": {
+      "additionalProperties": false,
+      "description": "HTTP-вызов из кода фронта: кто зовёт, куда и с какой уверенностью.\n\nКлюч — пара `(метод, маршрут)` с различителем, а не ссылка на узел\nбэкенда: идентификатор узла содержит путь проекта и FQN, и переименование\nконтроллера рвало бы связь при неизменном HTTP-контракте.\n\n`via_action` — тип экшена NGXS, если до вызова дошли по цепочке\n«компонент диспатчит → стейт обрабатывает → сервис зовёт». Строка типа\nэкшена — единственное стабильное литеральное звено этой цепочки: имя\nкласса меняется при рефакторинге, строка нет.",
+      "properties": {
+        "confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "key": {
+          "$ref": "#/$defs/RouteKey"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "via_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Via Action"
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "key",
+        "confidence"
+      ],
+      "title": "WebCall",
       "type": "object"
     }
   },

@@ -88,6 +88,7 @@ from docpipe.stats import (
     stats_from_manifest,
     validate_manifest,
 )
+from docpipe.web.tree import run as run_web_scan
 
 app = typer.Typer(
     name="docpipe",
@@ -503,6 +504,75 @@ def materialize(
 
     if plan.errors or result.errors or result.refused:
         raise typer.Exit(code=1)
+
+
+web_app = typer.Typer(
+    help="Шаг `web`: фронтенд на Angular.",
+    no_args_is_help=True,
+)
+app.add_typer(web_app, name="web")
+
+
+@web_app.command("scan")
+def web_scan(
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория с исходниками.")],
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    rules: Annotated[
+        Path | None, typer.Option("--rules", help="Набор правил классификации фронта.")
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out", help="Куда записать манифест. Без флага — `web.out` из конфигурации."
+        ),
+    ] = None,
+    no_cache: Annotated[
+        bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
+    ] = False,
+) -> None:
+    """Построить дерево документации по исходникам фронтенда.
+
+    Пишет два файла: детерминированный манифест и сидкар `<out>.run.json`.
+    Манифест той же схемы, что у шага 1, — `materialize`, `docs status`
+    и бизнес-слой работают от него, не зная про язык.
+    """
+    if not root.is_dir():
+        raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
+
+    try:
+        settings = load_config(config)
+        ruleset = load_ruleset(rules or Path(settings.web.rules))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    cache_dir = None if no_cache else root / settings.cache_dir
+    destination = out or Path(settings.web.out)
+
+    result = run_web_scan(root, settings, ruleset, cache_dir)
+    write_manifest(result.manifest, destination)
+    write_run_meta(result.meta, destination)
+
+    stats = result.meta.stats
+    typer.echo(
+        f"Модулей: {len(result.manifest.modules)}, узлов: {len(result.manifest.nodes)}. "
+        f"Записано: {destination} и {run_meta_path(destination)}"
+    )
+    typer.echo(
+        f"Вызовов: восстановлено {stats['calls_resolved']}, "
+        f"не восстановлено {stats['calls_unresolved']}; "
+        f"обращений к реестру без различителя {stats['registry_unresolved']}."
+    )
+    typer.echo(
+        f"Страниц: {stats['routes']}, из них маршрут не собран у {stats['routes_unresolved']}."
+    )
+    if result.meta.parse_error_files:
+        typer.echo(
+            f"Внимание: {len(result.meta.parse_error_files)} файлов разобраны с ошибками "
+            "и не дали ни одного объявления — см. parse_error_files в сидкаре."
+        )
 
 
 docs_app = typer.Typer(
