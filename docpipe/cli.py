@@ -1731,6 +1731,7 @@ def _business_context(
     config: Path | None,
     business_root: str | None,
     ownership_file: Path | None,
+    web_manifest: Path | None = None,
 ) -> BusinessInputs:
     """Каталог, инвентаризация, контекст разрешения и владение.
 
@@ -1744,6 +1745,16 @@ def _business_context(
     )
     manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
 
+    # Манифест фронта необязателен: репозиторий без фронта его не собирает,
+    # и якорей `page` в таком каталоге нет. Путь по умолчанию — `web.out`
+    # из конфигурации; файла нет — страниц просто ноль, а не отказ.
+    web_path = web_manifest or Path(settings.web.out)
+    web = (
+        Manifest.model_validate_json(web_path.read_text(encoding="utf-8"))
+        if web_path.is_file()
+        else None
+    )
+
     ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
     try:
         ownership = load_ownership(ownership_path) if ownership_path else None
@@ -1755,7 +1766,7 @@ def _business_context(
     return BusinessInputs(
         catalog=load_catalog(root, where),
         anchors=anchors,
-        ctx=build_resolve_context(anchors, manifest, root=root, ownership=ownership),
+        ctx=build_resolve_context(anchors, manifest, root=root, ownership=ownership, web=web),
         ownership=ownership,
         root=where,
         registry_errors=registry_errors,
@@ -1779,6 +1790,10 @@ def business_lint(
     fail_on: Annotated[
         list[str] | None,
         typer.Option("--fail-on", help=f"Ронять на этих проверках: {', '.join(LINT_CHECKS)}."),
+    ] = None,
+    web_manifest: Annotated[
+        Path | None,
+        typer.Option("--web-manifest", help="Манифест шага `web`. Без него — `web.out`."),
     ] = None,
     scope: Annotated[
         str, typer.Option("--scope", help="all или catalog: с инвентарём или без.")
@@ -1809,7 +1824,7 @@ def business_lint(
         raise typer.Exit(code=2)
 
     loaded = _business_context(
-        manifest_path, registries_file, root, config, business_root, ownership_file
+        manifest_path, registries_file, root, config, business_root, ownership_file, web_manifest
     )
     report = lint_catalog(loaded.catalog, loaded.anchors, loaded.ctx, loaded.root, loaded.ownership)
 

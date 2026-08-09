@@ -12,6 +12,7 @@
 """
 
 import posixpath
+import re
 import socket
 import time
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from docpipe.discovery import discover
 from docpipe.emit import exclude_globs
 from docpipe.hashing import content_hash, stable_hash
 from docpipe.model import (
+    Dependency,
     DocNode,
     FileParseResult,
     Manifest,
@@ -259,6 +261,71 @@ def _promote(
     return kind, template
 
 
+def _parameter_types(signature: str) -> list[str]:
+    """Типы параметров конструктора TypeScript: `constructor(private http: HttpClient)`.
+
+    Порядок в TS обратный C#: там `Тип имя`, здесь `имя: Тип`. Общую функцию
+    из `tree.parameter_types` переиспользовать нельзя — она разберёт `private`
+    как тип и выдаст зависимость от модификатора.
+
+    Дженерик и объединение типов срезаются по первому небуквенному символу:
+    `Store<AppState>` — зависимость от `Store`, а не от его параметра.
+    """
+    inner = signature.partition("(")[2].rpartition(")")[0]
+    if not inner.strip():
+        return []
+
+    found: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for char in inner:
+        if char in "<([{":
+            depth += 1
+        elif char in ">)]}":
+            depth -= 1
+        if char == "," and depth == 0:
+            found.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    found.append("".join(current))
+
+    types: list[str] = []
+    for part in found:
+        annotation = part.partition(":")[2].strip()
+        name = re.split(r"[^\w$.]", annotation, maxsplit=1)[0] if annotation else ""
+        if name:
+            types.append(name)
+    return types
+
+
+def _dependencies(symbol: Symbol, by_name: dict[str, str]) -> list[Dependency]:
+    """Зависимости узла: параметры конструктора.
+
+    В Angular внедрение конструкторное — `inject(…)` встречается на боевом
+    модуле девять раз против сотен конструкторов, — поэтому другого источника
+    зависимостей на фронте практически нет.
+    """
+    found: list[Dependency] = []
+    for member in symbol.members:
+        if member.kind != "constructor":
+            continue
+        for name in _parameter_types(member.signature):
+            target = by_name.get(name)
+            found.append(
+                Dependency(
+                    target=target or name,
+                    via="constructor",
+                    confidence="high" if target else "low",
+                )
+            )
+
+    seen: dict[tuple[str, str], Dependency] = {}
+    for item in found:
+        seen.setdefault((item.target, item.via), item)
+    return [seen[key] for key in sorted(seen)]
+
+
 def build_nodes(
     index: dict[str, Symbol],
     modules: list[WebModule],
@@ -275,6 +342,12 @@ def build_nodes(
     """
     configured = [module.module for module in modules]
     by_key = {module.key: module.module for module in modules}
+
+    # Простое имя -> FQN: в сигнатуре конструктора тип записан так, как в коде.
+    # Побеждает лексикографически меньший FQN — не порядок обхода.
+    by_name: dict[str, str] = {}
+    for symbol in sorted(index.values(), key=lambda item: item.fqn):
+        by_name.setdefault(symbol.name, symbol.fqn)
 
     nodes: list[DocNode] = []
     for key in sorted(index):
@@ -316,6 +389,7 @@ def build_nodes(
                 module=module.name,
                 domain=module.domain or module.name,
                 symbol=symbol,
+                dependencies=_dependencies(symbol, by_name),
                 matched_rules=classification.matched_rules,
                 signature_hash=signature_hash(symbol),
                 impl_hash=symbol.impl_hash,
