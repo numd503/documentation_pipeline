@@ -97,17 +97,24 @@ def discover(
     root: Path,
     exclude_globs: list[str],
     scope: list[str] | None = None,
+    roots: list[str] | None = None,
 ) -> Discovered:
     """Найти исходники .NET под `root`.
 
     Символические ссылки не разыменовываются: цикл через симлинк подвесил бы
     обход, а копия дерева по ссылке породила бы дубли символов.
+
+    `roots` и `scope` сужают одинаково и **складываются**: первый постоянен
+    и приходит из конфигурации, второй задаётся флагом на один прогон. Оба
+    отсеивают файлы, а не каталоги: каталог может быть предком нужного
+    и обязан быть пройден, даже если сам ничего не даёт.
     """
     if not root.is_dir():
         raise NotADirectoryError(f"Корень обхода не является директорией: {root}")
 
     dir_globs = _directory_globs(exclude_globs)
     normalized_scope = normalize_scope(scope)
+    normalized_roots = normalize_scope(roots)
     found: dict[str, list[str]] = {field: [] for field in _EXTENSIONS}
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -131,6 +138,8 @@ def discover(
             if is_excluded(relative_path, exclude_globs):
                 continue
             if not in_scope(relative_path, normalized_scope):
+                continue
+            if not in_scope(relative_path, normalized_roots):
                 continue
 
             found[field].append(relative_path)

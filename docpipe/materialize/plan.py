@@ -64,7 +64,10 @@ DEFAULT_DOCS_SCAN_EXCLUDE: Final[list[str]] = [
     "**/.git/**",
 ]
 
-_STATUS_ORDER: Final[list[Status]] = [
+# Порядок «сначала то, что важнее». Публичный: по нему же `worklist`
+# упорядочивает очередь, и второй список разошёлся бы с этим при первом
+# новом статусе.
+STATUS_ORDER: Final[list[Status]] = [
     "broken",
     "missing",
     "stale",
@@ -163,6 +166,9 @@ class PlannedDoc:
 @dataclass(frozen=True)
 class PlanOptions:
     docs_root: str = "docs"
+    # Префикс `doc_path`, ожидаемый по текущей конфигурации. Пустая строка —
+    # «не проверять»: план строят и там, где конфигурации нет (тесты, adopt).
+    modules_root: str = ""
     teams: tuple[str, ...] = ()
     force: bool = False
     # Документы, чьё принятое состояние надо переписать текущим (`docs accept`).
@@ -185,7 +191,7 @@ class MaterializePlan:
 
     def counts(self) -> dict[str, int]:
         counted = Counter(doc.status for doc in self.documents)
-        return {status: counted[status] for status in _STATUS_ORDER if counted[status]}
+        return {status: counted[status] for status in STATUS_ORDER if counted[status]}
 
 
 # --------------------------------------------------------------------------------------
@@ -551,10 +557,48 @@ def match_relocations(
 # --------------------------------------------------------------------------------------
 
 
+def layout_drift(manifest: Manifest, modules_root: str) -> str | None:
+    """Разошлась ли раскладка манифеста с текущей конфигурацией.
+
+    `doc_path` собирается на шаге 1 из `docs_root`, `modules_dir` и `doc_layout`
+    и замораживается в манифесте; шаг 2 читает те же ключи заново. Правка любого
+    из них без повторного `scan` ничего не ломает **видимо**: документы остаются
+    на прежних путях, а `worklist` кладёт в очередь `modules_root` из конфигурации
+    и тем самым сообщает внешнему исполнителю префикс, которого в очереди нет.
+
+    Поэтому сравнение здесь, а не сообщение в отчёте: расхождение чинится одним
+    из двух способов (пересканировать или вернуть ключ), и оба требуют решения
+    человека, а не догадки инструмента.
+    """
+    if not modules_root:
+        return None
+    prefix = f"{modules_root}/"
+    alien = sorted(
+        {node.doc_path for node in manifest.nodes if not node.doc_path.startswith(prefix)}
+    )
+    if not alien:
+        return None
+    example = alien[0]
+    return (
+        f"раскладка манифеста разошлась с конфигурацией: ожидался префикс"
+        f" `{prefix}` (docs_root + modules_dir), а в манифесте {len(alien)} путей"
+        f" вне него, например `{example}`."
+        " Пересоберите манифест (`docpipe scan`) или верните прежние"
+        " `docs_root`/`modules_dir`/`doc_layout`"
+    )
+
+
 def _blocking_errors(
-    manifest: Manifest, existing: list[ExistingDoc], templates: dict[str, Template]
+    manifest: Manifest,
+    existing: list[ExistingDoc],
+    templates: dict[str, Template],
+    modules_root: str = "",
 ) -> list[str]:
     errors: list[str] = []
+
+    drift = layout_drift(manifest, modules_root)
+    if drift:
+        errors.append(drift)
 
     # `docpipe validate` это ловит, но манифест мог быть собран старой версией
     # или отредактирован. Без повторной проверки второй узел молча затрёт
@@ -616,7 +660,7 @@ def build_plan(
 ) -> MaterializePlan:
     """Построить план. Ничего не пишет."""
     options = options or PlanOptions()
-    errors = _blocking_errors(manifest, existing, templates)
+    errors = _blocking_errors(manifest, existing, templates, options.modules_root)
     if errors:
         return MaterializePlan(errors=errors)
 
@@ -841,8 +885,10 @@ __all__ = [
     "MaterializePlan",
     "PlanOptions",
     "PlannedDoc",
+    "STATUS_ORDER",
     "build_plan",
     "decide",
+    "layout_drift",
     "match_relocations",
     "relocation_note",
     "scan_docs",

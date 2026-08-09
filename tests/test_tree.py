@@ -86,7 +86,8 @@ def test_layout_does_not_change_collisions() -> None:
     def groups(layout: str) -> list[list[int]]:
         by_path: defaultdict[str, list[int]] = defaultdict(list)
         for position, (module, kind, name) in enumerate(triples):
-            by_path[doc_path_for(module, kind, name, layout)].append(position)  # type: ignore[arg-type]
+            path = doc_path_for(module, kind, name, layout, "docs/modules")  # type: ignore[arg-type]
+            by_path[path].append(position)
         return sorted(by_path.values())
 
     assert groups("kind-first") == groups("module-first")

@@ -3,9 +3,10 @@
 from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Final
 
 import typer
+from pydantic import BaseModel
 
 from docpipe import __version__
 from docpipe.business import Catalog, doc_path_for, load_catalog, resolve_all
@@ -29,7 +30,7 @@ from docpipe.diff import diff_manifests, format_changes
 from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.explain import ANY, format_selection, select, selection_json
-from docpipe.hashing import stable_json_dumps
+from docpipe.hashing import content_hash, stable_json_dumps
 from docpipe.materialize.apply import apply_plan, format_result, write_atomic
 from docpipe.materialize.build import BuildContext, build_context
 from docpipe.materialize.ownership import (
@@ -57,6 +58,12 @@ from docpipe.materialize.status import (
     format_status_json,
 )
 from docpipe.materialize.template import load_templates
+from docpipe.materialize.worklist import (
+    DEFAULT_ACTIONS,
+    Worklist,
+    build_worklist,
+    select_documents,
+)
 from docpipe.model import Manifest, RunMeta
 from docpipe.registry import load_registries, read_registry
 from docpipe.registry.anchors import (
@@ -104,21 +111,37 @@ def version() -> None:
     typer.echo(__version__)
 
 
+SCHEMA_MODELS: Final[dict[str, tuple[type[BaseModel], str]]] = {
+    "doc-tree": (Manifest, "schema/doc-tree.schema.json"),
+    "worklist": (Worklist, "schema/doc-worklist.schema.json"),
+}
+
+
 @app.command()
 def schema(
+    model: Annotated[
+        str, typer.Option("--model", help="Что описывать: doc-tree или worklist.")
+    ] = "doc-tree",
     out: Annotated[
-        Path,
-        typer.Option("--out", help="Куда записать JSON Schema манифеста."),
-    ] = Path("schema/doc-tree.schema.json"),
+        Path | None,
+        typer.Option("--out", help="Куда записать JSON Schema; без флага — путь по модели."),
+    ] = None,
 ) -> None:
-    """Сгенерировать JSON Schema манифеста из моделей.
+    """Сгенерировать JSON Schema из моделей.
 
-    Схема — производная от `model.py`, а не отдельно поддерживаемый файл.
-    Расхождение между ними невозможно по построению.
+    Схема — производная от `model.py` и `materialize/worklist.py`, а не отдельно
+    поддерживаемый файл. Расхождение между ними невозможно по построению.
     """
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(stable_json_dumps(Manifest.model_json_schema()), encoding="utf-8")
-    typer.echo(f"Схема записана: {out}")
+    if model not in SCHEMA_MODELS:
+        known = ", ".join(sorted(SCHEMA_MODELS))
+        typer.echo(f"--model: неизвестное значение {model}; известны: {known}", err=True)
+        raise typer.Exit(code=2)
+
+    described, default_out = SCHEMA_MODELS[model]
+    target = out or Path(default_out)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(stable_json_dumps(described.model_json_schema()), encoding="utf-8")
+    typer.echo(f"Схема записана: {target}")
 
 
 @app.command()
@@ -464,42 +487,16 @@ def materialize(
     не записывается ничего: половина обновлённого дерева хуже необновлённого,
     потому что о ней никто не узнает.
     """
-    settings = load_config(config)
-    templates_path = templates_dir or Path(settings.templates)
-    ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
-
-    try:
-        manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
-        templates = load_templates(templates_path)
-        ownership = load_ownership(ownership_path) if ownership_path else None
-    except (OSError, ValueError) as exc:
-        typer.echo(f"{exc}", err=True)
-        raise typer.Exit(code=2) from exc
-
-    if team:
-        known = {item.id for item in ownership.teams} if ownership else set()
-        unknown = sorted(set(team) - known)
-        if unknown:
-            listing = ", ".join(sorted(known)) or "(правила владения не заданы)"
-            typer.echo(f"Неизвестные команды: {', '.join(unknown)}; известны: {listing}", err=True)
-            raise typer.Exit(code=2)
-
-    examples = frozenset(path.stem for path in (templates_path / "examples").glob("*.md"))
-    context = _with_business_links(
-        build_context(manifest, templates, examples, templates_path.as_posix()),
-        manifest,
+    loaded = _prepare(
+        manifest_path,
         root,
-        settings,
+        config,
+        templates_dir,
+        ownership_file,
+        teams=tuple(team or ()),
+        force=force,
     )
-    existing = scan_docs(root, settings.docs_root, settings.docs_scan_exclude)
-    plan = build_plan(
-        manifest,
-        existing,
-        templates,
-        context,
-        ownership,
-        PlanOptions(docs_root=settings.docs_root, teams=tuple(team or ()), force=force),
-    )
+    plan = loaded.plan
 
     result = apply_plan(plan, root, dry_run=dry_run, force=force)
     typer.echo(format_result(plan, result, dry_run))
@@ -562,37 +559,10 @@ def docs_status(
             )
             raise typer.Exit(code=2)
 
-    settings = load_config(config)
-    templates_path = templates_dir or Path(settings.templates)
-    ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
-
-    try:
-        manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
-        templates = load_templates(templates_path)
-        ownership = load_ownership(ownership_path) if ownership_path else None
-    except (OSError, ValueError) as exc:
-        typer.echo(f"{exc}", err=True)
-        raise typer.Exit(code=2) from exc
-
-    examples = frozenset(path.stem for path in (templates_path / "examples").glob("*.md"))
-    context = _with_business_links(
-        build_context(manifest, templates, examples, templates_path.as_posix()),
-        manifest,
-        root,
-        settings,
+    loaded = _prepare(
+        manifest_path, root, config, templates_dir, ownership_file, teams=tuple(team or ())
     )
-    existing = scan_docs(root, settings.docs_root, settings.docs_scan_exclude)
-    plan = with_links(
-        build_plan(
-            manifest,
-            existing,
-            templates,
-            context,
-            ownership,
-            PlanOptions(docs_root=settings.docs_root, teams=tuple(team or ())),
-        ),
-        check_links(existing, root),
-    )
+    plan = with_links(loaded.plan, check_links(loaded.existing, root))
 
     selected = filter_documents(plan.documents, paths or [], action or [])
     typer.echo(
@@ -638,8 +608,7 @@ def _with_business_links(
         return context
 
     try:
-        specs = load_registries(Path(settings.registries))
-        anchors = resolve_anchors([read_registry(spec, root) for spec in specs], manifest)
+        anchors, _ = read_anchors(manifest, Path(settings.registries), root)
         catalog = load_catalog(root, settings.business_root)
         ownership = _load_ownership_quietly(settings)
         links = backlinks(
@@ -652,6 +621,42 @@ def _with_business_links(
     return replace(context, business_root=settings.business_root, business_links=links)
 
 
+def _check_teams(teams: tuple[str, ...], ownership: Ownership | None) -> None:
+    """Отвергнуть неизвестные команды.
+
+    Без проверки опечатка в `--team` сужает выборку до пустой, и команда
+    рапортует «документов нет» — неотличимо от честного «у этой команды
+    документов нет». Раньше это ловил только `materialize`; `docs status`
+    и `worklist` с тем же флагом молчали.
+    """
+    if not teams:
+        return
+    known = {item.id for item in ownership.teams} if ownership else set()
+    unknown = sorted(set(teams) - known)
+    if unknown:
+        listing = ", ".join(sorted(known)) or "(правила владения не заданы)"
+        typer.echo(f"Неизвестные команды: {', '.join(unknown)}; известны: {listing}", err=True)
+        raise typer.Exit(code=2)
+
+
+@dataclass(frozen=True)
+class Step2Inputs:
+    """Всё, что команды шага 2 читают из конфигурации и с диска.
+
+    Возвращается целиком, а не тройкой-четвёркой: раньше `materialize`,
+    `docs status` и `_prepare` собирали одно и то же тремя копиями одного
+    блока, и ключ конфигурации, добавленный в одну, до остальных не доезжал.
+    Писателем документов при этом был `materialize` — та копия, что отстала бы
+    незаметнее всех.
+    """
+
+    settings: DocpipeConfig
+    manifest: Manifest
+    ownership: Ownership | None
+    existing: list[ExistingDoc]
+    plan: MaterializePlan
+
+
 def _prepare(
     manifest_path: Path,
     root: Path,
@@ -660,7 +665,8 @@ def _prepare(
     ownership_file: Path | None,
     teams: tuple[str, ...] = (),
     accept: tuple[str, ...] = (),
-) -> tuple[Manifest, Ownership | None, list[ExistingDoc], MaterializePlan]:
+    force: bool = False,
+) -> Step2Inputs:
     """Общая подготовка команд шага 2: манифест, шаблоны, владение, план."""
     settings = load_config(config)
     templates_path = templates_dir or Path(settings.templates)
@@ -673,6 +679,8 @@ def _prepare(
     except (OSError, ValueError) as exc:
         typer.echo(f"{exc}", err=True)
         raise typer.Exit(code=2) from exc
+
+    _check_teams(teams, ownership)
 
     examples = frozenset(path.stem for path in (templates_path / "examples").glob("*.md"))
     context = _with_business_links(
@@ -688,9 +696,104 @@ def _prepare(
         templates,
         context,
         ownership,
-        PlanOptions(docs_root=settings.docs_root, teams=teams, accept=accept),
+        PlanOptions(
+            docs_root=settings.docs_root,
+            modules_root=settings.modules_root,
+            teams=teams,
+            accept=accept,
+            force=force,
+        ),
     )
-    return manifest, ownership, existing, plan
+    return Step2Inputs(
+        settings=settings, manifest=manifest, ownership=ownership, existing=existing, plan=plan
+    )
+
+
+@app.command()
+def worklist(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
+    templates_dir: Annotated[
+        Path | None, typer.Option("--templates", help="Каталог шаблонов.")
+    ] = None,
+    ownership_file: Annotated[
+        Path | None, typer.Option("--ownership", help="Правила владения.")
+    ] = None,
+    team: Annotated[
+        list[str] | None, typer.Option("--team", help="Только эти команды; можно повторять.")
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Куда писать очередь; без флага — `worklist` из конфигурации."),
+    ] = None,
+    action: Annotated[
+        list[str] | None,
+        typer.Option("--action", help="Состав очереди; по умолчанию write и review."),
+    ] = None,
+    limit: Annotated[
+        int | None, typer.Option("--limit", help="Первые N записей в порядке приоритета.")
+    ] = None,
+) -> None:
+    """Записать очередь документов для внешнего исполнителя шага 3.
+
+    В дерево документации не пишет ничего: `materialize` остаётся единственным
+    писателем документов, иначе появилась бы вторая реализация слияния зон.
+    """
+    unknown = sorted(set(action or ()) - AGENT_ACTIONS)
+    if unknown:
+        typer.echo(
+            f"--action: неизвестные значения {', '.join(unknown)};"
+            f" известны: {', '.join(sorted(AGENT_ACTIONS))}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if limit is not None and limit < 1:
+        typer.echo("--limit: ожидается положительное число", err=True)
+        raise typer.Exit(code=2)
+
+    # План строится по ВСЕМУ дереву, без `--team`: сводка обязана описывать
+    # дерево целиком, а сужает `--team` только очередь. Иначе прогон одной
+    # команды объявил бы, что документов в репозитории двадцать.
+    loaded = _prepare(manifest_path, root, config, templates_dir, ownership_file)
+    settings, manifest = loaded.settings, loaded.manifest
+
+    # План сузить нельзя, а имена команд проверить обязаны: `--team` здесь режет
+    # только очередь, и опечатка иначе дала бы пустую очередь при целом дереве.
+    _check_teams(tuple(team or ()), loaded.ownership)
+    target = out or Path(settings.worklist)
+    plan = with_links(loaded.plan, check_links(loaded.existing, root))
+
+    if plan.errors:
+        # Файл не переписывается: прежняя очередь достовернее полупустой новой,
+        # а чужой процесс о коде возврата может и не узнать.
+        typer.echo("\n".join(["Блокирующие ошибки, очередь не записана:", *plan.errors]), err=True)
+        raise typer.Exit(code=1)
+
+    selected, truncated = select_documents(
+        plan.documents,
+        actions=tuple(action) if action else DEFAULT_ACTIONS,
+        teams=tuple(team or ()),
+        limit=limit,
+    )
+    queue = build_worklist(
+        plan,
+        selected,
+        docs_root=settings.docs_root,
+        modules_root=settings.modules_root,
+        ruleset_version=manifest.ruleset_version,
+        manifest_sha256=content_hash(manifest_path.read_bytes()),
+        truncated=truncated,
+    )
+
+    write_atomic(target, stable_json_dumps(queue.model_dump(mode="json")))
+    typer.echo(
+        f"Очередь записана: {target}"
+        f" (документов: {queue.totals.selected} из {queue.totals.documents})"
+    )
+    if queue.needs_materialize:
+        typer.echo("В очереди есть документы, которых на диске ещё нет: нужен `materialize`.")
 
 
 @docs_app.command("accept")
@@ -722,9 +825,9 @@ def docs_accept(
         typer.echo("Нужен хотя бы один отбор: пути, --node, --team или --all", err=True)
         raise typer.Exit(code=2)
 
-    _, _, _, plan = _prepare(
+    plan = _prepare(
         manifest_path, root, config, templates_dir, ownership_file, tuple(team or ())
-    )
+    ).plan
     if plan.errors:
         typer.echo(format_status(plan, plan.documents))
         raise typer.Exit(code=1)
@@ -754,7 +857,7 @@ def docs_accept(
         typer.echo("Под отбор не попал ни один документ.")
         return
 
-    _, _, _, accepted = _prepare(
+    accepted = _prepare(
         manifest_path,
         root,
         config,
@@ -762,7 +865,7 @@ def docs_accept(
         ownership_file,
         tuple(team or ()),
         accept=targets,
-    )
+    ).plan
     chosen = [doc for doc in accepted.documents if doc.doc_path in set(targets)]
     result = apply_plan(
         MaterializePlan(documents=chosen, manifest_partial=accepted.manifest_partial),
@@ -797,9 +900,8 @@ def docs_adopt(
     и выбор за человеком. Отметку о пересмотре ставить не требуется — документ
     писался для другого типа, и обычная логика статусов пометит его сама.
     """
-    manifest, _, existing, plan = _prepare(
-        manifest_path, root, config, templates_dir, ownership_file
-    )
+    loaded = _prepare(manifest_path, root, config, templates_dir, ownership_file)
+    manifest, existing = loaded.manifest, loaded.existing
     source = root / from_path
     target = root / to_path
 
@@ -838,7 +940,7 @@ def docs_adopt(
 
     # Пересборка обычным прогоном: документ на новом месте получает свой
     # front matter, а авторский текст остаётся дословно.
-    _, _, _, rebuilt = _prepare(manifest_path, root, config, templates_dir, ownership_file)
+    rebuilt = _prepare(manifest_path, root, config, templates_dir, ownership_file).plan
     apply_plan(rebuilt, root)
     typer.echo(f"Перенесено: {from_path} → {to_path}")
 
@@ -928,10 +1030,26 @@ anchors_app = typer.Typer(
 app.add_typer(anchors_app, name="anchors")
 
 
+def read_anchors(
+    manifest: Manifest, registries: Path, root: Path
+) -> tuple[list[ResolvedAnchor], list[str]]:
+    """Реестры → разрешённые якоря. Единственная сборка этой цепочки.
+
+    Политику отказа задаёт вызывающий, а не эта функция: `anchors` и `business`
+    падают на нечитаемых реестрах, а шаг 2 продолжает без бизнес-раздела —
+    реестры могут быть описаны раньше первого бизнес-документа, и ронять из-за
+    этого материализацию технической документации было бы наказанием не за то.
+    Раньше расхождение политик тянуло за собой три копии самой цепочки.
+    """
+    results = [read_registry(spec, root) for spec in load_registries(registries)]
+    errors = [error for result in results for error in result.errors]
+    return resolve_anchors(results, manifest), errors
+
+
 def _load_anchors(
     manifest_path: Path, registries: Path, root: Path
 ) -> tuple[list[ResolvedAnchor], list[str]]:
-    """Прочитать манифест и реестры. Ошибки чтения — код 2, замечания — в отчёт."""
+    """То же с политикой отказа команд `anchors` и `business`: ошибка чтения — код 2."""
     try:
         manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -939,23 +1057,37 @@ def _load_anchors(
         raise typer.Exit(code=2) from exc
 
     try:
-        specs = load_registries(registries)
+        return read_anchors(manifest, registries, root)
     except (OSError, ValueError) as exc:
         typer.echo(f"Не удалось прочитать описание реестров: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    results = [read_registry(spec, root) for spec in specs]
-    errors = [error for result in results for error in result.errors]
-    return resolve_anchors(results, manifest), errors
+
+def _registries_path(registries: Path | None, settings: DocpipeConfig) -> Path:
+    """Путь к описанию реестров: флаг важнее конфигурации, но конфигурация читается.
+
+    Раньше команды `anchors` ключ `registries` не читали вовсе — у `list` не было
+    даже `--config`. Один и тот же ключ работал в `business *` и молчал здесь,
+    так что настроенный репозиторий всё равно требовал флага руками.
+    """
+    if registries is not None:
+        return registries
+    if settings.registries:
+        return Path(settings.registries)
+    typer.echo("Реестры не заданы: --registries или ключ `registries`", err=True)
+    raise typer.Exit(code=2)
 
 
 @anchors_app.command("list")
 def anchors_list(
     manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
-    registries: Annotated[Path, typer.Option("--registries", help="Описание реестров.")],
+    registries: Annotated[
+        Path | None, typer.Option("--registries", help="Описание реестров.")
+    ] = None,
     root: Annotated[
         Path, typer.Option("--root", help="Корень репозитория: пути реестров от него.")
     ] = Path("."),
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
     kind: Annotated[
         list[str] | None, typer.Option("--kind", help="Только эти виды; можно повторять.")
     ] = None,
@@ -971,7 +1103,9 @@ def anchors_list(
     типы, поэтому «не найден среди узлов» и «типа нет» — разные вещи, и различить
     их по манифесту нельзя.
     """
-    anchors, errors = _load_anchors(manifest_path, registries, root)
+    anchors, errors = _load_anchors(
+        manifest_path, _registries_path(registries, load_config(config)), root
+    )
     selected = filter_anchors(anchors, kind or [], team or [])
 
     if output_format == "json":
@@ -993,7 +1127,9 @@ def anchors_list(
 def anchors_explain(
     manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
     ref: Annotated[str, typer.Argument(help="Якорь: `ref` или строка показа.")],
-    registries: Annotated[Path, typer.Option("--registries", help="Описание реестров.")],
+    registries: Annotated[
+        Path | None, typer.Option("--registries", help="Описание реестров.")
+    ] = None,
     root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
     config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
     ownership_file: Annotated[
@@ -1006,14 +1142,14 @@ def anchors_explain(
     **не разбирается** на части: `JOBTITLE` содержит пробелы и двоеточия,
     а заголовок workflow — кириллицу.
     """
-    anchors, _ = _load_anchors(manifest_path, registries, root)
+    settings = load_config(config)
+    anchors, _ = _load_anchors(manifest_path, _registries_path(registries, settings), root)
     found = [anchor for anchor in anchors if ref in (anchor.ref, anchor.display)]
 
     if not found:
         typer.echo(f"Якорь не найден: {ref}", err=True)
         raise typer.Exit(code=1)
 
-    settings = load_config(config)
     ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
     try:
         ownership = load_ownership(ownership_path) if ownership_path else None
@@ -1429,14 +1565,9 @@ def _business_context(
     и документ навсегда остался бы «изменившимся».
     """
     settings = load_config(config)
-    registries_path = registries_file or (
-        Path(settings.registries) if settings.registries else None
+    anchors, registry_errors = _load_anchors(
+        manifest_path, _registries_path(registries_file, settings), root
     )
-    if registries_path is None:
-        typer.echo("Реестры не заданы: --registries или ключ `registries`", err=True)
-        raise typer.Exit(code=2)
-
-    anchors, registry_errors = _load_anchors(manifest_path, registries_path, root)
     manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
 
     ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)

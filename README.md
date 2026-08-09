@@ -60,9 +60,9 @@
 | | Что |
 |---|---|
 | ✅ **Шаг 1**, T00–T26 | `docpipe scan`: детерминированный манифест `doc-tree.json` по исходникам |
-| ✅ **Шаг 2**, M01–M12 | `docpipe materialize` и `docpipe docs`: документы, зоны, статусы, приёмка |
+| ✅ **Шаг 2**, M01–M13 | `docpipe materialize` и `docpipe docs`: документы, зоны, статусы, приёмка |
 | ✅ **Бизнес-слой**, B01–B11 | `docpipe anchors` и `docpipe business`: точки входа, каталог процессов, `business_hash` |
-| ⬜ Шаг 3 | наполнение документов агентом; отдельного плана пока нет |
+| ⬜ Шаг 3 | наполнение документов агентом. Очередь ему готова (`docpipe worklist`), сам исполнитель — вне этого репозитория |
 | ⬜ T05b | связанные исходники `<Compile Include>` — отложена, см. [findings-stress.md](docs/findings-stress.md) |
 
 1069 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
@@ -74,6 +74,7 @@
 docpipe scan --root . --out artifacts/doc-tree.json     # что документировать
 docpipe materialize artifacts/doc-tree.json --root .    # создать документы
 docpipe docs status artifacts/doc-tree.json --root .    # что делать агенту
+docpipe worklist    artifacts/doc-tree.json --root .    # то же файлом, для внешнего исполнителя
 docpipe docs accept artifacts/doc-tree.json PATH        # зафиксировать соответствие коду
 
 # бизнес-документация
@@ -189,7 +190,8 @@ jq '.nodes[].doc_path' /tmp/dt.json
 |---|---|
 | `symbols --root PATH` | какие именно символы остались без решения; инструмент отладки правил |
 | `materialize MANIFEST` | создать или обновить документы по манифесту |
-| `docs status MANIFEST` | что делать с каждым документом; вход агента шага 3 |
+| `docs status MANIFEST` | что делать с каждым документом; отчёт человеку и CI |
+| `worklist MANIFEST` | то же файлом: очередь для внешнего исполнителя шага 3 |
 | `docs accept MANIFEST` | зафиксировать соответствие документа коду |
 | `docs adopt MANIFEST` | перенести документ вручную |
 | `docs owners MANIFEST` | владельцы документов и диагностика правил владения |
@@ -203,7 +205,7 @@ jq '.nodes[].doc_path' /tmp/dt.json
 | `diff OLD NEW [--format text\|json]` | что изменилось между манифестами |
 | `validate MANIFEST` | схема плюс четыре инварианта; код 1 при нарушении |
 | `stats MANIFEST` | состав готового дерева |
-| `schema --out FILE` | JSON Schema из моделей |
+| `schema [--model doc-tree\|worklist]` | JSON Schema из моделей |
 
 Кэш включён по умолчанию и создаётся **внутри сканируемого репозитория**:
 `<root>/.docpipe/cache/parse.sqlite`. Каталог стоит добавить в его `.gitignore`
@@ -724,7 +726,8 @@ docpipe/                  пакет шага 1
 │   ├── ownership.py      кто владеет документом
 │   ├── plan.py           статусы, решения, сопоставление переносов
 │   ├── apply.py          атомарная запись
-│   └── status.py         отчёт `docs status`
+│   ├── status.py         отчёт `docs status`
+│   └── worklist.py       файл-очередь шага 3: конверт, отбор, порядок
 ├── business/             бизнес-каталог: процессы и сущности
 ├── ruleset.py            общий движок правил: условия, приоритеты, диагностика
 ├── registry/             реестры платформы: точки входа, объявленные не в коде

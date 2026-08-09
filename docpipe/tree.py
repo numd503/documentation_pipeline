@@ -281,7 +281,9 @@ def _kind_plural(kind: str) -> str:
     return f"{kind}s"
 
 
-def doc_path_for(module_name: str, kind: str, name: str, layout: DocLayout) -> str:
+def doc_path_for(
+    module_name: str, kind: str, name: str, layout: DocLayout, modules_root: str
+) -> str:
     """Путь документа.
 
     Обе раскладки — перестановка одних и тех же трёх сегментов, и это не
@@ -293,11 +295,16 @@ def doc_path_for(module_name: str, kind: str, name: str, layout: DocLayout) -> s
     Уровни не смешиваются: имя модуля всегда стоит на своём уровне, вид —
     на своём. Модуль, названный как вид (`Services`), поэтому ни во что
     не упирается.
+
+    `modules_root` приходит параметром, а не берётся из конфигурации внутри:
+    иначе чистая функция построения пути начала бы зависеть от глобального
+    состояния, и тесты раскладки пришлось бы гонять через загрузку файла.
     """
     slug = slugify(name)
+    prefix = f"{modules_root}/" if modules_root else ""
     if layout == "module-first":
-        return f"docs/modules/{module_name}/{_kind_plural(kind)}/{slug}.md"
-    return f"docs/modules/{_kind_plural(kind)}/{module_name}/{slug}.md"
+        return f"{prefix}{module_name}/{_kind_plural(kind)}/{slug}.md"
+    return f"{prefix}{_kind_plural(kind)}/{module_name}/{slug}.md"
 
 
 def _assign_doc_paths(nodes: list[DocNode]) -> list[DocNode]:
@@ -378,7 +385,11 @@ def build_nodes(
                 template=classification.template,
                 title=symbol.name,
                 doc_path=doc_path_for(
-                    module.name, classification.kind, symbol.name, config.doc_layout
+                    module.name,
+                    classification.kind,
+                    symbol.name,
+                    config.doc_layout,
+                    config.modules_root,
                 ),
                 parent=module.id,
                 module=module.name,
