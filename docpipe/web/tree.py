@@ -183,6 +183,34 @@ def _routes_by_component(routes: RouteScan) -> dict[str, list[RouteEntry]]:
     return grouped
 
 
+# Повышения вида, которые движок правил сделать не может: он видит только
+# `Symbol`, а таблица роутов и HTTP-вызовы разбираются отдельно и межфайлово.
+_PROMOTIONS: dict[str, tuple[str, str]] = {
+    "component": ("page", "page"),
+    "service": ("api-service", "api-service"),
+}
+
+
+def _promote(
+    kind: str, template: str, calls: list[WebCall], routes: list[RouteEntry]
+) -> tuple[str, str]:
+    """Уточнить вид по фактам, которых нет в символе.
+
+    Компонент, до которого можно дойти по таблице роутов, — страница; сервис,
+    который делает HTTP-вызовы, — сервис API. Выразить это предикатом по имени
+    или пути можно было бы только угадыванием, а угаданная страница ломает
+    якорь бизнес-документа: он пишется на маршрут, которого у неё нет.
+
+    Правило остаётся в `matched_rules` как есть: там записано, что сработало,
+    а не что получилось. Иначе по отчёту нельзя понять, какое правило настраивать.
+    """
+    if kind == "component" and routes:
+        return _PROMOTIONS["component"]
+    if kind == "service" and calls:
+        return _PROMOTIONS["service"]
+    return kind, template
+
+
 def build_nodes(
     index: dict[str, Symbol],
     modules: list[WebModule],
@@ -216,16 +244,22 @@ def build_nodes(
             (call for path in files for call in calls.get(path, [])),
             key=lambda call: (call.file, call.line, call.key.route),
         )
+        node_routes = sorted(
+            routes.get(symbol.fqn, []), key=lambda entry: (entry.path, entry.component)
+        )
+        kind, template = _promote(
+            classification.kind, classification.template, node_calls, node_routes
+        )
 
         nodes.append(
             DocNode(
                 id=f"type:{key}",
-                kind=classification.kind,
-                template=classification.template,
+                kind=kind,
+                template=template,
                 title=symbol.name,
                 doc_path=doc_path_for(
                     module.name,
-                    classification.kind,
+                    kind,
                     symbol.name,
                     config.doc_layout,
                     config.modules_root,
@@ -238,9 +272,7 @@ def build_nodes(
                 signature_hash=signature_hash(symbol),
                 impl_hash=symbol.impl_hash,
                 web_calls=node_calls,
-                routes=sorted(
-                    routes.get(symbol.fqn, []), key=lambda entry: (entry.path, entry.component)
-                ),
+                routes=node_routes,
             )
         )
 

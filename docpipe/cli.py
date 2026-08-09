@@ -82,6 +82,7 @@ from docpipe.stats import (
     TOP,
     UNDECIDED,
     Stats,
+    collect_stats,
     format_kinds,
     format_report,
     plural,
@@ -531,6 +532,21 @@ def web_scan(
     no_cache: Annotated[
         bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
     ] = False,
+    show_stats: Annotated[
+        bool,
+        typer.Option("--stats", help="Показать счётчики и подсказки по правилам, не писать файлы."),
+    ] = False,
+    fail_on_undecided: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-undecided",
+            help="Код 1, если про какой-то символ фронта решение не принято. Для CI.",
+        ),
+    ] = False,
+    top: Annotated[
+        int,
+        typer.Option("--top", help="Сколько строк показывать в каждом срезе --stats."),
+    ] = TOP,
 ) -> None:
     """Построить дерево документации по исходникам фронтенда.
 
@@ -552,6 +568,26 @@ def web_scan(
     destination = out or Path(settings.web.out)
 
     result = run_web_scan(root, settings, ruleset, cache_dir)
+
+    # Счётчик «решение не принято» считается по СВОЕМУ набору и своим флагом.
+    # Общий флаг с шагом 1 означал бы, что настройка фронта роняет CI бэкенда:
+    # на старте нерешённых много, красный CI выключат на второй день, и вместе
+    # с ним пропадут проверки, которые уже работают.
+    statistics = collect_stats(
+        result.index,
+        result.manifest.nodes,
+        ruleset,
+        {
+            module.id.removeprefix("module:")
+            for module in result.manifest.modules
+            if module.enrolled
+        },
+    )
+    if show_stats:
+        typer.echo(format_report(statistics, top))
+        _check_undecided(statistics, fail_on_undecided)
+        return
+
     write_manifest(result.manifest, destination)
     write_run_meta(result.meta, destination)
 
@@ -573,6 +609,7 @@ def web_scan(
             f"Внимание: {len(result.meta.parse_error_files)} файлов разобраны с ошибками "
             "и не дали ни одного объявления — см. parse_error_files в сидкаре."
         )
+    _check_undecided(statistics, fail_on_undecided)
 
 
 docs_app = typer.Typer(
