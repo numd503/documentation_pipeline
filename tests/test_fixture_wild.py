@@ -21,6 +21,8 @@ _PARSER = Parser(_LANGUAGE)
 EXPECTED_CS = [
     "src/Wild.Api/Constants.cs",
     "src/Wild.Api/Controllers/InnerDebtsController.cs",
+    "src/Wild.Api/Controllers/ItemsController.cs",
+    "src/Wild.Api/Controllers/MlStructureController.cs",
     "src/Wild.Api/Duplicates/Constants.cs",
     "src/Wild.Api/Endpoints/AuthenticateEndpoint.cs",
     "src/Wild.Api/Endpoints/CatalogListEndpoint.cs",

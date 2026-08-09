@@ -89,6 +89,9 @@ from docpipe.stats import (
     stats_from_manifest,
     validate_manifest,
 )
+from docpipe.web.link import CATEGORIES as LINK_CATEGORIES
+from docpipe.web.link import build_report as build_link_report
+from docpipe.web.link import format_report as format_link_report
 from docpipe.web.tree import run as run_web_scan
 
 app = typer.Typer(
@@ -610,6 +613,70 @@ def web_scan(
             "и не дали ни одного объявления — см. parse_error_files в сидкаре."
         )
     _check_undecided(statistics, fail_on_undecided)
+
+
+@web_app.command("link")
+def web_link(
+    backend: Annotated[Path, typer.Argument(help="Манифест шага 1 (.NET).")],
+    frontend: Annotated[Path, typer.Argument(help="Манифест шага `web`.")],
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Куда записать отчёт. Без флага — `web.link_out`."),
+    ] = None,
+    output_format: Annotated[str, typer.Option("--format", help="text либо json.")] = "text",
+    fail_on: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--fail-on", help=f"Категории, роняющие прогон: {', '.join(LINK_CATEGORIES)}."
+        ),
+    ] = None,
+) -> None:
+    """Свести два манифеста: кто зовёт какой эндпоинт и чего не хватает.
+
+    Пять категорий, и только последняя — дефект. Остальные печатаются всегда
+    и кода возврата не меняют, пока не названы в `--fail-on`: линт, красный
+    с первого дня, выключат на второй, и вместе с ним пропадут работающие
+    проверки.
+    """
+    try:
+        settings = load_config(config)
+        first = Manifest.model_validate_json(backend.read_text(encoding="utf-8"))
+        second = Manifest.model_validate_json(frontend.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка чтения манифеста: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    unknown = sorted(set(fail_on or []) - set(LINK_CATEGORIES))
+    if unknown:
+        typer.echo(
+            f"Неизвестные категории в --fail-on: {', '.join(unknown)}. "
+            f"Известные: {', '.join(LINK_CATEGORIES)}.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    report = build_link_report(first, second, {rule.module for rule in settings.web.url_rewrite})
+    destination = out or Path(settings.web.link_out)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(stable_json_dumps(report.model_dump(mode="json")), encoding="utf-8")
+
+    if output_format == "json":
+        typer.echo(stable_json_dumps(report.model_dump(mode="json")))
+    else:
+        typer.echo(format_link_report(report))
+        typer.echo(f"\nЗаписано: {destination}")
+
+    triggered = sorted(name for name in (fail_on or []) if report.counts.get(name))
+    if triggered:
+        typer.echo(
+            "Отказ по категориям: "
+            + ", ".join(f"{name} ({report.counts[name]})" for name in triggered),
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
 
 docs_app = typer.Typer(
