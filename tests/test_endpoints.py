@@ -271,3 +271,59 @@ def test_member_line_is_recorded() -> None:
 def test_extraction_is_deterministic(sample_solution: Path) -> None:
     symbol = by_fqn(index_of(sample_solution))["Sample.Pricing.Api.Controllers.PricingController"]
     assert extract_endpoints(symbol) == extract_endpoints(symbol)
+
+
+# --------------------------------------------------------------------------------------
+# Боевые формы склейки маршрута (F09)
+# --------------------------------------------------------------------------------------
+
+
+def test_production_route_forms_on_one_controller(wild_solution: Path) -> None:
+    """Четыре формы, которыми записаны маршруты АС CF, на одном контроллере.
+
+    Проверяются получившиеся маршруты **целиком**, а не по сегменту: ошибка
+    склейки даёт правдоподобный путь, отличающийся одним куском, и посегментная
+    проверка её пропустит.
+
+    Разведка боевого репозитория: `[Route]` — 433, из них с токеном
+    `[controller]` — ноль; пустых `[HttpGet]` — 556 против 47 с аргументом.
+    То есть глагол и путь метода объявлены **разными** атрибутами, и резолвер
+    обязан складывать три независимые части, ни одна из которых не обязательна.
+    """
+    index = by_fqn(index_of(wild_solution))
+    endpoints = extract_endpoints(index["Wild.Api.Controllers.InnerDebtsController"])
+
+    assert [(e.http_method, e.route) for e in endpoints] == [
+        ("GET", "api/ml/innerdebts"),  # пустой [HttpGet] без [Route]
+        ("POST", "api/ml/innerdebts/insert"),  # путь в аргументе атрибута
+        ("GET", "api/ml/innerdebts/state/byclient"),  # [HttpGet] + отдельный [Route]
+        ("GET", "formsx/models/list"),  # абсолютный шаблон ~/
+    ]
+
+
+def test_conventional_controller_has_no_endpoints(wild_solution: Path) -> None:
+    """Контроллер без атрибутов маршрутизации: URL задаётся в `MapControllerRoute`.
+
+    Разбирать его нечем и не нужно, но `web link` обязан считать такие
+    контроллеры **отдельной категорией**: иначе вызовы фронта к ним попадут
+    в «эндпоинт не найден» и будут выглядеть дефектом фронта.
+
+    Признак вычисляется по манифесту, без обращения к символам: узел вида
+    `controller`, у которого эндпоинтов нет вовсе либо есть эндпоинт с пустым
+    маршрутом.
+    """
+    index = by_fqn(index_of(wild_solution))
+    assert extract_endpoints(index["Wild.Api.Controllers.HomeController"]) == []
+
+
+def test_controller_without_a_type_route_gives_an_empty_route() -> None:
+    """Второй признак той же категории: маршрут собрался, но он пустой."""
+    source = b"""
+namespace N;
+public class HomeController : Controller
+{
+    [HttpGet]
+    public IActionResult Index() => View();
+}
+"""
+    assert _routes(source) == [("GET", "")]
