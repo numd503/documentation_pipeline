@@ -55,17 +55,20 @@
 
 ## Состояние
 
-**Шаги 1 и 2 и бизнес-слой закончены.** Скоуп текущей версии: только .NET (C#).
+**Шаги 1 и 2, бизнес-слой и шаг `web` закончены.** Два языка: .NET (C#)
+и фронтенд на Angular (TypeScript).
 
 | | Что |
 |---|---|
 | ✅ **Шаг 1**, T00–T26 | `docpipe scan`: детерминированный манифест `doc-tree.json` по исходникам |
 | ✅ **Шаг 2**, M01–M13 | `docpipe materialize` и `docpipe docs`: документы, зоны, статусы, приёмка |
 | ✅ **Бизнес-слой**, B01–B11 | `docpipe anchors` и `docpipe business`: точки входа, каталог процессов, `business_hash` |
+| ✅ **Шаг `web`**, F01–F18 | `docpipe web scan` и `docpipe web link`: манифест фронта той же схемы и связь фронт↔бэк |
 | ⬜ Шаг 3 | наполнение документов агентом. Очередь ему готова (`docpipe worklist`), сам исполнитель — вне этого репозитория |
 | ⬜ T05b | связанные исходники `<Compile Include>` — отложена, см. [findings-stress.md](docs/findings-stress.md) |
+| ⬜ цепочка NGXS | `dispatch(new X(…))` не разбирается: у страницы нет связи с эндпоинтом через стейт, см. F14 в [плане фронтенда](docs/frontend-implementation-plan.md) |
 
-1069 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
+1458 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
 
 Что уже работает сквозным прогоном:
 
@@ -77,6 +80,11 @@ docpipe docs status artifacts/doc-tree.json --root .    # что делать а
 docpipe worklist    artifacts/doc-tree.json --root .    # то же файлом, для внешнего исполнителя
 docpipe docs accept artifacts/doc-tree.json PATH        # зафиксировать соответствие коду
 
+# фронтенд на Angular
+docpipe web scan --root . --out artifacts/doc-tree.web.json                  # манифест фронта
+docpipe web link artifacts/doc-tree.json artifacts/doc-tree.web.json         # кто зовёт какой эндпоинт
+docpipe materialize artifacts/doc-tree.web.json --root .                     # документы фронта
+
 # бизнес-документация
 docpipe anchors list artifacts/doc-tree.json --registries registries.yaml   # какие есть точки входа
 docpipe business new bp.valuation.eod --title "Переоценка"                  # завести процесс
@@ -84,6 +92,8 @@ docpipe business build  artifacts/doc-tree.json --config docpipe.yaml       # с
 docpipe business lint   artifacts/doc-tree.json --config docpipe.yaml       # что сломано и сколько ещё писать
 docpipe business status artifacts/doc-tree.json --config docpipe.yaml       # что разошлось с реализацией
 ```
+
+Что лежит в манифесте фронта и в отчёте связи — [`docs/web.md`](docs/web.md).
 
 Как вести бизнес-документацию — [`docs/business-layer.md`](docs/business-layer.md)
 и [`docs/entry-guide.md`](docs/entry-guide.md),
