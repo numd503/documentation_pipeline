@@ -134,6 +134,47 @@ def test_discover_scope_does_not_match_prefix_of_sibling(sample_solution: Path) 
     assert result.cs_files == []
 
 
+# --------------------------------------------------------------------------------------
+# roots: ключ конфигурации, который до этого объявлялся, но не читался
+# --------------------------------------------------------------------------------------
+
+
+def test_discover_with_roots(sample_solution: Path) -> None:
+    result = discover(sample_solution, EXCLUDE, roots=["src/Sample.Common"])
+    assert result.cs_files == [
+        "src/Sample.Common/Abstractions/IPricingProvider.cs",
+        "src/Sample.Common/Web/BaseApiController.cs",
+    ]
+
+
+def test_discover_roots_default_means_everything(sample_solution: Path) -> None:
+    """`roots: ["."]` — значение по умолчанию, и оно обязано ничего не сужать."""
+    assert discover(sample_solution, EXCLUDE, roots=["."]).cs_files == EXPECTED_CS
+    assert discover(sample_solution, EXCLUDE, roots=None).cs_files == EXPECTED_CS
+
+
+def test_discover_roots_and_scope_add_up(sample_solution: Path) -> None:
+    """Сужения складываются, а не заменяют друг друга.
+
+    Замена дала бы прогон, где `--scope` втихую расширяет обход за пределы
+    настроенных `roots` — то есть флаг на один прогон отменял бы конфигурацию.
+    """
+    result = discover(
+        sample_solution, EXCLUDE, scope=["src/Sample.Pricing.Api"], roots=["src/Sample.Common"]
+    )
+    assert result.cs_files == []
+
+
+def test_discover_roots_narrows_the_scan_through_config(sample_solution: Path) -> None:
+    """Ключ доходит до обхода: до этого он разбирался и молча игнорировался."""
+    from docpipe.emit import run as run_scan
+
+    narrowed = run_scan(sample_solution, DocpipeConfig(roots=["src/Sample.Common"]))
+    everything = run_scan(sample_solution, DocpipeConfig())
+    assert len(narrowed.manifest.modules) == 1
+    assert len(everything.manifest.modules) > len(narrowed.manifest.modules)
+
+
 def test_discover_without_excludes_sees_generated_file(sample_solution: Path) -> None:
     """Контрольная проверка: без исключений файл под obj/ находится.
 
@@ -226,6 +267,25 @@ def test_config_rejects_non_mapping(tmp_path: Path) -> None:
     path.write_text(yaml.safe_dump(["a", "b"]), encoding="utf-8")
     with pytest.raises(ValueError, match="словарём"):
         load_config(path)
+
+
+def test_config_rejects_absolute_cache_dir() -> None:
+    """`cache_dir` склеивается с `--root`, и абсолютное значение выигрывает склейку.
+
+    `Path("/repo") / "/tmp/x"` == `/tmp/x`: без проверки кэш молча уезжает
+    за пределы репозитория, и об этом не сообщает ничто.
+    """
+    with pytest.raises(ValueError, match="cache_dir"):
+        DocpipeConfig(cache_dir="/tmp/elsewhere")
+
+
+def test_config_rejects_absolute_roots() -> None:
+    with pytest.raises(ValueError, match="roots"):
+        DocpipeConfig(roots=["/abs/src"])
+
+
+def test_config_roots_normalizes_like_other_repo_relative_keys() -> None:
+    assert DocpipeConfig(roots=["./src/", "a//b"]).roots == ["src", "a/b"]
 
 
 def test_config_missing_file_is_an_error(tmp_path: Path) -> None:

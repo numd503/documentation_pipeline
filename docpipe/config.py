@@ -50,6 +50,10 @@ class DocpipeConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # Каталоги, в которых вообще искать исходники. Сужает обход, а не состав
+    # документации: что из найденного документировать, решает `enrolled`.
+    # Отличается от `--scope` тем, что постоянен и не делает манифест частичным;
+    # при обоих заданных сужения складываются.
     roots: list[str] = Field(default_factory=lambda: ["."])
     enrolled: list[str] = Field(default_factory=lambda: ["**"])
     exclude: list[str] = Field(default_factory=list)
@@ -108,10 +112,19 @@ class DocpipeConfig(BaseModel):
     # рядом с манифестом, вне дерева документов.
     worklist: str = "artifacts/doc-worklist.json"
 
-    @field_validator("docs_root", "modules_dir", "business_root")
+    # `cache_dir` здесь же, хотя в `doc_path` он не попадает: он единственный
+    # из «путей прогона», который склеивается с `--root`, а не с текущим
+    # каталогом. Без проверки абсолютное значение молча выигрывало бы склейку
+    # (`Path(root) / "/tmp/x"` == `/tmp/x`), и кэш уезжал бы за пределы репозитория.
+    @field_validator("docs_root", "modules_dir", "business_root", "cache_dir")
     @classmethod
     def _check_repo_relative(cls, value: str, info: Any) -> str:
         return _repo_relative(value, str(info.field_name))
+
+    @field_validator("roots")
+    @classmethod
+    def _check_roots(cls, value: list[str]) -> list[str]:
+        return [_repo_relative(item, "roots") for item in value]
 
     @property
     def modules_root(self) -> str:
