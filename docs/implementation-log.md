@@ -5561,3 +5561,59 @@ uv run pytest -q                            → 1319 passed
 uv run pytest tests/test_web_calls.py -q  → 26 passed
 uv run pytest -q                          → 1345 passed
 ```
+
+---
+
+## F08 — `web/routes.py`: дерево роутов и якорь страницы ✅
+
+**Создано:** `docpipe/web/routes.py`, `docpipe/web/queries/routes.scm`,
+`tests/test_web_routes.py` (15 тестов)
+**Изменено:** `docpipe/route.py` (параметр `:id`), `docpipe/web/resolve.py`
+(`resolve_exported`)
+
+На фикстуре собраны пять страниц и одна невосстановленная ветка:
+
+```
+/                      ShellComponent
+/forecast/daily        ForecastComponent     ← loadChildren + короткий loadComponent
+/models                ListComponent         ← спред импортированного массива
+/models/loader/quiz    QuizComponent         ← loadComponent с import()
+/models/{}             DetailComponent       ← параметр :id
+? /models              ListComponent         ← сегмент собран выражением
+```
+
+### Корень таблицы — тот, на кого никто не ссылается
+
+Правила опознания корня в плане не было, а без него каждая дочерняя таблица
+становится ещё и корнем: `daily` появляется и как `/forecast/daily`, и как
+`/daily`. Опознавать корень по `provideRouter`/`RouterModule.forRoot` нельзя —
+в боевом модуле их нет вовсе, а дерево собрано. Поэтому корень — таблица,
+на которую не ссылаются ни спредом, ни `loadChildren`.
+
+Таблица опознаётся по аннотации типа (`: Routes`): «массив объектов с ключом
+`path`» поймал бы любой конфиг меню, а таких в модуле больше, чем таблиц роутов.
+
+### Ловушка: в ленивой форме две стрелки, и нужна внутренняя
+
+`() => import('./x').then(m => m.ROUTES)`. Тело внешней стрелки —
+`import(…).then(…)`, у которого свойство называется `then`. Первая реализация
+брала первое попавшееся свойство при обходе и подставила `then` и в имя таблицы,
+и в имя компонента: `/models/loader/quiz` получил компонент `then`, а ветка
+`forecast` вообще потеряла префикс и дала `/daily`. Оба симптома выглядели как
+разные дефекты, а причина одна.
+
+### `:id` дописан в общую нормализацию
+
+План требовал, чтобы параметр превращался в `{}` через `docpipe/route.py`,
+а не своей копией, — но самого шага там не было. Дописан посегментно, после
+замены фигурных форм: двоеточие встречается и внутри шаблона ASP.NET
+(`{id:guid}`), и отличить формы можно только по началу сегмента. Теперь
+`normalize_route("models/:id") == normalize_route("models/{id:guid}")` — то есть
+обе стороны действительно сходятся в одном ключе.
+
+### Проверено
+
+```
+uv run pytest tests/test_web_routes.py -q  → 15 passed
+uv run pytest -q                           → 1360 passed
+```

@@ -316,6 +316,15 @@ def _exported_from(file: str, name: str, ctx: ResolveContext, visited: set[str])
     return None
 
 
+def resolve_exported(file: str, name: str, ctx: ResolveContext) -> str | None:
+    """Файл, в котором объявлено имя, экспортируемое модулем `file`.
+
+    Нужен там, где модуль уже известен, а имя надо найти сквозь бочки:
+    `loadChildren: () => import('./x').then(m => m.ROUTES)`.
+    """
+    return _exported_from(file, name, ctx, set())
+
+
 def resolve_name(name: str, from_file: str, ctx: ResolveContext) -> str | None:
     """Файл, в котором объявлено имя, видимое в `from_file`. `None` — не наше.
 

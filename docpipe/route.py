@@ -13,9 +13,13 @@
 import re
 from dataclasses import dataclass
 
-# Подстановка любой из двух сторон: `${id}` в шаблонной строке фронта,
+# Подстановка любой из сторон: `${id}` в шаблонной строке фронта,
 # `{id}`, `{id:guid}`, `{id?}`, `{*rest}` в шаблоне маршрута ASP.NET.
 # Форма со знаком доллара стоит первой: иначе `$` останется висеть перед `{}`.
+#
+# Третья форма — параметр маршрута Angular `:id` — обрабатывается не здесь,
+# а посегментно: двоеточие встречается и внутри шаблона ASP.NET (`{id:guid}`),
+# и отличить их можно только по началу сегмента.
 _SUBSTITUTION = re.compile(r"\$\{[^{}]*\}|\{[^{}]*\}")
 
 _REPEATED_SLASHES = re.compile(r"/{2,}")
@@ -140,8 +144,12 @@ def normalize_route(raw: str, *, rewrite: RewriteRule | None = None) -> str:
         if head or added:
             route = "/".join(segments)
 
-    # 4. Подстановки обеих сторон.
+    # 4. Подстановки всех трёх сторон.
     route = _SUBSTITUTION.sub("{}", route)
+    route = "/".join(
+        "{}" if segment.startswith(":") and len(segment) > 1 else segment
+        for segment in route.split("/")
+    )
 
     # 5. Слэши.
     route = _REPEATED_SLASHES.sub("/", route).strip("/")
