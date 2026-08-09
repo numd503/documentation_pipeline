@@ -14,28 +14,21 @@ from collections import defaultdict
 from docpipe.hashing import stable_hash
 from docpipe.model import Attribute, FileParseResult, Member, RawDeclaration, SourceSpan, Symbol
 
-# Разделители ключа символа. Ни один не встречается в FQN, поэтому ключ
-# разбирается обратно однозначно.
-_MODULE_SEPARATOR = "#"
-_ARITY_SEPARATOR = "`"
+# Ключ символа и снятие дженериков живут в `docpipe/symbols.py`: тем же ключом
+# пользуется шаг `web`, а `docpipe/web/**` не имеет права импортировать
+# `docpipe/dotnet/**`. Имена здесь переэкспортируются — по ним ходят `tree.py`
+# и тесты, и переучивать их незачем.
+from docpipe.symbols import strip_generics, symbol_key
 
-
-def symbol_key(module: str, fqn: str, arity: int) -> str:
-    """Ключ символа: модуль, FQN и число параметров-дженериков.
-
-    FQN сам по себе типы **не различает** — проверено на ABP, 255 коллизий
-    на 9075 объявлений:
-
-    - `ICrudAppService`, `ICrudAppService<T>` и `ICrudAppService<T, K>` — три
-      разных типа с одинаковым FQN (таких групп 112, рекорд — шесть арностей);
-    - один и тот же FQN законно живёт в разных сборках; ключ без модуля склеил
-      бы 155 таких пар.
-
-    Формат совпадает с id узла документации на T15 — там к нему добавляется
-    префикс `type:`. Держать две разные схемы ключей нельзя: узлы перестанут
-    сопоставляться с символами.
-    """
-    return f"{module}{_MODULE_SEPARATOR}{fqn}{_ARITY_SEPARATOR}{arity}"
+__all__ = [
+    "base_type_arity",
+    "build_symbol_index",
+    "compute_closures",
+    "declaration_fqn",
+    "index_by_fqn",
+    "strip_generics",
+    "symbol_key",
+]
 
 
 def declaration_fqn(declaration: RawDeclaration) -> str:
@@ -46,28 +39,6 @@ def declaration_fqn(declaration: RawDeclaration) -> str:
     """
     parts = (declaration.namespace, declaration.containing_type or "", declaration.name)
     return ".".join(part for part in parts if part)
-
-
-def strip_generics(text: str) -> str:
-    """Убрать аргументы-дженерики, сохранив остальное имя.
-
-    Удаляются **сбалансированные** группы `<…>`, а не всё от первого `<`:
-    `A.B<C<D>>.E` — это вложенный тип `E` внутри generic-типа `B`, и его FQN
-    равен `A.B.E`. Обрезка по первому `<` дала бы `A` и потеряла бы тип.
-
-    Квалификатор `global::` снимается по той же причине, что и в usings:
-    он не часть имени.
-    """
-    out: list[str] = []
-    depth = 0
-    for char in text:
-        if char == "<":
-            depth += 1
-        elif char == ">":
-            depth = max(0, depth - 1)
-        elif depth == 0:
-            out.append(char)
-    return "".join(out).strip().removeprefix("global::")
 
 
 def base_type_arity(raw: str) -> int:

@@ -135,6 +135,34 @@ class DiRegistration(_Base):
     line: int
 
 
+class ImportedName(_Base):
+    """Одно имя, пришедшее из другого модуля.
+
+    Два поля, а не одно: `import { Base as Api }` виден в этом файле как `Api`,
+    а в модуле-источнике объявлен как `Base`. Хранить одно значит либо не найти
+    объявление, либо не узнать имя в коде — и то, и другое рвёт цепочку
+    наследования молча.
+    """
+
+    local: str
+    imported: str
+
+
+class ModuleImport(_Base):
+    """Связь файла с другим модулем: импорт либо переэкспорт.
+
+    Переэкспорт (`export * from './x'`) хранится здесь же и отличается флагом:
+    для резолва это одно и то же действие — «имя объявлено не тут», — а бочка
+    из `index.ts` встречается ровно там, где импорт.
+    """
+
+    source: str  # спецификатор как написан: './x', '@shared', 'rxjs'
+    names: list[ImportedName] = Field(default_factory=list)
+    star: bool = False  # `import * as ns` либо `export * from`
+    re_export: bool = False
+    line: int
+
+
 class FileParseResult(_Base):
     """Полный результат разбора одного файла. Единица кэширования."""
 
@@ -142,6 +170,7 @@ class FileParseResult(_Base):
     content_hash: str
     usings: list[str] = Field(default_factory=list)
     global_usings: list[str] = Field(default_factory=list)
+    imports: list[ModuleImport] = Field(default_factory=list)
     declarations: list[RawDeclaration] = Field(default_factory=list)
     di_registrations: list[DiRegistration] = Field(default_factory=list)
     parse_errors: int = 0

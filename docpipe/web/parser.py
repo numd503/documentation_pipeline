@@ -21,8 +21,10 @@ from docpipe.hashing import content_hash
 from docpipe.model import (
     Attribute,
     FileParseResult,
+    ImportedName,
     Member,
     MemberKind,
+    ModuleImport,
     RawDeclaration,
     SourceSpan,
     TypeKind,
@@ -416,6 +418,80 @@ def _build_members(nodes: list[Node]) -> list[Member]:
     return found
 
 
+def _imported_names(clause: Node) -> tuple[list[ImportedName], bool]:
+    """Имена из `import_clause` либо `export_clause` и признак «звёздочка».
+
+    Три формы, и все три встречаются в Angular:
+
+        import { A, B as C } from 'x'   named_imports -> import_specifier
+        import Default from 'x'         сам identifier прямо в клаузе
+        import * as ns from 'x'         namespace_import
+
+    Алиас (`B as C`) хранится обоими именами: в этом файле имя видно как `C`,
+    а в модуле-источнике объявлено как `B`.
+    """
+    found: list[ImportedName] = []
+    star = False
+
+    # `export_clause` сам содержит спецификаторы, `import_clause` — держит их
+    # в потомке `named_imports`. Уровень вложенности у двух форм разный.
+    groups = [clause] if clause.type == "export_clause" else list(clause.named_children)
+
+    for child in groups:
+        if child.type == "namespace_import":
+            star = True
+            identifier = next((c for c in child.named_children if c.type == "identifier"), None)
+            if identifier is not None:
+                found.append(ImportedName(local=_text(identifier), imported="*"))
+        elif child.type == "identifier":
+            # Импорт по умолчанию: `import Default from 'x'`. Имя в источнике
+            # у него своё собственное — `default`, а не то, под которым он виден.
+            found.append(ImportedName(local=_text(child), imported="default"))
+        elif child.type in ("named_imports", "export_clause"):
+            for specifier in child.named_children:
+                if specifier.type not in ("import_specifier", "export_specifier"):
+                    continue
+                name = _text(specifier.child_by_field_name("name"))
+                alias = _text(specifier.child_by_field_name("alias"))
+                if name:
+                    found.append(ImportedName(local=alias or name, imported=name))
+
+    return found, star
+
+
+def _imports(root: Node) -> list[ModuleImport]:
+    """Импорты и переэкспорты файла, в порядке появления."""
+    captures = QueryCursor(_query("imports.scm")).captures(root)
+    found: list[ModuleImport] = []
+
+    for key, re_export in (("import", False), ("re_export", True)):
+        for statement in captures.get(key, []):
+            source = statement.child_by_field_name("source")
+            if source is None:
+                continue
+
+            names: list[ImportedName] = []
+            star = any(child.type == "*" for child in statement.children)
+            for child in statement.children:
+                if child.type in ("import_clause", "export_clause"):
+                    clause_names, clause_star = _imported_names(child)
+                    names.extend(clause_names)
+                    star = star or clause_star
+
+            found.append(
+                ModuleImport(
+                    source=_string_value(source),
+                    names=names,
+                    star=star,
+                    re_export=re_export,
+                    line=statement.start_point[0] + 1,
+                )
+            )
+
+    found.sort(key=lambda item: (item.line, item.source))
+    return found
+
+
 def _count_errors(node: Node) -> int:
     total = 1 if node.type == "ERROR" or node.is_missing else 0
     stack = list(node.children)
@@ -516,6 +592,7 @@ def parse_source(source: bytes, path: str) -> FileParseResult:
     return FileParseResult(
         path=path,
         content_hash=content_hash(source),
+        imports=_imports(tree.root_node),
         declarations=declarations,
         parse_errors=_count_errors(tree.root_node),
     )
