@@ -756,6 +756,8 @@ deploy/                   поставка внутрь репозитория �
 ├── uv.toml.example       зеркало пакетов и сертификаты для закрытого контура
 ├── OFFLINE.md            сборка окружения там, где зеркало отдаёт не всё
 └── cashflow-docspipe/    настройка под АС CF: docpipe.yaml, rules.yaml
+tools/
+└── recon-frontend.sh     разведка фронтенда на боевом репозитории: только чтение
 docs/                     проектная документация (см. ниже)
 schema/                   JSON Schema манифеста, генерируется из моделей
 tests/fixtures/
@@ -781,6 +783,7 @@ tests/fixtures/
 | [`business.example/`](business.example/) | минимальный каталог-образец: возможности, процесс, сущность |
 | [`templates/README.md`](templates/README.md) | как устроены скелеты и что переживает прогон |
 | [`docs/implementation-log.md`](docs/implementation-log.md) | журнал: что сделано, что проверено, где план разошёлся с реальностью |
+| [`docs/frontend-analysis.md`](docs/frontend-analysis.md) | **фронтенд (Angular) в пайплайне: связь с бэкендом, страницы, что переиспользуется** |
 | [`docs/findings-cashflow-registries.md`](docs/findings-cashflow-registries.md) | **разведка АС CF: где объявлены точки входа и что ломает их разбор** |
 | [`docs/findings-eshoponweb.md`](docs/findings-eshoponweb.md) | отчёт о прогоне на eShopOnWeb (244 файла) |
 | [`docs/findings-abp.md`](docs/findings-abp.md) | отчёт о прогоне на ABP (671 проект, 7869 файлов) |
