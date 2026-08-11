@@ -109,12 +109,64 @@ docpipe_state:                 ← состояние, пишет только `
 на `doc_path` есть, а обход документов его не вернул**. Последнее — не
 `missing`: `missing` означает `create`, то есть перезапись. Способов стать
 невидимым пять (front matter без `docpipe.schema`, `---` не первой строкой,
-`docs_scan_exclude`, каталог за симлинком, права), и `tools/why_missing.py`
+`docs_scan_exclude`, каталог за симлинком, права), и `docs explain`
 называет, какой сработал. Такой документ не перезаписывается и под `--force`:
 что в нём лежит, инструменту неизвестно.
 
 Два хэша дают два уровня приоритета: **смена контракта — переписать**, **смена
 реализации при том же контракте — проверить**.
+
+## Статус и действие с файлом — разные вещи
+
+`status` описывает содержимое документа, `file_action` — что прогон сделает
+с файлом, и совпадают они далеко не всегда:
+
+| Условие | `file_action` |
+|---|---|
+| обход не нашёл файла на `doc_path` | `create` |
+| узел сопоставлен с файлом на другом пути | `relocate` |
+| собранный текст совпадает с файлом байт в байт | `unchanged` |
+| файл трогать нельзя (`broken`) | `refuse` |
+| иначе — файл есть, текст отличается | `update` |
+
+Самый частый источник путаницы: документ со статусом `current` и решением
+`skip` **переписывается**, если сменился владелец или домен. Это поля проекции,
+они живут во front matter, и файл открывается на запись при том, что писать
+агенту нечего. Поэтому `current` остаётся в подробном списке `docs status`,
+когда его файл переписывается, и исчезает из него, когда нет.
+
+Действие видно колонкой в `docs status`, полем `file_action` в его JSON
+и в очереди шага 3, и отбирается флагом `--file-action`. Не путать
+с `--action`: тот про работу агента, этот про запись.
+
+## Почему с документом сделают именно это (`docs explain`)
+
+```bash
+docpipe docs explain artifacts/doc-tree.json docs/modules/…/pricing-controller.md
+```
+
+```
+файл на диске:      есть
+обход документов:   файл принят
+действие с файлом:  update — файл есть, и собранный текст от него отличается
+статус документа:   current
+решение агенту:     skip
+
+Что изменится:
+  front matter:
+    docpipe.domain: pricing → risk
+  генерируемый блок: пересобран
+  авторские секции:  не тронуты
+```
+
+Три вопроса, на которые отчёт по дереву не отвечает, а эта команда отвечает:
+какой из пяти фильтров обхода отбросил лежащий на диске файл; чем именно
+собранный текст отличается от него; не задевает ли перезапись авторские секции.
+
+Последнее — не украшение. Изменение авторской секции означает нарушение
+главного инварианта шага 2, поэтому оно печатается отдельной строкой
+и **меняет код возврата**: такое ловят проверкой, а не глазами в выводе.
+`--diff` добавляет обычный unified diff, когда разбивки по зонам мало.
 
 ## Команды
 
@@ -123,7 +175,10 @@ docpipe materialize MANIFEST --root PATH [--config FILE] [--templates DIR]
                              [--ownership FILE] [--team NAME] [--dry-run] [--force]
 
 docpipe docs status MANIFEST [PATH...] [--action write|review|skip]
+                             [--file-action create|update|unchanged|relocate|refuse]
                              [--fail-on STATUS] [--team NAME] [--format text|json]
+
+docpipe docs explain MANIFEST PATH [--root PATH] [--config FILE] [--diff]
 
 docpipe docs accept MANIFEST [PATH...] [--node ID] [--team NAME] [--all]
                              [--force] [--dry-run]
@@ -213,7 +268,7 @@ docpipe worklist artifacts/doc-tree.json --out /tmp/q.json --limit 50
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "docs_root": "docs",
   "modules_root": "docs/modules",
   "ruleset_version": "dotnet/1.0",
@@ -223,7 +278,8 @@ docpipe worklist artifacts/doc-tree.json --out /tmp/q.json --limit 50
   "counts": {"stale": 3, "empty": 5, "current": 1836},
   "totals": {"documents": 1844, "selected": 8, "truncated": false},
   "documents": [
-    {"action": "write", "status": "stale", "reason": "контракт изменился: добавлены …",
+    {"action": "write", "file_action": "update", "status": "stale",
+     "reason": "контракт изменился: добавлены …",
      "doc_path": "docs/modules/controllers/…/pricing-controller.md",
      "node_id": "type:src/…#…PricingController`0", "kind": "controller",
      "template_ref": "templates/controller.md", "example_ref": null, "team": null,
@@ -237,7 +293,8 @@ docpipe worklist artifacts/doc-tree.json --out /tmp/q.json --limit 50
 
 | Поле | Что означает |
 |---|---|
-| `schema_version` | версия **формата очереди**; своя, не связана со `schema_version` манифеста |
+| `schema_version` | версия **формата очереди**; своя, не связана со `schema_version` манифеста. `1.1` — добавлено `file_action` |
+| `file_action` | что `materialize` сделает с файлом; по нему исполнитель видит, отработал ли он уже |
 | `manifest_sha256` | по нему внешний модуль проверяет, что читает очередь от того самого `doc-tree.json` |
 | `needs_materialize` | в очереди есть документы, которых на диске ещё нет: сначала `materialize` |
 | `counts` | статусы по **всему** дереву; фильтры на них не влияют |

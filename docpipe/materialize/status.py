@@ -12,6 +12,20 @@ from docpipe.hashing import stable_json_dumps
 from docpipe.materialize.plan import MaterializePlan, PlannedDoc
 
 AGENT_ACTIONS: Final[frozenset[str]] = frozenset({"write", "review", "skip"})
+
+# Действия с ФАЙЛОМ — не то же, что решения агента, и потому отдельный набор
+# и отдельный флаг. Путать их дорого: `--action write` отбирает документы,
+# которые агенту предстоит написать, `--file-action update` — те, которые
+# прогон перепишет прямо сейчас, и это разные множества.
+FILE_ACTIONS: Final[frozenset[str]] = frozenset(
+    {"create", "update", "unchanged", "refuse", "relocate"}
+)
+
+# Действия, при которых файл открывается на запись. По ним `current` остаётся
+# в подробном списке: статус «документ в порядке» и «файл сейчас перепишут» —
+# независимые вещи, а раньше вторая молча исчезала из отчёта вместе с первой.
+WRITING_ACTIONS: Final[frozenset[str]] = frozenset({"create", "update", "relocate"})
+
 STATUSES: Final[frozenset[str]] = frozenset(
     {
         "missing",
@@ -28,9 +42,16 @@ STATUSES: Final[frozenset[str]] = frozenset(
 
 
 def filter_documents(
-    documents: list[PlannedDoc], paths: list[Path], actions: list[str]
+    documents: list[PlannedDoc],
+    paths: list[Path],
+    actions: list[str],
+    file_actions: list[str] | None = None,
 ) -> list[PlannedDoc]:
-    """Сузить выборку. Принимаются и файлы, и каталоги."""
+    """Сузить выборку. Принимаются и файлы, и каталоги.
+
+    Фильтры складываются: `--action write --file-action update` — «агенту писать
+    И файл будет переписан», а не объединение.
+    """
     selected = documents
     if paths:
         prefixes = [path.as_posix().rstrip("/") for path in paths]
@@ -44,6 +65,8 @@ def filter_documents(
         ]
     if actions:
         selected = [doc for doc in selected if doc.agent_action in set(actions)]
+    if file_actions:
+        selected = [doc for doc in selected if doc.file_action in set(file_actions)]
     return selected
 
 
@@ -56,6 +79,10 @@ def document_json(doc: PlannedDoc) -> dict[str, Any]:
     """
     return {
         "action": doc.agent_action,
+        # Что прогон сделает с файлом. Отдельно от `action`: тот про работу
+        # агента, этот про запись, и совпадают они далеко не всегда — документ
+        # со `skip` переписывается при смене владельца или домена.
+        "file_action": doc.file_action,
         "reason": doc.reason,
         "changes": asdict(doc.changes),
         "doc_path": doc.doc_path,
@@ -105,12 +132,19 @@ def format_status(plan: MaterializePlan, documents: list[PlannedDoc]) -> str:
     lines += [f"  {status:<12} {count:>5}" for status, count in counts.items()]
     lines.append(f"  {'всего':<12} {len(documents):>5}")
 
-    detailed = [doc for doc in documents if doc.status != "current"]
+    # `current` попадает в подробности, только если файл при этом переписывается:
+    # смена владельца или домена меняет проекцию, документ остаётся в порядке,
+    # а файл открывается на запись — и раньше об этом не было ни строки.
+    detailed = [
+        doc for doc in documents if doc.status != "current" or doc.file_action in WRITING_ACTIONS
+    ]
     if detailed:
         lines.append("")
         for doc in detailed:
             team = f"  [{doc.team}]" if doc.team else ""
-            lines.append(f"{doc.agent_action:<7} {doc.status:<11} {doc.doc_path}{team}")
+            lines.append(
+                f"{doc.agent_action:<7} {doc.status:<11} {doc.file_action:<10} {doc.doc_path}{team}"
+            )
             if doc.reason:
                 lines.append(f"        {doc.reason}")
             if doc.empty_sections:

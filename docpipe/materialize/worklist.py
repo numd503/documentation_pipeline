@@ -24,7 +24,10 @@ from docpipe.materialize.plan import STATUS_ORDER, MaterializePlan, PlannedDoc
 from docpipe.materialize.status import document_json
 from docpipe.model import SourceSpan
 
-SCHEMA_VERSION: Final[Literal["1.0"]] = "1.0"
+# 1.1 — добавлено поле `file_action` у записи. Добавление поля версию всё
+# равно двигает: конверт затем и заведён, чтобы читающий не гадал, тот ли
+# это формат, а строгий читатель ломается и на новом ключе.
+SCHEMA_VERSION: Final[Literal["1.1"]] = "1.1"
 
 # Что попадает в очередь без явного `--action`. `skip` не попадает: очередь —
 # это список работы, а не срез дерева.
@@ -56,6 +59,9 @@ class WorklistEntry(_Base):
     """
 
     action: str
+    # Что прогон сделает с файлом; `action` — что делать агенту.
+    # Исполнитель шага 3 по нему видит, materialize уже отработал или ещё нет.
+    file_action: str
     reason: str
     status: str
     doc_path: str
@@ -82,7 +88,7 @@ class WorklistTotals(_Base):
 class Worklist(_Base):
     """Файл очереди целиком."""
 
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["1.1"] = SCHEMA_VERSION
     docs_root: str
     modules_root: str
     ruleset_version: str

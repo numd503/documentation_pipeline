@@ -233,6 +233,12 @@ def format_result(plan: MaterializePlan, result: ApplyResult, dry_run: bool = Fa
     lines += _directory_section(
         "Где было бы создано:" if dry_run else "Где создано:", result.created
     )
+    # Обновлённые той же раскладкой, а не списком: «обновлено: 4820» не отвечает
+    # на первый вопрос — что именно перепишут, — а полный список на боевом
+    # объёме топит отчёт. Поимённо один документ показывает `docs explain`.
+    lines += _directory_section(
+        "Где было бы обновлено:" if dry_run else "Где обновлено:", result.updated
+    )
 
     if plan.substituted:
         # Не «замечание», а отдельный раздел с числами. Подстановка — решение
