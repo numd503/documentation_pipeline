@@ -1,0 +1,15 @@
+{
+  "name": "widget",
+  "projectType": "application",
+  "sourceRoot": "apps/widget/src",
+  "prefix": "widget",
+  "targets": {
+    "build": {
+      "executor": "@nx/angular:webpack-browser",
+      "options": {
+        "main": "apps/widget/src/main.ts",
+        "tsConfig": "apps/widget/tsconfig.app.json"
+      }
+    }
+  }
+}

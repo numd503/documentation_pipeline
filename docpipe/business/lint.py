@@ -29,6 +29,7 @@ from docpipe.business.model import Catalog
 from docpipe.business.resolve import REGISTRY_KIND, ResolveContext, resolve
 from docpipe.materialize.ownership import Ownership, owner_of
 from docpipe.registry.anchors import ENTRY_KINDS, ResolvedAnchor
+from docpipe.route import normalize_route
 
 # Порядок фиксирован и несёт смысл: сначала то, что сломано, потом то, чего
 # ещё нет. `--fail-on` принимает только эти имена; значение вне перечня —
@@ -45,11 +46,14 @@ CHECKS: Final[tuple[str, ...]] = (
     "catalog",
     "registry-unlinked",
     "uncovered",
+    "pages-uncovered",
 )
 
 # Проверки, которые сами по себе код возврата не меняют: это состояние
 # репозитория, а не дефект каталога.
-INFORMATIONAL: Final[frozenset[str]] = frozenset({"registry-unlinked", "uncovered"})
+INFORMATIONAL: Final[frozenset[str]] = frozenset(
+    {"registry-unlinked", "uncovered", "pages-uncovered"}
+)
 
 TOP: Final[int] = 15
 
@@ -316,6 +320,27 @@ def lint(
                 check="uncovered",
                 where=record.source_path,
                 message=f"{record.kind} {record.display}: нет бизнес-документа",
+            )
+        )
+
+    # 10. Страницы фронта без бизнес-документа. Та же природа, что у `uncovered`:
+    #     это состояние работы, а не дефект каталога, и кода возврата оно
+    #     не меняет. Считается по манифесту шага `web`; репозиторий без фронта
+    #     даёт пустой словарь страниц и ни одной находки.
+    anchored = {
+        normalize_route(anchor.ref)
+        for doc in catalog.docs
+        for anchor in doc.anchors
+        if anchor.kind == "page"
+    }
+    for route in sorted(ctx.pages_by_route):
+        if route in anchored:
+            continue
+        findings.append(
+            Finding(
+                check="pages-uncovered",
+                where=f"/{route}" if route else "/",
+                message="страница без бизнес-документа",
             )
         )
 

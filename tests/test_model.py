@@ -16,9 +16,12 @@ from docpipe.model import (
     Module,
     ParserVersions,
     RawDeclaration,
+    RouteEntry,
     SourceSpan,
     Symbol,
+    WebCall,
 )
+from docpipe.route import route_key
 
 PARSER_VERSIONS = ParserVersions(tree_sitter="0.26.0", grammar_c_sharp="0.23.5")
 
@@ -48,7 +51,8 @@ def _minimal_manifest() -> Manifest:
             Module(
                 id="module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
                 name="Sample.Pricing.Api",
-                csproj="src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+                project_file="src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+                lang="cs",
                 target_frameworks=["net8.0", "net9.0"],
                 project_references=["src/Sample.Common/Sample.Common.csproj"],
                 domain="pricing",
@@ -89,9 +93,9 @@ def test_manifest_round_trip_through_json() -> None:
 
 def test_schema_version_defaults_and_is_pinned() -> None:
     """Чужая версия схемы должна отвергаться явно, а не разбираться молча."""
-    assert _minimal_manifest().schema_version == "1.1"
+    assert _minimal_manifest().schema_version == "2.0"
     payload = _minimal_manifest().model_dump()
-    payload["schema_version"] = "2.0"
+    payload["schema_version"] = "1.1"
     with pytest.raises(ValidationError):
         Manifest.model_validate(payload)
 
@@ -188,3 +192,72 @@ def test_schema_command_writes_stable_file(tmp_path: Path) -> None:
     second = runner.invoke(app, ["schema", "--out", str(out)])
     assert second.exit_code == 0, second.output
     assert out.read_bytes() == content_first
+
+
+# --------------------------------------------------------------------------------------
+# Схема 2.0: одна модель на два языка (F10)
+# --------------------------------------------------------------------------------------
+
+
+def test_module_requires_lang() -> None:
+    """Умолчания у `lang` нет намеренно.
+
+    С умолчанием `"cs"` сборщик модулей фронта, забывший его выставить, отдал бы
+    манифест, где все модули объявлены .NET-овскими, и заметить это было бы
+    нечем: остальные поля у такого модуля правильные.
+    """
+    with pytest.raises(ValidationError, match="lang"):
+        Module(  # type: ignore[call-arg]
+            id="module:x",
+            name="x",
+            project_file="x/package.json",
+            domain="d",
+            enrolled=True,
+        )
+
+
+def test_module_accepts_a_front_end_project_file() -> None:
+    """Модуль фронта объявлен не `.csproj`, и поле больше не называет расширение."""
+    module = Module(
+        id="module:apps/widget/project.json",
+        name="widget",
+        project_file="apps/widget/project.json",
+        lang="ts",
+        domain="web",
+        enrolled=True,
+    )
+    assert module.project_file.endswith("project.json")
+    assert module.lang == "ts"
+
+
+def test_web_call_round_trips_through_json() -> None:
+    """`WebCall` носит ключ связи целиком: маршрут и различитель неразделимы."""
+    call = WebCall(
+        file="src/app/shared/services/items.service.ts",
+        line=17,
+        key=route_key("POST", "api/items/query", discriminator="users"),
+        confidence="high",
+        via_action="[Inner Debt] Load",
+    )
+    assert WebCall.model_validate_json(call.model_dump_json()) == call
+    assert call.model_dump(mode="json")["key"]["discriminator"] == "users"
+
+
+def test_web_call_rejects_an_unknown_key_field() -> None:
+    """`extra="forbid"` обязан действовать и внутри ключа, а не только снаружи."""
+    with pytest.raises(ValidationError):
+        WebCall.model_validate(
+            {
+                "file": "a.ts",
+                "line": 1,
+                "key": {"http_method": "GET", "route": "api/x", "listInnerName": "users"},
+                "confidence": "high",
+            }
+        )
+
+
+def test_route_entry_carries_the_unresolved_state() -> None:
+    """Невосстановленный маршрут — состояние, а не отсутствие узла."""
+    entry = RouteEntry(path="", component="ListComponent", route_unresolved=True)
+    assert entry.route_unresolved is True
+    assert RouteEntry(path="models/{}", component="DetailComponent").route_unresolved is False

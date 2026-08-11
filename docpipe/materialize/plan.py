@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from docpipe.discovery import matches_glob
+from docpipe.discovery import is_excluded, matches_glob
 from docpipe.materialize.build import (
     BuildContext,
     build_front_matter,
@@ -171,6 +171,12 @@ class PlanOptions:
     modules_root: str = ""
     teams: tuple[str, ...] = ()
     force: bool = False
+    # Шаблоны обхода документов — чтобы проверить, что они не накрывают само
+    # дерево документов. Складываются со встроенными, как и при обходе.
+    docs_scan_exclude: tuple[str, ...] = ()
+    # Пути, где файл есть, а обход его не вернул (`shadowed_docs`). Такой узел
+    # не получает ни `create`, ни `relocate`: содержимое файла неизвестно.
+    shadowed: tuple[str, ...] = ()
     # Документы, чьё принятое состояние надо переписать текущим (`docs accept`).
     # Приёмка проходит через тот же план и ту же запись: отдельный путь записи
     # означал бы вторую реализацию слияния зон.
@@ -199,6 +205,25 @@ class MaterializePlan:
 # --------------------------------------------------------------------------------------
 
 
+_BOM: Final[bytes] = b"\xef\xbb\xbf"
+
+
+def opens_front_matter(head: bytes) -> bool:
+    """Открывается ли файл строкой `---`.
+
+    Отсев по первым байтам до чтения целиком: в `.venv` встречаются `.md`
+    на мегабайты, и читать их незачем.
+
+    BOM снимается здесь так же, как его снимает `read_document`. Иначе разбор
+    с `utf-8-sig` до документа, сохранённого Блокнотом, просто не доезжает:
+    отсев считает его чужим, узел остаётся `missing`, и следующий прогон
+    затирает написанный текст как несуществующий.
+    """
+    if head.startswith(_BOM):
+        head = head[len(_BOM) :]
+    return head[:4] in (b"---\n", b"---\r")
+
+
 def scan_docs(root: Path, docs_root: str, exclude: list[str] | None = None) -> list[ExistingDoc]:
     """Найти документы шага 2.
 
@@ -219,12 +244,16 @@ def scan_docs(root: Path, docs_root: str, exclude: list[str] | None = None) -> l
         if any(matches_glob(rel, glob) for glob in globs):
             continue
 
-        # Отсев по первым байтам до чтения целиком: в `.venv` встречаются `.md`
-        # на мегабайты, и читать их незачем.
         try:
-            if path.read_bytes()[:4] not in (b"---\n", b"---\r"):
-                continue
-        except OSError:
+            head = path.read_bytes()[:8]
+        except OSError as exc:
+            # Нечитаемый файл — не «файла нет». Молчаливый пропуск давал бы узлу
+            # `missing`, а `missing` — это `create`, то есть перезапись документа,
+            # прочитать который не удалось. Ровно то, что запрещено.
+            found.append(ExistingDoc(path=rel, error=f"файл не читается: {exc}"))
+            continue
+
+        if not opens_front_matter(head):
             continue
 
         try:
@@ -247,6 +276,28 @@ def scan_docs(root: Path, docs_root: str, exclude: list[str] | None = None) -> l
         found.append(ExistingDoc(path=rel, text=text, parsed=parsed))
 
     return found
+
+
+def shadowed_docs(root: Path, manifest: Manifest, existing: list[ExistingDoc]) -> list[str]:
+    """Пути узлов, где файл на диске **есть**, а обход документов его не вернул.
+
+    Причин выпасть из обхода много и все они молчаливые: front matter без
+    `docpipe.schema`, `---` с пробелом на конце, каталог за симлинком (`rglob`
+    в такие не заходит), шаблон `docs_scan_exclude`, накрывший само дерево.
+    Общее у них одно — узел получает `missing`, а `missing` означает `create`,
+    и документ с авторским текстом переписывается без единого сообщения.
+
+    Поэтому проверка отдельная и по факту с диска: перечислить все способы
+    стать невидимым нельзя, а «файл на этом пути есть» — проверяемо. Файловую
+    систему трогает она, а не `build_plan`: план остаётся чистой функцией
+    и получает готовый список, как и в случае с `check_links`.
+    """
+    seen = {doc.path for doc in existing}
+    return sorted(
+        node.doc_path
+        for node in manifest.nodes
+        if node.doc_path not in seen and (root / node.doc_path).is_file()
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -588,17 +639,48 @@ def layout_drift(manifest: Manifest, modules_root: str) -> str | None:
     )
 
 
+def excluded_from_scan(manifest: Manifest, docs_scan_exclude: tuple[str, ...]) -> str | None:
+    """Не отсекает ли обход документов само дерево документов.
+
+    Пара `docs_root` + `modules_dir` держит инвариант «`materialize` пишет туда,
+    где ищет `docs status`» структурно, но `docs_scan_exclude` обходит его
+    с другой стороны: шаблон `docs/ml/**` при документах под `docs/ml/...` даёт
+    прогон, в котором **все** документы навсегда `missing` и переписываются
+    заново каждый раз, молча и с потерей авторского текста.
+
+    Сравниваются реальные `doc_path` манифеста, а не префикс: так проверка
+    не зависит от того, как именно записан шаблон.
+    """
+    globs = DEFAULT_DOCS_SCAN_EXCLUDE + list(docs_scan_exclude)
+    hidden = sorted(node.doc_path for node in manifest.nodes if is_excluded(node.doc_path, globs))
+    if not hidden:
+        return None
+    glob = next(item for item in globs if matches_glob(hidden[0], item))
+    return (
+        f"`docs_scan_exclude` отсекает само дерево документов: шаблон `{glob}`"
+        f" накрывает {len(hidden)} путей манифеста, например `{hidden[0]}`."
+        " Обход документов их не найдёт, каждый навсегда останется `missing`"
+        " и будет переписан на каждом прогоне. Сузьте шаблон или перенесите"
+        " `docs_root`/`modules_dir` из-под него"
+    )
+
+
 def _blocking_errors(
     manifest: Manifest,
     existing: list[ExistingDoc],
     templates: dict[str, Template],
     modules_root: str = "",
+    docs_scan_exclude: tuple[str, ...] = (),
 ) -> list[str]:
     errors: list[str] = []
 
     drift = layout_drift(manifest, modules_root)
     if drift:
         errors.append(drift)
+
+    hidden = excluded_from_scan(manifest, docs_scan_exclude)
+    if hidden:
+        errors.append(hidden)
 
     # `docpipe validate` это ловит, но манифест мог быть собран старой версией
     # или отредактирован. Без повторной проверки второй узел молча затрёт
@@ -660,7 +742,9 @@ def build_plan(
 ) -> MaterializePlan:
     """Построить план. Ничего не пишет."""
     options = options or PlanOptions()
-    errors = _blocking_errors(manifest, existing, templates, options.modules_root)
+    errors = _blocking_errors(
+        manifest, existing, templates, options.modules_root, options.docs_scan_exclude
+    )
     if errors:
         return MaterializePlan(errors=errors)
 
@@ -702,6 +786,7 @@ def build_plan(
     relocations, notes = match_relocations(homeless, unplaced)
     relocated_paths = {doc.path for doc, _ in relocations.values()}
     orphan_docs = [doc for doc in unplaced if doc.node_id not in node_ids]
+    shadowed = set(options.shadowed)
     substituted: Counter[str] = Counter()
 
     for node in sorted(manifest.nodes, key=lambda item: item.doc_path):
@@ -735,6 +820,31 @@ def build_plan(
             }
 
         template_ref, example_ref = template_refs(node, context)
+
+        if node.doc_path in shadowed:
+            # Ни `create`, ни `relocate`: на этом пути лежит файл, содержимое
+            # которого инструменту неизвестно. `content` не собирается вовсе —
+            # значит, и `--force` его не перезапишет: чинит это человек, сняв
+            # причину невидимости, а не прогон, угадавший, что там было.
+            documents.append(
+                PlannedDoc(
+                    doc_path=node.doc_path,
+                    node_id=node.id,
+                    file_action="refuse",
+                    status="broken",
+                    agent_action="review",
+                    reason="файл на этом пути есть, но обход документов его не вернул",
+                    team=team,
+                    template=node.template,
+                    error=(
+                        "проверьте front matter (`docpipe.schema: materialize/…`,"
+                        " открывающий `---` первой строкой), `docs_scan_exclude`"
+                        " и симлинки на пути; файл не тронут"
+                    ),
+                )
+            )
+            continue
+
         damaged = broken.get(node.doc_path)
         text, empty, orphan_sections = _compose(
             node, template, context, team, None if damaged else source, state
@@ -888,10 +998,13 @@ __all__ = [
     "STATUS_ORDER",
     "build_plan",
     "decide",
+    "excluded_from_scan",
     "layout_drift",
     "match_relocations",
+    "opens_front_matter",
     "relocation_note",
     "scan_docs",
+    "shadowed_docs",
     "public_members",
     "with_links",
 ]

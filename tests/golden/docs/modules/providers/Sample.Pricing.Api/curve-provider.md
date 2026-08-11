@@ -10,7 +10,7 @@ docpipe:
   template_ref: templates/provider.md
   example_ref: templates/examples/provider.md
   module: Sample.Pricing.Api
-  module_csproj: src/Sample.Pricing.Api/Sample.Pricing.Api.csproj
+  module_project_file: src/Sample.Pricing.Api/Sample.Pricing.Api.csproj
   domain: Sample.Pricing.Api
   team: null
   signature_hash: sha256:4417c7fa09b3233aba42f96ec0c01d969cfeebdf54aa06e4357a1937c568a876

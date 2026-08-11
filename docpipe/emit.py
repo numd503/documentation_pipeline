@@ -40,7 +40,19 @@ from docpipe.model import (
 from docpipe.stats import Stats, collect_stats, kind_counts
 from docpipe.tree import build_nodes
 
-DEFAULT_EXCLUDE = ["**/obj/**", "**/bin/**", "**/*.g.cs"]
+DEFAULT_EXCLUDE = [
+    "**/obj/**",
+    "**/bin/**",
+    "**/*.g.cs",
+    # Выходные и вендоренные каталоги фронта. `node_modules` — десятки тысяч
+    # файлов, и это единственная причина, по которой обход фронта вообще
+    # укладывается в разумное время; остальные три хранят копии исходников,
+    # из-за которых один и тот же символ объявился бы дважды.
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/.angular/**",
+    "**/coverage/**",
+]
 
 
 def exclude_globs(config: DocpipeConfig) -> list[str]:
@@ -267,7 +279,10 @@ def run(
     # Модули вне скоупа известны только из предыдущего манифеста — обход туда
     # не заходил. Без них файлы вне скоупа не привязались бы к проектам.
     known_csproj = sorted(
-        {*found.csproj_files, *(module.csproj for module in (previous.modules if previous else []))}
+        {
+            *found.csproj_files,
+            *(module.project_file for module in (previous.modules if previous else [])),
+        }
     )
     all_results = sorted(results + outside, key=lambda result: result.path)
     file_to_module = map_files_to_modules([r.path for r in all_results], known_csproj)
@@ -310,7 +325,7 @@ def run(
         index,
         manifest.nodes,
         ruleset,
-        {module.csproj for module in configured if module.enrolled},
+        {module.project_file for module in configured if module.enrolled},
     )
     meta = RunMeta(
         generated_at=datetime.now(UTC).isoformat(timespec="seconds"),

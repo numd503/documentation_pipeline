@@ -19,10 +19,12 @@ from docpipe.materialize.template import (
     resolve_template,
     substitute,
 )
+from docpipe.web.tree import PROMOTIONS
 
 TEMPLATES = Path("templates")
 EXAMPLES = TEMPLATES / "examples"
 RULES = Path("rules/dotnet.yaml")
+WEB_RULES = Path("rules/web.yaml")
 
 
 @pytest.fixture
@@ -45,12 +47,25 @@ def test_skeletons_match_rule_templates(templates: dict[str, object]) -> None:
     он применяется там, где своего скелета нет, и объявить его в наборе правил
     нельзя. Ослабь сравнение до `>=` — и тест перестанет ловить забытый скелет,
     ради чего он и написан.
+
+    Наборов правил два, а каталог шаблонов один: скелеты не делятся по языкам,
+    потому что вид сущности — не свойство языка. Сравнивается объединение.
+
+    К объявленным правилами добавляются виды-повышения шага `web` (`page`,
+    `api-service`): их выдаёт не правило, а факт — маршрут в таблице роутов
+    и наличие HTTP-вызовов. Без них тест перестал бы ловить забытый скелет
+    ровно у тех двух видов, которые в наборе правил не объявишь.
     """
-    declared = {rule["template"] for rule in yaml.safe_load(RULES.read_text("utf-8"))["rules"]}
+    declared = {
+        rule["template"]
+        for path in (RULES, WEB_RULES)
+        for rule in yaml.safe_load(path.read_text("utf-8"))["rules"]
+    }
+    declared |= {template for _, template in PROMOTIONS.values()}
 
     assert set(templates) - {DEFAULT_TEMPLATE} == declared
     assert DEFAULT_TEMPLATE in templates
-    assert len(templates) == 8
+    assert len(templates) == 13
 
 
 @pytest.mark.parametrize(

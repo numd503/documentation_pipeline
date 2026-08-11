@@ -46,7 +46,7 @@ class DocpipeFrontMatter(BaseModel):
     template_ref: str
     example_ref: str | None
     module: str
-    module_csproj: str
+    module_project_file: str
     domain: str
     team: str | None
     signature_hash: str
@@ -85,6 +85,12 @@ class BuildContext:
     business_root: str | None = None
     business_links: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
 
+    # Имена модулей фронта. По ним генерируемый блок решает, печатать ли разделы
+    # «Маршрут» и «Вызовы к бэкенду»: у узла .NET маршрута страницы нет и быть
+    # не может, а пустой раздел «Нет.» в каждом документе бэкенда был бы шумом
+    # ради симметрии, которой в предметной области нет.
+    web_modules: frozenset[str] = frozenset()
+
 
 def build_context(
     manifest: Manifest,
@@ -111,7 +117,8 @@ def build_context(
             if relation.relation == "implements":
                 implementors[relation.target].append(node)
 
-    id_by_csproj = {module.csproj: module.id for module in manifest.modules}
+    web_modules = frozenset(module.name for module in manifest.modules if module.lang == "ts")
+    id_by_csproj = {module.project_file: module.id for module in manifest.modules}
     module_refs = {
         module.id: {
             id_by_csproj[path] for path in module.project_references if path in id_by_csproj
@@ -130,6 +137,7 @@ def build_context(
         by_fqn={fqn: ordered(nodes) for fqn, nodes in sorted(by_fqn.items())},
         implementors={fqn: ordered(nodes) for fqn, nodes in sorted(implementors.items())},
         module_refs=module_refs,
+        web_modules=web_modules,
     )
 
 
@@ -177,7 +185,7 @@ def build_front_matter(
         template_ref=template_ref,
         example_ref=example_ref,
         module=node.module,
-        module_csproj=module.csproj if module else "",
+        module_project_file=module.project_file if module else "",
         domain=node.domain,
         team=team,
         signature_hash=node.signature_hash,
@@ -305,6 +313,46 @@ def _link_text(links: list[ResolvedLink], node: DocNode, target: str) -> str:
     return ", ".join(parts)
 
 
+def _web_sections(node: DocNode) -> list[str]:
+    """Разделы, которые есть только у фронта: маршрут страницы и вызовы к бэкенду.
+
+    Печатаются у узлов модулей с `lang: ts` и только у них. Симметрии
+    с бэкендом здесь нет и быть не может: у контроллера нет маршрута страницы,
+    и пустой раздел «Нет.» в каждом документе .NET был бы шумом ради формы.
+
+    Невосстановленный маршрут печатается словами, а не пропускается: пропуск
+    неотличим от «страницы нет», и покрытие посчиталось бы по заниженному
+    знаменателю.
+    """
+    lines = ["", "### Маршрут страницы", ""]
+    lines += _table(
+        ["Маршрут", "Состояние"],
+        [
+            [
+                _cell(f"/{entry.path}" if entry.path else "/"),
+                "маршрут собрать не удалось" if entry.route_unresolved else "собран",
+            ]
+            for entry in node.routes
+        ],
+    )
+
+    lines += ["", "### Вызовы к бэкенду", ""]
+    lines += _table(
+        ["Метод", "Маршрут", "Список", "Уверенность", "Строка"],
+        [
+            [
+                _cell(call.key.http_method),
+                _cell(call.key.route),
+                _cell(call.key.discriminator),
+                call.confidence,
+                str(call.line),
+            ]
+            for call in node.web_calls
+        ],
+    )
+    return lines
+
+
 def build_generated_block(
     node: DocNode,
     context: BuildContext,
@@ -349,6 +397,9 @@ def build_generated_block(
             for e in node.endpoints
         ],
     )
+
+    if node.module in context.web_modules:
+        lines += _web_sections(node)
 
     lines += ["", "### Зависимости", ""]
     lines += _table(

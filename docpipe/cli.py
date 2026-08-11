@@ -48,6 +48,7 @@ from docpipe.materialize.plan import (
     build_plan,
     check_links,
     scan_docs,
+    shadowed_docs,
     with_links,
 )
 from docpipe.materialize.status import (
@@ -82,12 +83,17 @@ from docpipe.stats import (
     TOP,
     UNDECIDED,
     Stats,
+    collect_stats,
     format_kinds,
     format_report,
     plural,
     stats_from_manifest,
     validate_manifest,
 )
+from docpipe.web.link import CATEGORIES as LINK_CATEGORIES
+from docpipe.web.link import build_report as build_link_report
+from docpipe.web.link import format_report as format_link_report
+from docpipe.web.tree import run as run_web_scan
 
 app = typer.Typer(
     name="docpipe",
@@ -423,7 +429,7 @@ def symbols(
         result.index,
         result.manifest.nodes,
         ruleset,
-        {module.csproj for module in result.manifest.modules if module.enrolled},
+        {module.project_file for module in result.manifest.modules if module.enrolled},
         state=state,
         module=module,
         namespace=namespace,
@@ -502,6 +508,175 @@ def materialize(
     typer.echo(format_result(plan, result, dry_run))
 
     if plan.errors or result.errors or result.refused:
+        raise typer.Exit(code=1)
+
+
+web_app = typer.Typer(
+    help="Шаг `web`: фронтенд на Angular.",
+    no_args_is_help=True,
+)
+app.add_typer(web_app, name="web")
+
+
+@web_app.command("scan")
+def web_scan(
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория с исходниками.")],
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    rules: Annotated[
+        Path | None, typer.Option("--rules", help="Набор правил классификации фронта.")
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out", help="Куда записать манифест. Без флага — `web.out` из конфигурации."
+        ),
+    ] = None,
+    no_cache: Annotated[
+        bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
+    ] = False,
+    show_stats: Annotated[
+        bool,
+        typer.Option("--stats", help="Показать счётчики и подсказки по правилам, не писать файлы."),
+    ] = False,
+    fail_on_undecided: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-undecided",
+            help="Код 1, если про какой-то символ фронта решение не принято. Для CI.",
+        ),
+    ] = False,
+    top: Annotated[
+        int,
+        typer.Option("--top", help="Сколько строк показывать в каждом срезе --stats."),
+    ] = TOP,
+) -> None:
+    """Построить дерево документации по исходникам фронтенда.
+
+    Пишет два файла: детерминированный манифест и сидкар `<out>.run.json`.
+    Манифест той же схемы, что у шага 1, — `materialize`, `docs status`
+    и бизнес-слой работают от него, не зная про язык.
+    """
+    if not root.is_dir():
+        raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
+
+    try:
+        settings = load_config(config)
+        ruleset = load_ruleset(rules or Path(settings.web.rules))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    cache_dir = None if no_cache else root / settings.cache_dir
+    destination = out or Path(settings.web.out)
+
+    result = run_web_scan(root, settings, ruleset, cache_dir)
+
+    # Счётчик «решение не принято» считается по СВОЕМУ набору и своим флагом.
+    # Общий флаг с шагом 1 означал бы, что настройка фронта роняет CI бэкенда:
+    # на старте нерешённых много, красный CI выключат на второй день, и вместе
+    # с ним пропадут проверки, которые уже работают.
+    statistics = collect_stats(
+        result.index,
+        result.manifest.nodes,
+        ruleset,
+        {
+            module.id.removeprefix("module:")
+            for module in result.manifest.modules
+            if module.enrolled
+        },
+    )
+    if show_stats:
+        typer.echo(format_report(statistics, top))
+        _check_undecided(statistics, fail_on_undecided)
+        return
+
+    write_manifest(result.manifest, destination)
+    write_run_meta(result.meta, destination)
+
+    stats = result.meta.stats
+    typer.echo(
+        f"Модулей: {len(result.manifest.modules)}, узлов: {len(result.manifest.nodes)}. "
+        f"Записано: {destination} и {run_meta_path(destination)}"
+    )
+    typer.echo(
+        f"Вызовов: восстановлено {stats['calls_resolved']}, "
+        f"не восстановлено {stats['calls_unresolved']}; "
+        f"обращений к реестру без различителя {stats['registry_unresolved']}."
+    )
+    typer.echo(
+        f"Страниц: {stats['routes']}, из них маршрут не собран у {stats['routes_unresolved']}."
+    )
+    if result.meta.parse_error_files:
+        typer.echo(
+            f"Внимание: {len(result.meta.parse_error_files)} файлов разобраны с ошибками "
+            "и не дали ни одного объявления — см. parse_error_files в сидкаре."
+        )
+    _check_undecided(statistics, fail_on_undecided)
+
+
+@web_app.command("link")
+def web_link(
+    backend: Annotated[Path, typer.Argument(help="Манифест шага 1 (.NET).")],
+    frontend: Annotated[Path, typer.Argument(help="Манифест шага `web`.")],
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Куда записать отчёт. Без флага — `web.link_out`."),
+    ] = None,
+    output_format: Annotated[str, typer.Option("--format", help="text либо json.")] = "text",
+    fail_on: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--fail-on", help=f"Категории, роняющие прогон: {', '.join(LINK_CATEGORIES)}."
+        ),
+    ] = None,
+) -> None:
+    """Свести два манифеста: кто зовёт какой эндпоинт и чего не хватает.
+
+    Пять категорий, и только последняя — дефект. Остальные печатаются всегда
+    и кода возврата не меняют, пока не названы в `--fail-on`: линт, красный
+    с первого дня, выключат на второй, и вместе с ним пропадут работающие
+    проверки.
+    """
+    try:
+        settings = load_config(config)
+        first = Manifest.model_validate_json(backend.read_text(encoding="utf-8"))
+        second = Manifest.model_validate_json(frontend.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка чтения манифеста: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    unknown = sorted(set(fail_on or []) - set(LINK_CATEGORIES))
+    if unknown:
+        typer.echo(
+            f"Неизвестные категории в --fail-on: {', '.join(unknown)}. "
+            f"Известные: {', '.join(LINK_CATEGORIES)}.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    report = build_link_report(first, second, {rule.module for rule in settings.web.url_rewrite})
+    destination = out or Path(settings.web.link_out)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(stable_json_dumps(report.model_dump(mode="json")), encoding="utf-8")
+
+    if output_format == "json":
+        typer.echo(stable_json_dumps(report.model_dump(mode="json")))
+    else:
+        typer.echo(format_link_report(report))
+        typer.echo(f"\nЗаписано: {destination}")
+
+    triggered = sorted(name for name in (fail_on or []) if report.counts.get(name))
+    if triggered:
+        typer.echo(
+            "Отказ по категориям: "
+            + ", ".join(f"{name} ({report.counts[name]})" for name in triggered),
+            err=True,
+        )
         raise typer.Exit(code=1)
 
 
@@ -702,6 +877,10 @@ def _prepare(
             teams=teams,
             accept=accept,
             force=force,
+            docs_scan_exclude=tuple(settings.docs_scan_exclude),
+            # Проверка по диску, а не по обходу: узел без файла и узел, чей файл
+            # обход не увидел, — разные состояния, и различить их можно только так.
+            shadowed=tuple(shadowed_docs(root, manifest, existing)),
         ),
     )
     return Step2Inputs(
@@ -1557,6 +1736,7 @@ def _business_context(
     config: Path | None,
     business_root: str | None,
     ownership_file: Path | None,
+    web_manifest: Path | None = None,
 ) -> BusinessInputs:
     """Каталог, инвентаризация, контекст разрешения и владение.
 
@@ -1570,6 +1750,16 @@ def _business_context(
     )
     manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
 
+    # Манифест фронта необязателен: репозиторий без фронта его не собирает,
+    # и якорей `page` в таком каталоге нет. Путь по умолчанию — `web.out`
+    # из конфигурации; файла нет — страниц просто ноль, а не отказ.
+    web_path = web_manifest or Path(settings.web.out)
+    web = (
+        Manifest.model_validate_json(web_path.read_text(encoding="utf-8"))
+        if web_path.is_file()
+        else None
+    )
+
     ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
     try:
         ownership = load_ownership(ownership_path) if ownership_path else None
@@ -1581,7 +1771,7 @@ def _business_context(
     return BusinessInputs(
         catalog=load_catalog(root, where),
         anchors=anchors,
-        ctx=build_resolve_context(anchors, manifest, root=root, ownership=ownership),
+        ctx=build_resolve_context(anchors, manifest, root=root, ownership=ownership, web=web),
         ownership=ownership,
         root=where,
         registry_errors=registry_errors,
@@ -1605,6 +1795,10 @@ def business_lint(
     fail_on: Annotated[
         list[str] | None,
         typer.Option("--fail-on", help=f"Ронять на этих проверках: {', '.join(LINT_CHECKS)}."),
+    ] = None,
+    web_manifest: Annotated[
+        Path | None,
+        typer.Option("--web-manifest", help="Манифест шага `web`. Без него — `web.out`."),
     ] = None,
     scope: Annotated[
         str, typer.Option("--scope", help="all или catalog: с инвентарём или без.")
@@ -1635,7 +1829,7 @@ def business_lint(
         raise typer.Exit(code=2)
 
     loaded = _business_context(
-        manifest_path, registries_file, root, config, business_root, ownership_file
+        manifest_path, registries_file, root, config, business_root, ownership_file, web_manifest
     )
     report = lint_catalog(loaded.catalog, loaded.anchors, loaded.ctx, loaded.root, loaded.ownership)
 

@@ -10,7 +10,7 @@ docpipe:
   template_ref: templates/workflow.md
   example_ref: templates/examples/workflow.md
   module: Sample.Pricing.Api
-  module_csproj: src/Sample.Pricing.Api/Sample.Pricing.Api.csproj
+  module_project_file: src/Sample.Pricing.Api/Sample.Pricing.Api.csproj
   domain: Sample.Pricing.Api
   team: null
   signature_hash: sha256:77256ff0709b18d4470a4e1a89bc1e3dc7ebef797cda634fd6527e732026735e

@@ -10,7 +10,7 @@ docpipe:
   template_ref: templates/controller.md
   example_ref: templates/examples/controller.md
   module: Sample.Common
-  module_csproj: src/Sample.Common/Sample.Common.csproj
+  module_project_file: src/Sample.Common/Sample.Common.csproj
   domain: Sample.Common
   team: null
   signature_hash: sha256:6f76f705ad092a207f00f9c51274166f28f5b0f2d3f39fc04289f12f9ed091c9

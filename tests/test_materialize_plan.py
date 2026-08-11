@@ -5,6 +5,8 @@
 которого он отделён от записи.
 """
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,7 @@ from docpipe.materialize.plan import (
     layout_drift,
     match_relocations,
     scan_docs,
+    shadowed_docs,
 )
 from docpipe.materialize.template import DEFAULT_TEMPLATE, load_templates
 from docpipe.model import Manifest
@@ -640,3 +643,123 @@ def test_layout_drift_blocks_the_plan(manifest, templates, context, tmp_path: Pa
     ok = _plan(manifest, templates, context, tmp_path, modules_root="docs/modules")
     assert ok.errors == []
     assert ok.documents
+
+
+# --------------------------------------------------------------------------------------
+# Документ, которого обход не увидел
+# --------------------------------------------------------------------------------------
+#
+# Все случаи здесь про одно и то же: файл на `doc_path` лежит, а `scan_docs`
+# его не вернул. Узел при этом получал `missing`, `missing` означает `create`,
+# и написанный документ переписывался пустым скелетом без единого сообщения.
+
+
+def _first(manifest: Manifest) -> str:
+    return sorted(node.doc_path for node in manifest.nodes)[0]
+
+
+def test_bom_does_not_hide_a_document(manifest, templates, context, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """Документ, пересохранённый Блокнотом, остаётся своим.
+
+    `read_document` читает `utf-8-sig` и это проверено отдельно, но отсев
+    по первым байтам стоял ДО него и до разбора такой файл не доезжал.
+    """
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+    target = _first(manifest)
+    path = tmp_path / target
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+
+    existing = scan_docs(tmp_path, "docs")
+
+    assert target in {doc.path for doc in existing}
+    assert shadowed_docs(tmp_path, manifest, existing) == []
+
+
+def test_unreadable_document_is_broken_not_missing(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    """Нечитаемый файл — отказ с причиной, а не «файла нет».
+
+    Молчаливый пропуск здесь означал бы перезапись документа, прочитать
+    который не удалось.
+    """
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+    target = _first(manifest)
+    path = tmp_path / target
+    os.chmod(path, 0)
+    try:
+        existing = scan_docs(tmp_path, "docs")
+    finally:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+
+    doc = next(item for item in existing if item.path == target)
+    assert doc.error is not None
+    assert "не читается" in doc.error
+
+
+def test_document_without_schema_is_refused_not_recreated(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    """Отбор по `docpipe.schema` нужен (иначе бизнес-каталог станет сиротами),
+    но выпавший из-за него файл обязан быть назван, а не затёрт."""
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+    target = _first(manifest)
+    path = tmp_path / target
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("  schema: materialize/1\n", ""),
+        encoding="utf-8",
+    )
+
+    existing = scan_docs(tmp_path, "docs")
+    shadowed = shadowed_docs(tmp_path, manifest, existing)
+    plan = build_plan(
+        manifest, existing, templates, context, options=PlanOptions(shadowed=tuple(shadowed))
+    )
+
+    assert shadowed == [target]
+    doc = next(item for item in plan.documents if item.doc_path == target)
+    assert (doc.file_action, doc.status, doc.agent_action) == ("refuse", "broken", "review")
+    # Содержимого нет намеренно: `--force` перезаписывает только то, для чего
+    # план его собрал, а что лежит в этом файле — инструменту неизвестно.
+    assert doc.content is None
+
+
+def test_symlinked_directory_is_caught_by_the_probe(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    """`rglob` в каталоги за симлинком не заходит, и обход документ не вернёт.
+    Проверка по диску видит его всё равно — потому она и по диску."""
+    _apply(_plan(manifest, templates, context, tmp_path), tmp_path)
+    target = _first(manifest)
+    original = (tmp_path / target).parent
+    moved = tmp_path / "elsewhere"
+    original.rename(moved)
+    original.symlink_to(moved, target_is_directory=True)
+
+    existing = scan_docs(tmp_path, "docs")
+
+    assert (tmp_path / target).is_file()
+    assert target not in {doc.path for doc in existing}
+    assert shadowed_docs(tmp_path, manifest, existing) == [target]
+
+
+def test_docs_scan_exclude_over_the_tree_blocks_the_run(  # type: ignore[no-untyped-def]
+    manifest, templates, context, tmp_path: Path
+) -> None:
+    """Шаблон обхода, накрывший само дерево документов, — блокирующая ошибка.
+
+    Пара `docs_root` + `modules_dir` держит инвариант «пишем туда, где ищем»
+    структурно, а `docs_scan_exclude` обходит его с другой стороны: прогон
+    остаётся вечно `missing` и переписывает всё дерево каждый раз.
+    """
+    plan = build_plan(
+        manifest,
+        [],
+        templates,
+        context,
+        options=PlanOptions(docs_scan_exclude=("docs/modules/**",)),
+    )
+
+    assert plan.documents == []
+    assert any("docs_scan_exclude" in error for error in plan.errors)
+    assert any("docs/modules/**" in error for error in plan.errors)

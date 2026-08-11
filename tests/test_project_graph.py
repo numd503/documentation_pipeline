@@ -24,7 +24,7 @@ def test_multi_targeted_project(sample_solution: Path) -> None:
     )
     assert module.name == "Sample.Pricing.Api"
     assert module.id == "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj"
-    assert module.csproj == "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj"
+    assert module.project_file == "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj"
     assert module.target_frameworks == ["net8.0", "net9.0"]
     assert module.project_references == ["src/Sample.Common/Sample.Common.csproj"]
     assert module.package_references == ["Apache.Ignite"]

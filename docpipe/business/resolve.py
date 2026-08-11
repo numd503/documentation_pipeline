@@ -31,6 +31,7 @@ from docpipe.materialize.ownership import Ownership, owner_of
 from docpipe.model import DocNode, Manifest
 from docpipe.registry.anchors import AnchorTarget, ResolvedAnchor
 from docpipe.registry.parse import parse_schedule
+from docpipe.route import normalize_route
 
 Confidence = Literal["registry", "literal", "symbol", "unresolved"]
 
@@ -115,6 +116,12 @@ class ResolveContext(_Base):
 
     by_key: dict[tuple[str, str, str], list[ResolvedAnchor]] = Field(default_factory=dict)
     nodes_by_id: dict[str, DocNode] = Field(default_factory=dict)
+
+    # Страницы фронта, ключ — нормализованный маршрут. Приходят из ВТОРОГО
+    # манифеста: шаг `web` пишет свой файл, и бизнес-слой читает оба.
+    # Пустой словарь — законное состояние: репозиторий без фронта.
+    pages_by_route: dict[str, list[DocNode]] = Field(default_factory=dict)
+    web_nodes_by_fqn: dict[str, DocNode] = Field(default_factory=dict)
     source_paths: list[str] = Field(default_factory=list)
     root: Path | None = None
 
@@ -133,6 +140,7 @@ def build_context(
     manifest: Manifest,
     root: Path | None = None,
     ownership: Ownership | None = None,
+    web: Manifest | None = None,
 ) -> ResolveContext:
     """Собрать индексы по инвентаризации и манифесту.
 
@@ -153,12 +161,28 @@ def build_context(
 
     paths = {span.path for node in manifest.nodes if node.symbol for span in node.symbol.sources}
 
+    pages: dict[str, list[DocNode]] = {}
+    for node in web.nodes if web else []:
+        for entry in node.routes:
+            if entry.route_unresolved:
+                # Маршрут собрать не удалось: якорь на него поставить нельзя,
+                # и делать вид, что страница на пустом пути, — значит склеить
+                # все такие ветки в один ключ.
+                continue
+            pages.setdefault(entry.path, []).append(node)
+
     return ResolveContext(
         by_key={
             key: sorted(items, key=lambda a: (a.version or "", a.source_path))
             for key, items in by_key.items()
         },
         nodes_by_id={node.id: node for node in manifest.nodes},
+        pages_by_route={
+            route: sorted(nodes, key=lambda node: node.id) for route, nodes in sorted(pages.items())
+        },
+        web_nodes_by_fqn={
+            node.symbol.fqn: node for node in (web.nodes if web else []) if node.symbol
+        },
         source_paths=sorted(paths),
         root=root,
         ownership=ownership,
@@ -465,6 +489,80 @@ def _symbol_rung(anchor: Anchor, ctx: ResolveContext) -> Resolution | None:
     )
 
 
+def _page_lists(node: DocNode, ctx: ResolveContext) -> list[str]:
+    """Списки реестра, к которым обращается страница.
+
+    Один шаг по зависимостям, а не транзитивный обход: компонент внедряет
+    сервис, сервис зовёт `api/items` с именем списка. Транзитивное замыкание
+    притянуло бы сюда всё, до чего дотягивается любой сервис приложения,
+    и хэш страницы менялся бы от правок, к ней отношения не имеющих.
+
+    Имена списков — слова платформы (`listInnerName`), и они же ключ реестра.
+    Имён компонентов и сервисов здесь нет: переименование класса бизнес-смысла
+    не меняет.
+    """
+    reachable = [node]
+    reachable += [
+        ctx.web_nodes_by_fqn[dependency.target]
+        for dependency in node.dependencies
+        if dependency.target in ctx.web_nodes_by_fqn
+    ]
+    return sorted(
+        {
+            call.key.discriminator
+            for item in reachable
+            for call in item.web_calls
+            if call.key.discriminator
+        }
+    )
+
+
+def _page_rung(anchor: Anchor, ctx: ResolveContext) -> Resolution | None:
+    """Ступень: страница объявлена в манифесте шага `web`.
+
+    Ключ — нормализованный маршрут, тем же `normalize_route`, что и на обеих
+    технических сторонах: своя копия нормализации разошлась бы с ними молча,
+    и якорь `/models/:id` перестал бы совпадать с узлом `models/{}`.
+
+    Уверенность `symbol`: страница найдена среди узлов документации — та же
+    природа, что у ступени типов. Отдельное значение завело бы третий словарь
+    подписей ради одной строки.
+    """
+    if anchor.kind != "page":
+        return None
+
+    route = normalize_route(anchor.ref)
+    nodes = ctx.pages_by_route.get(route, [])
+    if not nodes:
+        return None
+
+    # `route` в фактах дублирует `ref` якоря, и это не избыточность: у якоря,
+    # который перестал разрешаться, фактов нет вовсе, и хэш меняется. Иначе
+    # исчезнувшая страница выглядела бы как «ничего не произошло» — то самое
+    # событие, ради которого хэш и заводится.
+    lists = sorted({name for node in nodes for name in _page_lists(node, ctx)})
+    return Resolution(
+        anchor=anchor,
+        confidence="symbol",
+        facts={"route": route, "lists": lists} if lists else {"route": route},
+        sources=sorted(
+            {span.path for node in nodes if node.symbol for span in node.symbol.sources}
+        ),
+        targets=[
+            AnchorTarget(
+                field="ref",
+                fqn=node.symbol.fqn if node.symbol else node.title,
+                via="direct",
+                node_id=node.id,
+                doc_path=node.doc_path,
+                module=node.module,
+            )
+            for node in nodes
+        ],
+        tried=["реестр", "страница"],
+    )
+
+
 def resolve(anchor: Anchor, ctx: ResolveContext) -> Resolution:
     """Разрешить один якорь. Ступени по порядку, первая сработавшая выигрывает.
 
@@ -475,13 +573,15 @@ def resolve(anchor: Anchor, ctx: ResolveContext) -> Resolution:
     if not anchor.verify:
         return Resolution(anchor=anchor, confidence="unresolved", tried=[])
 
-    for rung in (_registry_rung, _literal_rung, _symbol_rung):
+    for rung in (_registry_rung, _page_rung, _literal_rung, _symbol_rung):
         resolution = rung(anchor, ctx)
         if resolution is not None:
             return resolution
 
     tried = ["реестр"]
-    if anchor.kind not in DATA_DISPATCHED:
+    if anchor.kind == "page":
+        tried.append("страница")
+    if anchor.kind not in DATA_DISPATCHED and anchor.kind != "page":
         tried.append("литерал")
     if anchor.kind == "type":
         tried.append("индекс символов")

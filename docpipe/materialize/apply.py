@@ -144,6 +144,20 @@ def apply_plan(
 
         if doc.content is None:
             continue
+
+        # Последний рубеж: `create` означает «файла не было», и если он есть,
+        # то план строился по неполной картине дерева (документ не попал
+        # в обход). Записать здесь — значит затереть чужой текст без копии,
+        # поэтому прогон отказывается независимо от того, кто собрал план.
+        # Штатно до этого не доходит: такие пути ловит `shadowed_docs`.
+        if doc.file_action == "create" and (root / doc.doc_path).exists():
+            result.errors.append(
+                f"{doc.doc_path}: файл уже существует, а план считает его новым;"
+                " файл не тронут. Причина — документ не попал в обход"
+                " (front matter, `docs_scan_exclude`, симлинк, права)"
+            )
+            continue
+
         if dry_run:
             (result.created if doc.file_action == "create" else result.updated).append(doc.doc_path)
             continue

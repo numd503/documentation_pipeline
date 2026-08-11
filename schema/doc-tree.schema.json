@@ -133,6 +133,13 @@
           "title": "Related",
           "type": "array"
         },
+        "routes": {
+          "items": {
+            "$ref": "#/$defs/RouteEntry"
+          },
+          "title": "Routes",
+          "type": "array"
+        },
         "signature_hash": {
           "title": "Signature Hash",
           "type": "string"
@@ -155,6 +162,13 @@
         "title": {
           "title": "Title",
           "type": "string"
+        },
+        "web_calls": {
+          "items": {
+            "$ref": "#/$defs/WebCall"
+          },
+          "title": "Web Calls",
+          "type": "array"
         }
       },
       "required": [
@@ -270,12 +284,8 @@
     },
     "Module": {
       "additionalProperties": false,
-      "description": "Проект .NET (`.csproj`).\n\n`enrolled` отвечает на вопрос «входит ли модуль в документацию».\nНеenrolled модули всё равно парсятся — их символы нужны для графа\nнаследования, — но узлов документации не порождают.\n\n`id` строится от пути, а не от имени: имена проектов не уникальны\n(в ABP 39 повторов, три разных `MyCompanyName.MyProjectName.csproj`),\nи ключ `module:{name}` молча склеил бы разные модули в один.\n\n`project_references` — тоже пути, сравнимые с полем `csproj` другого\nмодуля. Сопоставление по имени проекта при неуникальных именах давало бы\nребро графа в произвольный из одноимённых модулей.",
+      "description": "Единица сборки: проект .NET (`.csproj`) либо модуль фронта.\n\n`project_file` — файл, которым модуль объявлен: `.csproj` у .NET,\n`angular.json`, `project.json` или `package.json` у фронта. Имя поля\nне называет расширение намеренно: `csproj` у TypeScript-модуля врал бы\nв каждом отчёте, а отчёты идут в журнал и в CI.\n\n`lang` обязателен и значения по умолчанию не имеет. Умолчание `\"cs\"`\nозначало бы, что сборщик модулей фронта, забывший его выставить, отдаёт\nманифест, в котором все модули объявлены .NET-овскими, — и заметить это\nбыло бы нечем: остальные поля у него правильные.\n\n`enrolled` отвечает на вопрос «входит ли модуль в документацию».\nНеenrolled модули всё равно парсятся — их символы нужны для графа\nнаследования, — но узлов документации не порождают.\n\n`id` строится от пути, а не от имени: имена проектов не уникальны\n(в ABP 39 повторов, три разных `MyCompanyName.MyProjectName.csproj`),\nи ключ `module:{name}` молча склеил бы разные модули в один. На фронте\nто же самое: у nx имя проекта уникально только внутри одного workspace.\n\n`project_references` — тоже пути, сравнимые с полем `project_file` другого\nмодуля. Сопоставление по имени проекта при неуникальных именах давало бы\nребро графа в произвольный из одноимённых модулей.",
       "properties": {
-        "csproj": {
-          "title": "Csproj",
-          "type": "string"
-        },
         "domain": {
           "title": "Domain",
           "type": "string"
@@ -288,6 +298,14 @@
           "title": "Id",
           "type": "string"
         },
+        "lang": {
+          "enum": [
+            "cs",
+            "ts"
+          ],
+          "title": "Lang",
+          "type": "string"
+        },
         "name": {
           "title": "Name",
           "type": "string"
@@ -298,6 +316,10 @@
           },
           "title": "Package References",
           "type": "array"
+        },
+        "project_file": {
+          "title": "Project File",
+          "type": "string"
         },
         "project_references": {
           "items": {
@@ -317,7 +339,8 @@
       "required": [
         "id",
         "name",
-        "csproj",
+        "project_file",
+        "lang",
         "domain",
         "enrolled"
       ],
@@ -326,11 +349,31 @@
     },
     "ParserVersions": {
       "additionalProperties": false,
-      "description": "Версии парсера. Апгрейд грамматики может законно изменить вывод —\nпоэтому версии попадают в манифест и видны в диффе.",
+      "description": "Версии парсера. Апгрейд грамматики может законно изменить вывод —\nпоэтому версии попадают в манифест и видны в диффе.\n\nОбе грамматики необязательны: манифест .NET не знает про TypeScript,\nманифест фронта — про C#. Версия чужой грамматики в нём была бы шумом,\nа `null` читается однозначно. Ключ кэша строится по этой же структуре,\nпоэтому апгрейд грамматики кэш сбрасывает — иначе прогон отдал бы разбор,\nсделанный старой версией, без единого сообщения.",
       "properties": {
         "grammar_c_sharp": {
-          "title": "Grammar C Sharp",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grammar C Sharp"
+        },
+        "grammar_typescript": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grammar Typescript"
         },
         "tree_sitter": {
           "title": "Tree Sitter",
@@ -338,8 +381,7 @@
         }
       },
       "required": [
-        "tree_sitter",
-        "grammar_c_sharp"
+        "tree_sitter"
       ],
       "title": "ParserVersions",
       "type": "object"
@@ -390,6 +432,55 @@
         "relation"
       ],
       "title": "Relation",
+      "type": "object"
+    },
+    "RouteEntry": {
+      "additionalProperties": false,
+      "description": "Ветка таблицы роутов: полный путь страницы и компонент на нём.\n\n`route_unresolved` — путь собрать не удалось (сегмент задан выражением).\nЭто **состояние**, а не отсутствие: пропав из вывода, такая ветка занизила\nбы знаменатель покрытия страниц, и отчёт показал бы успех там, где его нет.",
+      "properties": {
+        "component": {
+          "title": "Component",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "route_unresolved": {
+          "default": false,
+          "title": "Route Unresolved",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "component"
+      ],
+      "title": "RouteEntry",
+      "type": "object"
+    },
+    "RouteKey": {
+      "description": "Ключ, по которому сходятся вызов фронта и эндпоинт бэкенда.",
+      "properties": {
+        "discriminator": {
+          "default": "",
+          "title": "Discriminator",
+          "type": "string"
+        },
+        "http_method": {
+          "title": "Http Method",
+          "type": "string"
+        },
+        "route": {
+          "title": "Route",
+          "type": "string"
+        }
+      },
+      "required": [
+        "http_method",
+        "route"
+      ],
+      "title": "RouteKey",
       "type": "object"
     },
     "SourceSpan": {
@@ -503,7 +594,9 @@
             "struct",
             "record",
             "record_struct",
-            "enum"
+            "enum",
+            "function",
+            "const"
           ],
           "title": "Type Kind",
           "type": "string"
@@ -536,6 +629,52 @@
         "module"
       ],
       "title": "Symbol",
+      "type": "object"
+    },
+    "WebCall": {
+      "additionalProperties": false,
+      "description": "HTTP-вызов из кода фронта: кто зовёт, куда и с какой уверенностью.\n\nКлюч — пара `(метод, маршрут)` с различителем, а не ссылка на узел\nбэкенда: идентификатор узла содержит путь проекта и FQN, и переименование\nконтроллера рвало бы связь при неизменном HTTP-контракте.\n\n`via_action` — тип экшена NGXS, если до вызова дошли по цепочке\n«компонент диспатчит → стейт обрабатывает → сервис зовёт». Строка типа\nэкшена — единственное стабильное литеральное звено этой цепочки: имя\nкласса меняется при рефакторинге, строка нет.",
+      "properties": {
+        "confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "key": {
+          "$ref": "#/$defs/RouteKey"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "via_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Via Action"
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "key",
+        "confidence"
+      ],
+      "title": "WebCall",
       "type": "object"
     }
   },
@@ -575,8 +714,8 @@
       "type": "string"
     },
     "schema_version": {
-      "const": "1.1",
-      "default": "1.1",
+      "const": "2.0",
+      "default": "2.0",
       "title": "Schema Version",
       "type": "string"
     }

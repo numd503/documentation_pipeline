@@ -1,0 +1,176 @@
+# Правила классификации символов фронтенда (Angular).
+#
+# Тот же движок, что у `rules/dotnet.yaml`, и те же десять предикатов. Матчинг
+# идёт по декоратору (`attribute`), по имени файла и пути (`path_glob`),
+# по имени (`name_suffix`) и по базовому типу (`inherits`).
+#
+# Набор минимальный: он доводится до состояния «`undecided` равно нулю»
+# в задаче F12, где заводятся отсевы с причинами и проверяется атрибуция
+# по приоритету.
+
+version: "1"
+ruleset_version: "2026-08-09.web.1"
+
+exclude:
+  # У TypeScript модификатора `public` на уровне объявления нет вовсе:
+  # видимость задаётся словом `export`. Оставленный `true` отсеял бы
+  # **все** символы фронта разом, и отчёт показал бы пустое дерево
+  # без единого сообщения об ошибке.
+  require_public: false
+
+  rules:
+    - id: web.spec
+      reason: "Тест: обходом не исключается, потому что нужен резолву, но документом не становится"
+      priority: 100
+      when:
+        path_glob:
+          - "**/*.spec.ts"
+          - "**/*.test.ts"
+
+    - id: web.declaration
+      reason: "Файл деклараций: описывает чужой контракт, а не наш код"
+      priority: 99
+      when:
+        path_glob: ["**/*.d.ts"]
+
+    - id: web.mock
+      reason: "Мок: существует ради теста, документируется вместе с ним"
+      priority: 98
+      when:
+        path_glob: ["**/*.mock.ts", "**/mocks/**"]
+
+    - id: web.environment
+      reason: "Конфигурация сборки: значения различаются между окружениями и меняются вне кода"
+      priority: 97
+      when:
+        path_glob: ["**/environments/**"]
+
+    - id: web.bootstrap
+      reason: "Точка входа приложения: состав провайдеров, а не поведение"
+      priority: 96
+      when:
+        path_glob: ["**/main.ts", "**/polyfills.ts"]
+
+    # Константа модуля с URL или значением: документируется вместе с сервисом,
+    # который её использует. Отдельный документ на `export const auditUrl`
+    # пересказывал бы одну строку.
+    #
+    # `unless` здесь обязателен, и вот почему: отсев проверяется ДО правил
+    # классификации, а функциональный интерцептор, guard и таблица роутов —
+    # тоже константы. Без выреза этот отсев съел бы их все разом, и в дереве
+    # не осталось бы ни одного интерцептора при том, что в АС CF они объявлены
+    # именно так.
+    - id: web.module-constant
+      reason: "Константа модуля: документируется вместе с сервисом, который её использует"
+      priority: 50
+      when:
+        type_kind: ["const"]
+      unless:
+        any:
+          - name_suffix: ["Interceptor", "Guard", "Resolver"]
+          - path_glob: ["**/*.routes.ts", "**/routesPath/**"]
+
+# Два вида решаются НЕ здесь, и это не пробел набора: `page` и `api-service`
+# зависят от фактов, которых движок правил не видит.
+#
+#   page         компонент, до которого можно дойти по таблице роутов;
+#                таблица собирается межфайлово (F08), символ о ней не знает;
+#   api-service  сервис, который делает HTTP-вызовы; вызовы разбираются
+#                отдельно (F07), и в `Symbol` их тоже нет.
+#
+# Оба повышения делает `web/tree.py` после классификации: правило говорит
+# «это компонент», а таблица роутов — «этот компонент является страницей».
+# Выразить их предикатом по имени или пути можно было бы только угадыванием,
+# а угаданная страница ломает якорь бизнес-документа.
+rules:
+  - id: web.component
+    kind: component
+    template: component
+    priority: 100
+    when:
+      attribute: ["Component"]
+
+  - id: web.state
+    kind: state
+    template: state
+    priority: 99
+    when:
+      attribute: ["State"]
+
+  - id: web.module
+    kind: ng-module
+    template: component
+    priority: 98
+    when:
+      attribute: ["NgModule"]
+
+  - id: web.pipe
+    kind: pipe
+    template: component
+    priority: 97
+    when:
+      attribute: ["Pipe"]
+
+  - id: web.directive
+    kind: directive
+    template: component
+    priority: 96
+    when:
+      attribute: ["Directive"]
+
+  # Интерцептор проверяется ДО сервиса: у класса-интерцептора есть и `@Injectable`,
+  # и `implements HttpInterceptor`, и без приоритета он стал бы обычным сервисом.
+  - id: web.interceptor
+    kind: interceptor
+    template: service
+    priority: 95
+    when:
+      any:
+        - inherits: ["HttpInterceptor"]
+        - base_type: ["HttpInterceptor"]
+        - name_suffix: ["Interceptor"]
+
+  - id: web.guard
+    kind: guard
+    template: service
+    priority: 94
+    when:
+      name_suffix: ["Guard"]
+
+  - id: web.service
+    kind: service
+    template: service
+    priority: 90
+    when:
+      all:
+        - type_kind: ["class"]
+        - any:
+            - attribute: ["Injectable"]
+            - name_suffix: ["Service"]
+
+  # Экшены NGXS: класс без декоратора, со статическим полем `type`.
+  # Единственное стабильное литеральное звено цепочки — строка типа экшена.
+  - id: web.action
+    kind: action
+    template: service
+    priority: 80
+    when:
+      all:
+        - type_kind: ["class"]
+        - path_glob: ["**/*.actions.ts"]
+
+  - id: web.routes
+    kind: routes
+    template: service
+    priority: 70
+    when:
+      all:
+        - type_kind: ["const"]
+        - path_glob: ["**/*.routes.ts", "**/routesPath/**"]
+
+  - id: web.dto
+    kind: dto
+    template: dto
+    priority: 60
+    when:
+      type_kind: ["interface", "enum"]

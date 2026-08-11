@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "baseUrl": "./src",
+    "paths": {
+      "@cf-api/*": ["app/cf-api/*"],
+      "@shared": ["app/shared"],
+      "@shared/*": ["app/shared/*"],
+      "@env/*": ["environments/*"],
+      "@routes/*": ["app/routes/*"],
+      "exceljs": ["../node_modules/exceljs/dist/exceljs.bare"]
+    }
+  }
+}

@@ -10,7 +10,7 @@ docpipe:
   template_ref: templates/ignite-service.md
   example_ref: null
   module: Sample.Pricing.Api
-  module_csproj: src/Sample.Pricing.Api/Sample.Pricing.Api.csproj
+  module_project_file: src/Sample.Pricing.Api/Sample.Pricing.Api.csproj
   domain: Sample.Pricing.Api
   team: null
   signature_hash: sha256:d5fc934fac3812b5ac007eefd293e5a03c183dcc5ba2a0616c11f71c9e887665

@@ -1,26 +1,28 @@
 {
   "modules": [
     {
-      "csproj": "src/Sample.Common/Sample.Common.csproj",
       "domain": "Sample.Common",
       "enrolled": true,
       "id": "module:src/Sample.Common/Sample.Common.csproj",
+      "lang": "cs",
       "name": "Sample.Common",
       "package_references": [],
+      "project_file": "src/Sample.Common/Sample.Common.csproj",
       "project_references": [],
       "target_frameworks": [
         "net8.0"
       ]
     },
     {
-      "csproj": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
       "domain": "Sample.Pricing.Api",
       "enrolled": true,
       "id": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
+      "lang": "cs",
       "name": "Sample.Pricing.Api",
       "package_references": [
         "Apache.Ignite"
       ],
+      "project_file": "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
       "project_references": [
         "src/Sample.Common/Sample.Common.csproj"
       ],
@@ -45,6 +47,7 @@
       "module": "Sample.Common",
       "parent": "module:src/Sample.Common/Sample.Common.csproj",
       "related": [],
+      "routes": [],
       "signature_hash": "sha256:6f76f705ad092a207f00f9c51274166f28f5b0f2d3f39fc04289f12f9ed091c9",
       "symbol": {
         "ambiguous": false,
@@ -99,7 +102,8 @@
         "xml_doc": "Base class for all API controllers."
       },
       "template": "controller",
-      "title": "BaseApiController"
+      "title": "BaseApiController",
+      "web_calls": []
     },
     {
       "dependencies": [
@@ -134,6 +138,7 @@
       "module": "Sample.Pricing.Api",
       "parent": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
       "related": [],
+      "routes": [],
       "signature_hash": "sha256:0e29455f07023ae28072c3bef5b59c2725eead683869ad1b48c23170251613b4",
       "symbol": {
         "ambiguous": false,
@@ -243,7 +248,8 @@
         "xml_doc": "Handles pricing requests."
       },
       "template": "controller",
-      "title": "PricingController"
+      "title": "PricingController",
+      "web_calls": []
     },
     {
       "dependencies": [],
@@ -260,6 +266,7 @@
       "module": "Sample.Pricing.Api",
       "parent": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
       "related": [],
+      "routes": [],
       "signature_hash": "sha256:d5fc934fac3812b5ac007eefd293e5a03c183dcc5ba2a0616c11f71c9e887665",
       "symbol": {
         "ambiguous": false,
@@ -332,7 +339,8 @@
         "xml_doc": "Risk aggregation running on the compute grid."
       },
       "template": "ignite-service",
-      "title": "RiskComputeService"
+      "title": "RiskComputeService",
+      "web_calls": []
     },
     {
       "dependencies": [
@@ -359,6 +367,7 @@
           "target": "Sample.Common.Abstractions.IPricingProvider"
         }
       ],
+      "routes": [],
       "signature_hash": "sha256:4417c7fa09b3233aba42f96ec0c01d969cfeebdf54aa06e4357a1937c568a876",
       "symbol": {
         "ambiguous": false,
@@ -407,7 +416,8 @@
         "xml_doc": "Provides discount curves."
       },
       "template": "provider",
-      "title": "CurveProvider"
+      "title": "CurveProvider",
+      "web_calls": []
     },
     {
       "dependencies": [
@@ -439,6 +449,7 @@
           "target": "Sample.Pricing.Api.Services.IPricingService"
         }
       ],
+      "routes": [],
       "signature_hash": "sha256:05cf41b6d0f4f482d6403b17ccca761c8a27fa815f5b04b552aad5bf70a6f2a6",
       "symbol": {
         "ambiguous": false,
@@ -531,7 +542,8 @@
         "xml_doc": "Computes prices for instruments."
       },
       "template": "service",
-      "title": "PricingService"
+      "title": "PricingService",
+      "web_calls": []
     },
     {
       "dependencies": [],
@@ -547,6 +559,7 @@
       "module": "Sample.Pricing.Api",
       "parent": "module:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj",
       "related": [],
+      "routes": [],
       "signature_hash": "sha256:77256ff0709b18d4470a4e1a89bc1e3dc7ebef797cda634fd6527e732026735e",
       "symbol": {
         "ambiguous": false,
@@ -589,14 +602,16 @@
         "xml_doc": "End-to-end valuation sequence."
       },
       "template": "workflow",
-      "title": "ValuationWorkflow"
+      "title": "ValuationWorkflow",
+      "web_calls": []
     }
   ],
   "parser": {
     "grammar_c_sharp": "0.23.5",
+    "grammar_typescript": null,
     "tree_sitter": "0.26.0"
   },
   "partial": null,
   "ruleset_version": "2026-07-30.1",
-  "schema_version": "1.1"
+  "schema_version": "2.0"
 }

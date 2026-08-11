@@ -18,7 +18,7 @@ RULES = Path("rules/dotnet.yaml")
 
 def _select(root: Path, **kwargs: Any) -> Selection:
     result = run(root)
-    enrolled = {module.csproj for module in result.manifest.modules if module.enrolled}
+    enrolled = {module.project_file for module in result.manifest.modules if module.enrolled}
     return select(result.index, result.manifest.nodes, load_ruleset(RULES), enrolled, **kwargs)
 
 
@@ -35,7 +35,7 @@ def test_selection_agrees_with_the_report(sample_solution: Path) -> None:
     решение по символу считается одной функцией `decide`, а не дважды.
     """
     result = run(sample_solution)
-    enrolled = {module.csproj for module in result.manifest.modules if module.enrolled}
+    enrolled = {module.project_file for module in result.manifest.modules if module.enrolled}
     stats = collect_stats(result.index, result.manifest.nodes, load_ruleset(RULES), enrolled)
 
     for state, expected in (

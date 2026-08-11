@@ -11,7 +11,6 @@ from collections import defaultdict
 from docpipe.classify import Ruleset, classify
 from docpipe.config import DocLayout, DocpipeConfig
 from docpipe.discovery import matches_glob
-from docpipe.dotnet.resolve import strip_generics, symbol_key
 from docpipe.hashing import slugify, stable_hash
 from docpipe.model import (
     Dependency,
@@ -22,19 +21,20 @@ from docpipe.model import (
     Relation,
     Symbol,
 )
+from docpipe.symbols import strip_generics, symbol_key
 
 # Слова, которые в списке параметров стоят перед типом и типом не являются.
 _PARAMETER_MODIFIERS = frozenset({"ref", "out", "in", "params", "this", "scoped", "readonly"})
 _ATTRIBUTE_PREFIX = re.compile(r"^\s*(\[[^\]]*\]\s*)+")
 
 
-def node_id(module_csproj: str, symbol: Symbol) -> str:
+def node_id(module_project_file: str, symbol: Symbol) -> str:
     """Идентификатор узла — тот же ключ, что и у символа, с префиксом `type:`.
 
     Схема ключа обязана совпадать с `resolve.symbol_key`: иначе узлы перестанут
     сопоставляться с символами, а FQN сам по себе типы не различает (см. T10).
     """
-    return f"type:{symbol_key(module_csproj, symbol.fqn, len(symbol.type_parameters))}"
+    return f"type:{symbol_key(module_project_file, symbol.fqn, len(symbol.type_parameters))}"
 
 
 # --------------------------------------------------------------------------------------
@@ -49,7 +49,7 @@ def _domain_of(module: Module, domains: dict[str, str]) -> str:
     на порядок записи в файле нельзя — перестановка строк изменила бы манифест.
     """
     for glob in sorted(domains):
-        if matches_glob(module.csproj, glob):
+        if matches_glob(module.project_file, glob):
             return domains[glob]
     return module.name
 
@@ -60,7 +60,7 @@ def _apply_config(modules: list[Module], config: DocpipeConfig) -> list[Module]:
             module.model_copy(
                 update={
                     "domain": _domain_of(module, config.domains),
-                    "enrolled": any(matches_glob(module.csproj, g) for g in config.enrolled),
+                    "enrolled": any(matches_glob(module.project_file, g) for g in config.enrolled),
                 }
             )
             for module in modules
@@ -351,7 +351,7 @@ def build_nodes(
     в тестах, не поднимая весь пайплайн.
     """
     configured = _apply_config(modules, config)
-    enrolled = {module.csproj: module for module in configured if module.enrolled}
+    enrolled = {module.project_file: module for module in configured if module.enrolled}
 
     known_fqns = {symbol.fqn for symbol in symbols.values()}
     interfaces = {s.fqn for s in symbols.values() if s.type_kind == "interface"}
@@ -374,7 +374,7 @@ def build_nodes(
         if classification is None:
             continue
 
-        identifier = node_id(module.csproj, symbol)
+        identifier = node_id(module.project_file, symbol)
         dependencies = _constructor_dependencies(symbol, known_fqns, simple_names)
         dependencies += _di_dependencies(symbol, all_registrations, known_fqns, simple_names)
 

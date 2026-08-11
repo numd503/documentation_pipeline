@@ -325,7 +325,14 @@ def test_duplicate_node_id_fails() -> None:
 
 
 def test_duplicate_module_id_fails() -> None:
-    module = Module(id="module:a", name="A", csproj="a/A.csproj", domain="d", enrolled=True)
+    module = Module(
+        id="module:a",
+        name="A",
+        project_file="a/A.csproj",
+        lang="cs",
+        domain="d",
+        enrolled=True,
+    )
     manifest = Manifest(ruleset_version="v", parser=VERSIONS, modules=[module, module])
 
     errors, _ = validate_manifest(manifest)
