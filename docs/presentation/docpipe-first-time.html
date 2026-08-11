@@ -1,0 +1,1604 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>docpipe — техническая документация, собранная из кода</title>
+<style>
+/* ────────────────────────────────────────────────────────────────────────────
+   Токены. Цвет несёт смысл, а не украшает:
+     --acc   синий  — то, что инструмент делает детерминированно;
+     --agent сирень — то, что пишет агент или человек;
+     --warn  сурик  — ловушка, граница, требующее решения.
+   Серии графиков живут отдельно (--s1…--s3): они проверены валидатором
+   на контраст и на цветовую слепоту против поверхности --sheet.
+   Тема переопределяется только на уровне токенов.
+   ──────────────────────────────────────────────────────────────────────── */
+:root {
+  --paper:   #f6f4f0;
+  --sheet:   #fcfbf8;
+  --sheet-2: #ece9e2;
+  --ink:     #191813;
+  --ink-2:   #56534a;
+  --ink-3:   #857f73;
+  --rule:    rgba(25, 24, 19, .13);
+  --rule-2:  rgba(25, 24, 19, .30);
+
+  --acc:     #15558f;
+  --acc-bg:  rgba(21, 85, 143, .09);
+  --agent:   #6a4b9a;
+  --agent-bg:rgba(106, 75, 154, .10);
+  --warn:    #99461f;
+  --warn-bg: rgba(153, 70, 31, .09);
+  --ok:      #006300;
+
+  /* серии графиков — светлая ступень */
+  --s1:      #2a78d6;
+  --s2:      #eb6834;
+  --s3:      #1baf7a;
+  --s-empty: #d8d3c8;
+  --hatch:   rgba(25, 24, 19, .16);
+  --grid:    #e4e1d9;
+  --axis:    #c3c2b7;
+  --muted:   #898781;
+
+  --shadow:  0 1px 0 rgba(25, 24, 19, .05);
+  --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Liberation Sans", Arial, sans-serif;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, "Times New Roman", serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper:   #121316;
+    --sheet:   #191a1c;
+    --sheet-2: #212326;
+    --ink:     #eceae4;
+    --ink-2:   #b1aca2;
+    --ink-3:   #83807a;
+    --rule:    rgba(236, 234, 228, .14);
+    --rule-2:  rgba(236, 234, 228, .32);
+
+    --acc:     #6fb0f0;
+    --acc-bg:  rgba(111, 176, 240, .12);
+    --agent:   #b39ce2;
+    --agent-bg:rgba(179, 156, 226, .13);
+    --warn:    #e08f68;
+    --warn-bg: rgba(224, 143, 104, .12);
+    --ok:      #0ca30c;
+
+    --s1:      #3987e5;
+    --s2:      #d95926;
+    --s3:      #199e70;
+    --s-empty: #3a3b3d;
+    --hatch:   rgba(236, 234, 228, .20);
+    --grid:    #2c2c2a;
+    --axis:    #383835;
+    --muted:   #898781;
+
+    --shadow:  0 1px 0 rgba(0, 0, 0, .30);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper:   #121316;
+  --sheet:   #191a1c;
+  --sheet-2: #212326;
+  --ink:     #eceae4;
+  --ink-2:   #b1aca2;
+  --ink-3:   #83807a;
+  --rule:    rgba(236, 234, 228, .14);
+  --rule-2:  rgba(236, 234, 228, .32);
+
+  --acc:     #6fb0f0;
+  --acc-bg:  rgba(111, 176, 240, .12);
+  --agent:   #b39ce2;
+  --agent-bg:rgba(179, 156, 226, .13);
+  --warn:    #e08f68;
+  --warn-bg: rgba(224, 143, 104, .12);
+  --ok:      #0ca30c;
+
+  --s1:      #3987e5;
+  --s2:      #d95926;
+  --s3:      #199e70;
+  --s-empty: #3a3b3d;
+  --hatch:   rgba(236, 234, 228, .20);
+  --grid:    #2c2c2a;
+  --axis:    #383835;
+  --muted:   #898781;
+
+  --shadow:  0 1px 0 rgba(0, 0, 0, .30);
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; scroll-padding-top: 3rem; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: clamp(15px, 0.42vw + 13.4px, 17px);
+  line-height: 1.58;
+  overflow-x: hidden;
+}
+
+/* ── Прогресс и переключатель темы ──────────────────────────────────────── */
+.rail { position: fixed; inset: 0 0 auto 0; height: 2px; z-index: 60; background: var(--rule); }
+.rail-fill { height: 100%; width: 0; background: var(--acc); }
+.theme {
+  position: fixed; top: .9rem; right: 1rem; z-index: 60;
+  font: 600 .66rem/1 var(--mono); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-2); background: var(--sheet); border: 1px solid var(--rule);
+  padding: .42rem .6rem; cursor: pointer; border-radius: 2px;
+}
+.theme:hover { border-color: var(--rule-2); color: var(--ink); }
+:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+
+/* ── Каркас ─────────────────────────────────────────────────────────────── */
+.wrap { max-width: 1360px; margin: 0 auto; padding: 0 clamp(1.1rem, 3vw, 2.4rem); }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
+@media (min-width: 1180px) {
+  .layout { grid-template-columns: 14.5rem minmax(0, 1fr); gap: 3rem; align-items: start; }
+}
+
+/* Оглавление */
+.toc { display: none; }
+@media (min-width: 1180px) {
+  .toc {
+    display: block; position: sticky; top: 3.4rem; padding-bottom: 3rem;
+    max-height: calc(100vh - 5rem); overflow-y: auto;
+  }
+}
+.toc ol { list-style: none; margin: 0; padding: 0; counter-reset: toc; }
+.toc li { counter-increment: toc; }
+.toc a {
+  display: block; padding: .3rem 0 .3rem .3rem; border-left: 2px solid var(--rule);
+  color: var(--ink-3); text-decoration: none;
+  font: .74rem/1.35 var(--sans);
+}
+.toc a::before {
+  content: counter(toc, decimal-leading-zero) " ";
+  font-family: var(--mono); font-size: .66rem; color: var(--ink-3); opacity: .75;
+}
+.toc a:hover { color: var(--ink); border-left-color: var(--rule-2); }
+.toc a.on { color: var(--acc); border-left-color: var(--acc); font-weight: 600; }
+
+/* ── Титул ──────────────────────────────────────────────────────────────── */
+.hero { padding: 4.6rem 0 2.4rem; border-bottom: 1px solid var(--rule); }
+.kicker {
+  font: 600 .68rem/1 var(--mono); letter-spacing: .18em; text-transform: uppercase;
+  color: var(--ink-3); margin-bottom: 1.3rem;
+}
+.kicker b { color: var(--acc); font-weight: 600; }
+h1 {
+  font: 600 clamp(2.1rem, 4.6vw, 3.5rem)/1.06 var(--mono);
+  letter-spacing: -.03em; margin: 0; text-wrap: balance; max-width: 22ch;
+}
+.hero .lede {
+  font-family: var(--serif); font-size: clamp(1.06rem, 1.3vw, 1.22rem);
+  color: var(--ink-2); max-width: 60ch; margin: 1.3rem 0 0; line-height: 1.5;
+}
+.hero-meta {
+  margin-top: 2.2rem; font: .74rem/1.5 var(--mono); color: var(--ink-3);
+  display: flex; flex-wrap: wrap; gap: .4rem 1.6rem;
+}
+
+/* ── Секции ─────────────────────────────────────────────────────────────── */
+section { padding: 3.4rem 0; border-bottom: 1px solid var(--rule); scroll-margin-top: 2rem; }
+section:last-of-type { border-bottom: 0; }
+.eyebrow {
+  font: 600 .66rem/1 var(--mono); letter-spacing: .16em; text-transform: uppercase;
+  color: var(--ink-3); display: flex; align-items: baseline; gap: .7rem; margin-bottom: .9rem;
+}
+.eyebrow i { font-style: normal; color: var(--acc); }
+h2 {
+  font: 600 clamp(1.5rem, 2.4vw, 2.05rem)/1.14 var(--mono);
+  letter-spacing: -.02em; margin: 0 0 .9rem; text-wrap: balance; max-width: 26ch;
+}
+h3 {
+  font: 600 .95rem/1.35 var(--sans); margin: 2rem 0 .6rem; color: var(--ink);
+}
+h4 {
+  font: 600 .68rem/1 var(--mono); letter-spacing: .12em; text-transform: uppercase;
+  color: var(--ink-3); margin: 0 0 .55rem;
+}
+p { margin: 0 0 .85rem; max-width: 74ch; }
+p:last-child { margin-bottom: 0; }
+.lede { font-size: 1.03rem; color: var(--ink-2); max-width: 70ch; }
+.small { font-size: .86rem; color: var(--ink-2); }
+.tiny { font-size: .76rem; color: var(--ink-3); max-width: 78ch; }
+strong { font-weight: 600; color: var(--ink); }
+a { color: var(--acc); }
+code {
+  font-family: var(--mono); font-size: .85em;
+  background: var(--sheet-2); padding: .08em .32em; border-radius: 2px;
+  overflow-wrap: anywhere;
+}
+
+/* Тезис */
+.thesis {
+  font-family: var(--serif); font-size: 1.13rem; line-height: 1.48;
+  border-left: 3px solid var(--acc); padding: .3rem 0 .3rem 1.15rem;
+  margin: 1.6rem 0; max-width: 68ch; color: var(--ink);
+}
+.thesis em { font-style: italic; color: var(--acc); }
+
+/* Раскладки */
+.cols { display: grid; gap: 1.2rem; align-items: start; }
+.c2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.c3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.c4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.c2a { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+@media (max-width: 900px) { .c2, .c3, .c4, .c2a { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 900px) { .c4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.card {
+  border: 1px solid var(--rule); background: var(--sheet);
+  padding: 1rem 1.05rem; box-shadow: var(--shadow); border-radius: 3px;
+}
+.card--acc { border-left: 3px solid var(--acc); }
+.card--agent { border-left: 3px solid var(--agent); }
+.card--warn { border-left: 3px solid var(--warn); }
+.card p { max-width: none; }
+.card .small { margin-bottom: 0; }
+
+/* Списки */
+ul.ticks { list-style: none; margin: 0 0 .85rem; padding: 0; display: grid; gap: .45rem; }
+ul.ticks li { position: relative; padding-left: 1.4rem; font-size: .93rem; max-width: 72ch; }
+ul.ticks li::before {
+  content: "→"; position: absolute; left: 0; top: 0;
+  font-family: var(--mono); color: var(--acc); font-size: .88em;
+}
+ul.ticks.neg li::before { content: "×"; color: var(--warn); }
+ul.ticks.todo li::before { content: "□"; color: var(--ink-3); }
+ul.ticks.done li::before { content: "▣"; color: var(--ok); }
+
+ol.steps { list-style: none; margin: 0; padding: 0; counter-reset: st; display: grid; gap: .55rem; }
+ol.steps li { counter-increment: st; position: relative; padding-left: 2.1rem; font-size: .93rem; max-width: 72ch; }
+ol.steps li::before {
+  content: counter(st, decimal-leading-zero); position: absolute; left: 0; top: .12em;
+  font: .72rem/1 var(--mono); color: var(--acc); font-variant-numeric: tabular-nums;
+}
+
+dl.defs { margin: 0; display: grid; gap: .8rem; }
+dl.defs dt { font: 600 .84rem/1.3 var(--mono); color: var(--ink); }
+dl.defs dd { margin: .2rem 0 0; font-size: .88rem; color: var(--ink-2); }
+
+/* Таблицы */
+.tw { overflow-x: auto; margin: 0 0 .4rem; }
+table { border-collapse: collapse; width: 100%; font-size: .855rem; font-variant-numeric: tabular-nums; }
+th {
+  text-align: left; font: 600 .66rem/1.3 var(--mono); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-3); border-bottom: 1px solid var(--rule-2); padding: 0 .9rem .45rem 0; vertical-align: bottom;
+}
+td { padding: .45rem .9rem .45rem 0; border-bottom: 1px solid var(--rule); vertical-align: top; color: var(--ink-2); }
+td:first-child { color: var(--ink); }
+tr:last-child td { border-bottom: 0; }
+td.n, th.n { text-align: right; font-family: var(--mono); white-space: nowrap; }
+td.k, th.k { font-family: var(--mono); font-size: .8rem; white-space: nowrap; }
+
+/* Код */
+pre {
+  margin: 0 0 .5rem; overflow-x: auto; font-family: var(--mono);
+  font-size: .755rem; line-height: 1.62; color: var(--ink-2);
+  background: var(--sheet); border: 1px solid var(--rule); border-radius: 3px;
+  padding: .85rem .95rem; tab-size: 2;
+}
+pre b { color: var(--ink); font-weight: 600; }
+pre i { color: var(--ink-3); font-style: normal; }
+pre u { color: var(--acc); text-decoration: none; }
+pre s { color: var(--warn); text-decoration: none; }
+pre em { color: var(--agent); font-style: normal; }
+pre .cm { color: var(--ink-3); }
+
+/* Метки */
+.tag {
+  display: inline-block; font: 600 .62rem/1.5 var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; padding: .1rem .42rem; border: 1px solid currentColor;
+  color: var(--ink-3); white-space: nowrap; border-radius: 2px;
+}
+.tag--acc { color: var(--acc); background: var(--acc-bg); }
+.tag--agent { color: var(--agent); background: var(--agent-bg); }
+.tag--warn { color: var(--warn); background: var(--warn-bg); }
+.tag--done { color: var(--ok); }
+
+/* Показатели */
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; }
+.stat { background: var(--sheet); padding: .95rem 1rem; }
+.stat b {
+  display: block; font: 600 clamp(1.35rem, 2.1vw, 1.9rem)/1.1 var(--mono);
+  letter-spacing: -.02em; color: var(--ink); font-variant-numeric: tabular-nums;
+}
+.stat span { display: block; margin-top: .3rem; font-size: .78rem; color: var(--ink-3); }
+@media (max-width: 760px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* ── Графики ────────────────────────────────────────────────────────────── */
+figure.viz {
+  margin: 1.6rem 0; padding: 1.1rem 1.15rem 1rem;
+  background: var(--sheet); border: 1px solid var(--rule); border-radius: 3px;
+  box-shadow: var(--shadow);
+}
+figure.viz > figcaption { margin-bottom: 1.1rem; }
+figure.viz .viz-title { font: 600 .95rem/1.35 var(--sans); color: var(--ink); margin: 0 0 .25rem; }
+figure.viz .viz-sub { font-size: .8rem; color: var(--ink-3); margin: 0; max-width: 72ch; }
+
+.bars { display: grid; gap: .55rem; }
+.bar-row {
+  display: grid; grid-template-columns: minmax(7rem, 12rem) minmax(0, 1fr);
+  gap: .8rem; align-items: center; cursor: default;
+}
+@media (max-width: 620px) {
+  .bar-row { grid-template-columns: minmax(0, 1fr); gap: .15rem; }
+  .bar-note { display: none; }
+}
+.bar-label { font-size: .82rem; color: var(--ink); line-height: 1.25; }
+.bar-label span { display: block; font: .7rem/1.3 var(--mono); color: var(--ink-3); }
+/* Максимум шкалы занимает не всю дорожку (62 % там, где есть вторая подпись,
+   86 % в остальных): остаток отведён под подпись, которая обязана стоять
+   рядом со своей полосой. Множитель внутри графика общий — шкала линейна. */
+.bar-track { display: flex; align-items: center; gap: .55rem; min-width: 0; }
+.bar {
+  height: 13px; background: var(--s1); border-radius: 0 4px 4px 0;
+  width: var(--w); min-width: 2px; flex: 0 0 auto;
+  transition: filter .15s ease;
+}
+.bar-row:hover .bar, .bar-row:focus-visible .bar { filter: brightness(1.08) saturate(1.1); }
+.bar.s2 { background: var(--s2); }
+.bar.s3 { background: var(--s3); }
+.bar.dim { background: var(--s-empty); }
+.bar-val { font: 600 .78rem/1 var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bar-note { font: .72rem/1 var(--mono); color: var(--ink-3); white-space: nowrap; }
+
+/* Стопка */
+/* flex-shrink оставлен включённым: иначе зазоры в 2px переполняют строку
+   на 4px и внутри карточки появляется горизонтальный скролл. */
+.stackbar { display: flex; gap: 2px; margin: .2rem 0 .5rem; width: 100%; }
+.stackbar .seg { height: 26px; flex: 0 1 var(--w); min-width: 3px; border-radius: 2px; }
+.seg.a { background: var(--s1); }
+.seg.b { background: var(--s2); }
+.seg.c { background: var(--s3); }
+.seg.empty {
+  background: var(--s-empty);
+  background-image: repeating-linear-gradient(45deg, transparent 0 5px, var(--hatch) 5px 7px);
+}
+.stacklabels { display: flex; gap: 2px; width: 100%; }
+.stacklabels div { flex: 0 1 var(--w); min-width: 0; padding-right: .4rem; }
+.stacklabels b { display: block; font: 600 .84rem/1.2 var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; }
+.stacklabels span { display: block; font-size: .72rem; color: var(--ink-3); line-height: 1.25; }
+@media (max-width: 620px) {
+  /* На узком экране подписи под сегментами не помещаются рядом: ширина
+     первого сегмента — меньше ширины его же числа. Уходим в список. */
+  .stacklabels { flex-wrap: wrap; gap: .5rem 1.2rem; }
+  .stacklabels div { flex: 0 0 auto; }
+}
+
+/* Легенда */
+.legend { display: flex; flex-wrap: wrap; gap: .3rem 1.1rem; margin-top: .9rem; font-size: .78rem; color: var(--ink-2); }
+.legend i { display: inline-block; width: .62rem; height: .62rem; border-radius: 2px; margin-right: .38rem; vertical-align: baseline; }
+.legend .a { background: var(--s1); } .legend .b { background: var(--s2); }
+.legend .c { background: var(--s3); }
+.legend .empty { background: var(--s-empty); background-image: repeating-linear-gradient(45deg, transparent 0 3px, var(--hatch) 3px 4px); }
+
+details.vt { margin-top: .9rem; border-top: 1px solid var(--rule); padding-top: .55rem; }
+details.vt > summary {
+  font: .74rem/1 var(--mono); color: var(--ink-3); cursor: pointer;
+  letter-spacing: .04em; list-style: none;
+}
+details.vt > summary::-webkit-details-marker { display: none; }
+details.vt > summary::before { content: "▸ "; }
+details.vt[open] > summary::before { content: "▾ "; }
+details.vt > summary:hover { color: var(--ink); }
+details.vt table { margin-top: .6rem; }
+
+/* Подсказка */
+#tip {
+  position: fixed; z-index: 70; pointer-events: none; opacity: 0;
+  transform: translate(-50%, -120%); transition: opacity .12s ease;
+  background: var(--ink); color: var(--paper); font: .74rem/1.4 var(--mono);
+  padding: .35rem .55rem; border-radius: 3px; max-width: 22rem; white-space: pre-line;
+}
+#tip.on { opacity: .97; }
+
+/* ── Диаграммы ──────────────────────────────────────────────────────────── */
+.pipe { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .55rem; margin: 1.4rem 0 .5rem; }
+@media (max-width: 860px) { .pipe { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.pstep {
+  border: 1px solid var(--rule); background: var(--sheet); border-radius: 3px;
+  padding: .8rem .85rem; border-top: 3px solid var(--acc); position: relative;
+}
+.pstep.agent { border-top-color: var(--agent); }
+.pstep h5 { margin: 0 0 .3rem; font: 600 .84rem/1.3 var(--sans); color: var(--ink); }
+.pstep p { margin: 0; font-size: .78rem; color: var(--ink-2); }
+.pstep .out { display: block; margin-top: .5rem; font: .7rem/1.4 var(--mono); color: var(--acc); overflow-wrap: anywhere; }
+.pstep.agent .out { color: var(--agent); }
+.pstep .num { position: absolute; top: .55rem; right: .7rem; font: 600 .68rem/1 var(--mono); color: var(--ink-3); }
+.bandrow { display: grid; grid-template-columns: 3fr 1fr; gap: .55rem; margin-bottom: .5rem; }
+@media (max-width: 860px) { .bandrow { grid-template-columns: minmax(0, 1fr); } }
+.band {
+  font: 600 .64rem/1 var(--mono); letter-spacing: .13em; text-transform: uppercase;
+  padding: .38rem .6rem; border: 1px solid currentColor; border-radius: 2px;
+}
+.band--acc { color: var(--acc); background: var(--acc-bg); }
+.band--agent { color: var(--agent); background: var(--agent-bg); }
+
+/* Зоны документа */
+.zones { display: grid; gap: 2px; font-family: var(--mono); font-size: .74rem; line-height: 1.5; }
+.zone { padding: .6rem .75rem; border-radius: 2px; border-left: 3px solid; }
+.zone-h { display: block; font-size: .62rem; letter-spacing: .12em; text-transform: uppercase; margin-bottom: .35rem; }
+.zone.tool { background: var(--acc-bg); border-color: var(--acc); color: var(--ink-2); }
+.zone.tool .zone-h { color: var(--acc); }
+.zone.human { background: var(--agent-bg); border-color: var(--agent); color: var(--ink-2); }
+.zone.human .zone-h { color: var(--agent); }
+
+/* Стрелка бизнес ↔ техника */
+.arrow3 { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr); gap: .7rem; align-items: center; margin: 1.4rem 0 .6rem; }
+@media (max-width: 900px) { .arrow3 { grid-template-columns: minmax(0, 1fr); } .arrow3 .ar { transform: rotate(90deg); justify-self: center; } }
+.ar { font: 1.1rem/1 var(--mono); color: var(--ink-3); }
+.abox { border: 1px solid var(--rule); background: var(--sheet); border-radius: 3px; padding: .75rem .8rem; }
+.abox h5 { margin: 0 0 .3rem; font: 600 .8rem/1.3 var(--sans); }
+.abox p { margin: 0; font-size: .76rem; color: var(--ink-2); }
+.abox.anchor { border-color: var(--warn); background: var(--warn-bg); }
+
+footer { padding: 2.6rem 0 4rem; font-size: .8rem; color: var(--ink-3); }
+footer a { color: var(--ink-2); }
+@media print {
+  .toc, .rail, .theme, #tip { display: none !important; }
+  section { break-inside: avoid; border-bottom: 1px solid #ccc; }
+  figure.viz, .card { break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+
+<div class="rail"><div class="rail-fill" id="rail"></div></div>
+<button class="theme" id="theme" type="button">тема</button>
+<div id="tip" role="status" aria-live="polite"></div>
+
+<div class="wrap">
+  <header class="hero">
+    <div class="kicker"><b>docpipe</b> · пайплайн технической документации · АС&nbsp;CF</div>
+    <h1>Документация, собранная из кода</h1>
+    <p class="lede">
+      Техническая документация не пишется и не обновляется — не потому, что её не хотят
+      писать, а потому, что это ручная работа, которая устаревает быстрее, чем её успевают
+      делать. Здесь она разбита на две части: <strong>структуру собирает детерминированный
+      инструмент</strong>, <strong>текст пишет агент</strong>. Граница между ними проходит
+      по одной линии и проверяется автоматически.
+    </p>
+    <div class="hero-meta">
+      <span>шаги 1, 2, бизнес-слой и фронтенд — готовы</span>
+      <span>1458 тестов</span>
+      <span>два языка: C# и TypeScript</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="Содержание">
+      <ol>
+        <li><a href="#problem">Проблема</a></li>
+        <li><a href="#idea">Решение: где проходит граница</a></li>
+        <li><a href="#what">Что документируем</a></li>
+        <li><a href="#parse">Шаг 1: разбор кодовой базы</a></li>
+        <li><a href="#classify">Шаг 1: определение документируемых частей</a></li>
+        <li><a href="#materialize">Шаг 2: материализация дерева</a></li>
+        <li><a href="#agent">Шаг 3: наполнение документа</a></li>
+        <li><a href="#business">Связь с бизнес-документацией</a></li>
+        <li><a href="#run">Как это работает</a></li>
+        <li><a href="#config">Настроечные файлы</a></li>
+        <li><a href="#cli">Команды библиотеки</a></li>
+        <li><a href="#cost">Затраты на прогон</a></li>
+        <li><a href="#usage">Сценарии использования</a></li>
+        <li><a href="#limits">Границы и что дальше</a></li>
+      </ol>
+    </nav>
+
+    <main>
+
+    <!-- ══════════════════════════════════════════════════════════ 1 ══ -->
+    <section id="problem">
+      <div class="eyebrow"><i>01</i> Проблема</div>
+      <h2>Техническая документация не пишется или не обновляется</h2>
+      <p class="lede">
+        Это не проблема дисциплины. Ручная документация большого проекта имеет три свойства,
+        которые её убивают: она дорогая в написании, она незаметно устаревает,
+        и её устаревание ничего не ломает — а значит, никто про него не узнаёт.
+      </p>
+
+      <div class="cols c3" style="margin-top:1.6rem">
+        <div class="card card--warn">
+          <h4>Дорогая</h4>
+          <p class="small">Описать сервис — это прочитать его целиком, понять зависимости
+          и написать текст. Час на документ, сотни документов.</p>
+        </div>
+        <div class="card card--warn">
+          <h4>Устаревает молча</h4>
+          <p class="small">Код меняется в PR, документ — нет. Никакой сборкой это
+          не проверяется, и расхождение обнаруживается только тем, кто на него наступил.</p>
+        </div>
+        <div class="card card--warn">
+          <h4>Не имеет владельца</h4>
+          <p class="small">Пока документ ничей, «обновить документацию» — это задача,
+          которая всегда уступает задаче с дедлайном.</p>
+        </div>
+      </div>
+
+      <h3>Три очевидных способа и почему нужен четвёртый</h3>
+      <div class="cols c3">
+        <div class="card">
+          <h4>Писать руками</h4>
+          <p class="small">Даёт лучший текст. Не масштабируется и не переживает
+          рефакторинг: правку кода никто не связывает с правкой документа.</p>
+        </div>
+        <div class="card">
+          <h4>Сгенерировать целиком</h4>
+          <p class="small">Даёт актуальность и ноль пользы: пересказ сигнатур —
+          это те же сигнатуры, только в другом файле и с задержкой.</p>
+        </div>
+        <div class="card">
+          <h4>Отдать всё LLM</h4>
+          <p class="small">Даёт текст, который читается. Не даёт воспроизводимости:
+          два прогона — два разных дерева, и сравнить их нельзя.</p>
+        </div>
+      </div>
+
+      <p class="thesis">
+        Четвёртый способ: <em>разделить решения</em>. «Этот класс — контроллер» —
+        решение правила, оно обязано быть одинаковым при каждом прогоне.
+        «Что этот контроллер делает» — решение агента, и оно недетерминированно
+        по своей природе. Смешивать их в одном шаге — значит потерять оба свойства.
+      </p>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════ 2 ══ -->
+    <section id="idea">
+      <div class="eyebrow"><i>02</i> Решение</div>
+      <h2>Пайплайн из четырёх шагов</h2>
+      <p class="lede">
+        Первые три шага — чистая функция от кода и настроек: один и тот же вход даёт
+        байт-в-байт одинаковый выход. Четвёртый — единственный, где работает LLM,
+        и он получает на вход уже готовый документ со ссылками на реализацию.
+      </p>
+
+      <div class="bandrow">
+        <div class="band band--acc">Детерминированное: правила, а не суждение</div>
+        <div class="band band--agent">Агент</div>
+      </div>
+      <div class="pipe">
+        <div class="pstep">
+          <span class="num">01</span>
+          <h5>Парсинг кодовой базы</h5>
+          <p>tree-sitter по .cs и .ts. Без сборки решения и без .NET SDK — достаточно,
+          чтобы исходники лежали на диске.</p>
+          <span class="out">символы, члены, маршруты, зависимости</span>
+        </div>
+        <div class="pstep">
+          <span class="num">02</span>
+          <h5>Определение документируемых частей</h5>
+          <p>Правила из YAML решают, что является сущностью, а что — деталью реализации.
+          Про каждый тип принимается решение.</p>
+          <span class="out">doc-tree.json — манифест</span>
+        </div>
+        <div class="pstep">
+          <span class="num">03</span>
+          <h5>Материализация дерева</h5>
+          <p>Документы создаются и обновляются на диске: метаданные, ссылки на код,
+          статус «создать / проверить / ничего не делать».</p>
+          <span class="out">docs/**/*.md со скелетами</span>
+        </div>
+        <div class="pstep agent">
+          <span class="num">04</span>
+          <h5>Наполнение документа</h5>
+          <p>Агент получает очередь, читает документ и его источники, пишет текст
+          в отведённые блоки по шаблону.</p>
+          <span class="out">наполненные документы</span>
+        </div>
+      </div>
+
+      <div class="cols c2" style="margin-top:1.6rem">
+        <div class="card card--acc">
+          <h4>Что даёт детерминированность</h4>
+          <ul class="ticks">
+            <li>Манифест можно закоммитить и смотреть в диффе: изменился код —
+            видно, какие документы поехали.</li>
+            <li>Прогон в CI имеет смысл: результат не «примерно тот же», а тот же.</li>
+            <li>Переформатирование файла не создаёт работы агенту —
+            хэши не включают номера строк и пути.</li>
+          </ul>
+        </div>
+        <div class="card card--agent">
+          <h4>Что остаётся агенту</h4>
+          <ul class="ticks">
+            <li>Назначение сущности и её место в системе.</li>
+            <li>Поведение, правила, штатные ошибки.</li>
+            <li>Взаимодействие: кого зовёт и что будет, если зависимость недоступна.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════ 3 ══ -->
+    <section id="what">
+      <div class="eyebrow"><i>03</i> Состав</div>
+      <h2>Что документируем — и почему не всё</h2>
+      <p class="lede">
+        Документировать детали реализации бессмысленно: они меняются чаще, чем
+        документ успевает жить. Документируются узлы, через которые проходит
+        внешнее взаимодействие, — те, про которые вопрос «а как это работает»
+        задаёт кто-то извне модуля.
+      </p>
+
+      <div class="cols c2" style="margin-top:1.4rem">
+        <div class="card card--acc">
+          <h4>Бэкенд</h4>
+          <dl class="defs">
+            <dt>Grid-сервис</dt>
+            <dd>Основной элемент выполнения логики в кластере. Вызывается по имени
+            через прокси — имя и есть контракт.</dd>
+            <dt>Контроллер</dt>
+            <dd>Связь фронтенда с бэкендом. Даёт HTTP-маршруты, по которым потом
+            сходится связь с фронтом.</dd>
+            <dt>Data-провайдер</dt>
+            <dd>Связь бэкенда с базой данных.</dd>
+            <dt>Event-receiver</dt>
+            <dd>Обработчик событий БД, вызывающий бэкенд. Объявлен в реестре
+            структуры, а не в коде.</dd>
+            <dt>Workflow</dt>
+            <dd>Структурированный процесс: определение и шаги лежат в JSON
+            платформы, около 45 записей.</dd>
+            <dt>Job</dt>
+            <dd>Выполняемые по расписанию задачи Quartz. Объявлены в XML-реестре
+            с расписанием и интерфейсом задания.</dd>
+          </dl>
+        </div>
+        <div class="card card--acc">
+          <h4>Фронтенд <span class="tag tag--wip">в инструменте</span></h4>
+          <dl class="defs">
+            <dt>Страница (page)</dt>
+            <dd>Компонент, до которого можно дойти по таблице роутов. Это повышение
+            по факту, а не правило: бизнес ссылается на экран, а не на класс компонента.</dd>
+            <dt>API-сервис</dt>
+            <dd>Сервис, который делает HTTP-вызовы. Тоже повышение по факту —
+            именно он даёт связь «страница → эндпоинт бэкенда».</dd>
+          </dl>
+          <p class="tiny" style="margin-top:.9rem">
+            Ещё девять видов задаются правилами <code>rules/web.yaml</code>:
+            component, state, ng-module, pipe, directive, interceptor, guard, service,
+            action, routes, dto.
+          </p>
+        </div>
+      </div>
+
+      <p class="tiny" style="margin-top:1.2rem">
+        В первоначальном плане Job, Front Page и Front API стояли как TBD. Джобы
+        закрыты и работают на АС CF: они читаются реестром. Страницы и API-сервисы
+        закрыты в инструменте шагом <code>web</code>, но на целевой репозиторий
+        ещё не перенесены — это ближайшая работа, а не готовый результат.
+      </p>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════ 4 ══ -->
+    <section id="parse">
+      <div class="eyebrow"><i>04</i> Шаг 1 · разбор</div>
+      <h2>tree-sitter, а не Roslyn</h2>
+      <p class="lede">
+        Roslyn дал бы семантику, но потребовал бы .NET SDK и <code>restore</code> всех
+        проектов — то есть минуты и рабочее окружение сборки. Для построения
+        <strong>структуры</strong> семантика почти не нужна: классификация идёт
+        по атрибутам, именам базовых типов и конвенциям — это синтаксис.
+        Недостающее (цепочки наследования через границы проектов) достраивается
+        по индексу символов.
+      </p>
+
+      <figure class="viz">
+        <figcaption>
+          <p class="viz-title">Разбор четырёх реальных .NET-репозиториев</p>
+          <p class="viz-sub">Время разбора исходников, секунды. Всего 11&nbsp;850 файлов
+          и 941 проект — ноль падений парсера.</p>
+        </figcaption>
+        <!-- Строки АС CF здесь НЕТ намеренно: на открытых репозиториях замерена
+             фаза разбора, а на АС CF — время полного прогона (сидкар отдаёт
+             duration_seconds целиком). Ставить их в один график нельзя — это
+             разные величины. Объём АС CF ушёл в плитки под графиком, время —
+             в раздел «Затраты». Подробности в docpipe-first-time.speaker.md.
+             Если понадобится замерить именно разбор: он выводится
+             в `scan --stats`. Шкала обрезана на 62 % ради подписей:
+             --w = значение / максимум * 62, пересчитывать ВСЕ строки. -->
+        <div class="bars bars--notes">
+          <div class="bar-row" tabindex="0" data-tip="eShopOnWeb&#10;254 файла · 0,18 с · 1374 файла/с">
+            <div class="bar-label">eShopOnWeb<span>254 файла</span></div>
+            <div class="bar-track"><div class="bar" style="--w:1.4%"></div><span class="bar-val">0,18 с</span><span class="bar-note">1374 файла/с</span></div>
+          </div>
+          <div class="bar-row" tabindex="0" data-tip="ABP&#10;7869 файлов · 7,96 с · 989 файлов/с&#10;671 проект, 3,9 ГБ">
+            <div class="bar-label">ABP<span>7869 файлов</span></div>
+            <div class="bar-track"><div class="bar" style="--w:62.0%"></div><span class="bar-val">7,96 с</span><span class="bar-note">989 файлов/с</span></div>
+          </div>
+          <div class="bar-row" tabindex="0" data-tip="OpenTelemetry&#10;767 файлов · 1,60 с · 481 файл/с">
+            <div class="bar-label">OpenTelemetry<span>767 файлов</span></div>
+            <div class="bar-track"><div class="bar" style="--w:12.5%"></div><span class="bar-val">1,60 с</span><span class="bar-note">481 файл/с</span></div>
+          </div>
+          <div class="bar-row" tabindex="0" data-tip="semantic-kernel&#10;2960 файлов · 5,44 с · 544 файла/с&#10;полиязычный: C#, Python, TypeScript, Java">
+            <div class="bar-label">semantic-kernel<span>2960 файлов</span></div>
+            <div class="bar-track"><div class="bar" style="--w:42.4%"></div><span class="bar-val">5,44 с</span><span class="bar-note">544 файла/с</span></div>
+          </div>
+        </div>
+        <details class="vt">
+          <summary>таблицей</summary>
+          <div class="tw"><table>
+            <thead><tr><th>Репозиторий</th><th class="n">Файлов .cs</th><th class="n">Проектов</th><th class="n">Разбор, с</th><th class="n">Файлов/с</th><th class="n">Падений</th></tr></thead>
+            <tbody>
+              <tr><td>eShopOnWeb</td><td class="n">254</td><td class="n">10</td><td class="n">0,18</td><td class="n">1374</td><td class="n">0</td></tr>
+              <tr><td>ABP</td><td class="n">7869</td><td class="n">671</td><td class="n">7,96</td><td class="n">989</td><td class="n">0</td></tr>
+              <tr><td>OpenTelemetry</td><td class="n">767</td><td class="n">70</td><td class="n">1,60</td><td class="n">481</td><td class="n">0</td></tr>
+              <tr><td>semantic-kernel</td><td class="n">2960</td><td class="n">190</td><td class="n">5,44</td><td class="n">544</td><td class="n">0</td></tr>
+            </tbody>
+          </table></div>
+        </details>
+      </figure>
+
+      <div class="stats">
+        <div class="stat"><b>17 979</b><span>файлов АС CF в одном прогоне</span></div>
+        <div class="stat"><b>490</b><span>проектов, 24 193 символа</span></div>
+        <div class="stat"><b>0</b><span>падений на 11 850 файлах проверочных репозиториев</span></div>
+        <div class="stat"><b>0</b><span>требований к окружению сборки</span></div>
+      </div>
+
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════ 5 ══ -->
+    <section id="classify">
+      <div class="eyebrow"><i>05</i> Шаг 1 · классификация</div>
+      <h2>Про каждый тип принимается решение</h2>
+      <p class="lede">
+        Мы не хотим документировать все детали реализации, но хотим, чтобы важные
+        узлы были покрыты. Отсюда правило: про каждый символ принимается одно
+        из трёх решений, и <strong>два из них означают «документа не будет»</strong>.
+        «Не документируем» — тоже решение, и оно записывается с причиной.
+      </p>
+
+      <figure class="viz">
+        <figcaption>
+          <p class="viz-title">Решения по символам: АС CF, настроенный набор правил</p>
+          <p class="viz-sub">24 193 символа. Подавляющая часть репозитория —
+          вне области документирования, и это решение, принятое один раз списком
+          <code>enrolled</code>, а не 23 тысячи отдельных суждений.</p>
+        </figcaption>
+        <div class="stackbar">
+          <div class="seg a" style="--w:0.67%" tabindex="0" data-tip="документируем: 163 символа (0,7 %)&#10;правило классификации назначило вид"></div>
+          <div class="seg b" style="--w:2.36%" tabindex="0" data-tip="не документируем: 571 символ (2,4 %)&#10;отсев с обязательной причиной"></div>
+          <div class="seg empty" style="--w:96.97%" tabindex="0" data-tip="вне области: 23 459 символов (97,0 %)&#10;не попали в enrolled — не наша область"></div>
+        </div>
+        <div class="legend">
+          <span><i class="a"></i><strong>163</strong> — документируем</span>
+          <span><i class="b"></i><strong>571</strong> — не документируем</span>
+          <span><i class="empty"></i><strong>23 459</strong> — вне области</span>
+        </div>
+        <details class="vt">
+          <summary>таблицей</summary>
+          <div class="tw"><table>
+            <thead><tr><th>Решение</th><th class="n">Символов</th><th class="n">Доля</th><th>Где записывается</th></tr></thead>
+            <tbody>
+              <tr><td>не наша область</td><td class="n">23 459</td><td class="n">97,0 %</td><td><code>enrolled</code> в <code>docpipe.yaml</code></td></tr>
+              <tr><td>наше, но документировать нечего</td><td class="n">571</td><td class="n">2,4 %</td><td><code>exclude</code> в <code>rules.yaml</code> — с причиной</td></tr>
+              <tr><td>наше и документируем</td><td class="n">163</td><td class="n">0,7 %</td><td>правило классификации</td></tr>
+              <tr><td><strong>всего</strong></td><td class="n"><strong>24 193</strong></td><td class="n">100 %</td><td></td></tr>
+            </tbody>
+          </table></div>
+        </details>
+      </figure>
+
+      <p>
+        Есть и четвёртое состояние — <strong>«решение не принято»</strong>, и его
+        на графике нет потому, что <strong>сейчас оно равно нулю</strong>. Пока
+        «не решено» смешано с «решено не документировать», отчёт не отличает «ещё
+        не смотрели» от «посмотрели и решили», а новый тип растворяется в большой
+        цифре. Ноль закрепляется в CI флагом <code>--fail-on-undecided</code>:
+        новый неопознанный тип роняет сборку, а не проходит незамеченным.
+      </p>
+
+      <div class="cols c2a" style="margin-top:1.4rem">
+        <div class="card card--warn">
+          <h4>Так это выглядит в начале</h4>
+          <p class="small">Тот же инструмент на открытом проекте ABP с набором правил
+          по умолчанию: из 8966 символов <strong>7096 без решения</strong> — 79 %.
+          Это нормальное исходное состояние, а не дефект: словарь «контроллер /
+          сервис / провайдер» описывает прикладной код, а не чужой SDK.</p>
+          <div class="stackbar" style="margin-top:.8rem">
+            <div class="seg a" style="--w:9.75%" tabindex="0" data-tip="ABP: документируем 874"></div>
+            <div class="seg b" style="--w:11.11%" tabindex="0" data-tip="ABP: не документируем 996"></div>
+            <div class="seg empty" style="--w:79.14%" tabindex="0" data-tip="ABP: решение не принято 7096 — это и есть работа по настройке"></div>
+          </div>
+          <p class="tiny" style="margin-top:.5rem">
+            874 · 996 · <strong>7096 без решения</strong>
+          </p>
+        </div>
+        <div>
+          <h4>Настройка — итеративный процесс</h4>
+          <p class="small">Работа состоит в том, чтобы разложить эту цифру
+          по трём решениям, и делается она не за один заход:</p>
+          <ol class="steps" style="margin-top:.7rem">
+            <li><code>scan --stats</code> показывает срезы по нерешённым: модули,
+            окончания имён, базовые типы, атрибуты.</li>
+            <li><code>symbols</code> показывает сами типы за срезом — по чему
+            именно писать предикат.</li>
+            <li>Пишется одно правило или один отсев с причиной, цифра падает.</li>
+            <li>Повторять, пока не ноль. На АС CF этот цикл пройден.</li>
+          </ol>
+          <p class="tiny" style="margin-top:.7rem">Одно правило на частый базовый тип
+          закрывает сотни символов сразу — поэтому начинают с самого частого,
+          а не с самого понятного.</p>
+        </div>
+      </div>
+
+      <figure class="viz">
+        <figcaption>
+          <p class="viz-title">Что получилось: 163 документа по шести видам</p>
+          <p class="viz-sub">Один узел — один документ. Вид определяет и шаблон,
+          по которому агент будет его писать, и место в дереве документации.</p>
+        </figcaption>
+        <div class="bars">
+          <div class="bar-row" tabindex="0" data-tip="infra.provider — 50 узлов&#10;связь бэкенда с базой данных"><div class="bar-label">infra.provider<span>data-провайдеры</span></div>
+            <div class="bar-track"><div class="bar s3" style="--w:86.0%"></div><span class="bar-val">50</span></div></div>
+          <div class="bar-row" tabindex="0" data-tip="controller — 34 узла&#10;связь фронтенда с бэкендом"><div class="bar-label">controller<span>контроллеры</span></div>
+            <div class="bar-track"><div class="bar s3" style="--w:58.5%"></div><span class="bar-val">34</span></div></div>
+          <div class="bar-row" tabindex="0" data-tip="gridservice — 34 узла&#10;основные элементы выполнения логики"><div class="bar-label">gridservice<span>grid-сервисы</span></div>
+            <div class="bar-track"><div class="bar s3" style="--w:58.5%"></div><span class="bar-val">34</span></div></div>
+          <div class="bar-row" tabindex="0" data-tip="infra.eventreceiver — 25 узлов&#10;обработчики событий БД"><div class="bar-label">infra.eventreceiver<span>обработчики событий</span></div>
+            <div class="bar-track"><div class="bar s3" style="--w:43.0%"></div><span class="bar-val">25</span></div></div>
+          <div class="bar-row" tabindex="0" data-tip="infra.jobs — 12 узлов&#10;выполняемые по расписанию задачи Quartz"><div class="bar-label">infra.jobs<span>джобы по расписанию</span></div>
+            <div class="bar-track"><div class="bar s3" style="--w:20.6%"></div><span class="bar-val">12</span></div></div>
+          <div class="bar-row" tabindex="0" data-tip="workflow-step — 8 узлов&#10;шаги структурированных процессов"><div class="bar-label">workflow-step<span>шаги workflow</span></div>
+            <div class="bar-track"><div class="bar s3" style="--w:13.8%"></div><span class="bar-val">8</span></div></div>
+        </div>
+        <details class="vt">
+          <summary>таблицей</summary>
+          <div class="tw"><table>
+            <thead><tr><th>Вид</th><th class="n">Узлов</th><th>Что это</th></tr></thead>
+            <tbody>
+              <tr><td class="k">infra.provider</td><td class="n">50</td><td>связь бэкенда с базой данных</td></tr>
+              <tr><td class="k">controller</td><td class="n">34</td><td>связь фронтенда с бэкендом</td></tr>
+              <tr><td class="k">gridservice</td><td class="n">34</td><td>основные элементы выполнения логики</td></tr>
+              <tr><td class="k">infra.eventreceiver</td><td class="n">25</td><td>обработчики событий БД</td></tr>
+              <tr><td class="k">infra.jobs</td><td class="n">12</td><td>выполняемые по расписанию задачи Quartz</td></tr>
+              <tr><td class="k">workflow-step</td><td class="n">8</td><td>шаги структурированных процессов</td></tr>
+              <tr><td><strong>всего</strong></td><td class="n"><strong>163</strong></td><td></td></tr>
+            </tbody>
+          </table></div>
+        </details>
+      </figure>
+
+      <h3>Правила — это данные, а не код</h3>
+      <p>
+        Оба решения — «документируем» и «не документируем» — записываются в одном
+        файле и одним синтаксисом. Разница в секции, и она принципиальная:
+        <code>exclude</code> — стадия <strong>до</strong> правил, а не участник
+        соревнования с ними.
+      </p>
+      <div class="cols c2">
+        <div>
+          <h4>Секция <code>rules:</code> — назначить вид</h4>
+          <pre>- id: <b>ignite.service</b>
+  kind: <u>ignite_service</u>     <span class="cm"># вид узла</span>
+  template: <u>ignite-service</u> <span class="cm"># по какому скелету писать</span>
+  priority: 95             <span class="cm"># кто победит при совпадении</span>
+  when:
+    all:
+      - type_kind: ["class", "record"]
+      - inherits: ["IService"]</pre>
+          <p class="tiny">Совпало несколько правил — побеждает больший
+          <code>priority</code>, но в узел пишутся <strong>все</strong> совпавшие:
+          по ним потом видно, почему выиграло не то, что ожидалось.</p>
+        </div>
+        <div>
+          <h4>Секция <code>exclude:</code> — отсеять с причиной</h4>
+          <pre>- id: <b>generated.schemas</b>
+  reason: <s>"Сгенерировано по XSD:</s>
+<s>    документ был бы пересказом схемы"</s>
+  priority: 100
+  when:
+    any:
+      - attribute: ["GenerateCode"]
+      - namespace_regex: [".*\.Schemas\..*"]</pre>
+          <p class="tiny"><code>reason</code> обязателен на уровне загрузки. Иначе
+          «не документируем 571» — снова безымянное число, ради которого отчёт
+          и переделывался.</p>
+        </div>
+      </div>
+      <div class="cols c3" style="margin-top:1.1rem">
+        <div class="card">
+          <h4>Десять предикатов</h4>
+          <p class="small">Атрибут, базовый тип, всё замыкание наследования, суффикс
+          и regex имени, namespace, путь, вид типа, модификатор, атрибут члена.
+          Комбинируются через <code>any</code>/<code>all</code>.</p>
+        </div>
+        <div class="card">
+          <h4>Порядок в файле не значит ничего</h4>
+          <p class="small">Побеждает больший <code>priority</code>, при равенстве —
+          меньший <code>id</code>. Иначе перестановка строк в YAML меняла бы
+          цифры отчёта и содержимое манифеста.</p>
+        </div>
+        <div class="card">
+          <h4>Опечатка — это отказ</h4>
+          <p class="small"><code>attribut</code> вместо <code>attribute</code> роняет
+          загрузку при старте, а не превращается в молча не срабатывающее правило.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════ 6 ══ -->
+    <section id="materialize">
+      <div class="eyebrow"><i>06</i> Шаг 2 · материализация</div>
+      <h2>Дерево документации обретает физическую форму</h2>
+      <p class="lede">
+        Создаётся или обновляется структура каталогов, метаданные документов
+        и ссылки на кодовую базу. На этом же шаге вычисляется, что с документом делать:
+        создать, отдать на ревью или не трогать вовсе.
+      </p>
+
+      <div class="cols c2a">
+        <div>
+          <h4>Статус описывает содержимое, решение — что делать</h4>
+          <div class="tw"><table>
+            <thead><tr><th>Условие</th><th class="k">Статус</th><th class="k">Решение</th></tr></thead>
+            <tbody>
+              <tr><td>файла нет</td><td class="k">missing</td><td class="k">write</td></tr>
+              <tr><td>есть пустые секции</td><td class="k">empty</td><td class="k">write</td></tr>
+              <tr><td>изменился <strong>контракт</strong> типа</td><td class="k">stale</td><td class="k">write</td></tr>
+              <tr><td>приёмки не было, а текст есть</td><td class="k">undeclared</td><td class="k">review</td></tr>
+              <tr><td>документ перенесён</td><td class="k">relocated</td><td class="k">review</td></tr>
+              <tr><td>изменилась <strong>реализация</strong> при том же контракте</td><td class="k">drifted</td><td class="k">review</td></tr>
+              <tr><td>иначе</td><td class="k">current</td><td class="k">skip</td></tr>
+            </tbody>
+          </table></div>
+          <p class="tiny" style="margin-top:.7rem">
+            Два хэша дают два уровня приоритета: <strong>смена контракта — переписать</strong>,
+            <strong>смена реализации при том же контракте — проверить</strong>.
+            Ни один из них не включает номера строк и пути, поэтому переформатирование
+            файла не создаёт работы.
+          </p>
+        </div>
+        <div class="card card--acc">
+          <h4>Идемпотентность</h4>
+          <ul class="ticks">
+            <li>Документ, который не изменился, <strong>не открывается на запись вовсе</strong>.</li>
+            <li>Сравнение идёт по нормализованному тексту, а не по байтам: иначе на репозитории
+            с <code>core.autocrlf</code> каждый документ был бы изменён при каждом прогоне.</li>
+            <li>Испорченный документ не переписывается, а помечается отказом:
+            единственный экземпляр принятых хэшей живёт в самом документе.</li>
+          </ul>
+        </div>
+      </div>
+
+      <h3>Зоны документа: что чьё</h3>
+      <p>
+        Ровно это делает возможной совместную работу инструмента и агента над одним
+        файлом. Инвариант, на котором всё стоит: <strong>разобрать документ и собрать
+        обратно — это байт в байт исходный текст</strong>.
+      </p>
+      <div class="zones">
+        <div class="zone tool">
+          <span class="zone-h">front matter · ключ docpipe: — пересобирается всегда</span>
+docpipe:<br>
+&nbsp;&nbsp;schema: materialize/1<br>
+&nbsp;&nbsp;node_id: type:src/Sample.Pricing.Api/…#…PricingController`0<br>
+&nbsp;&nbsp;doc_path: docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md<br>
+&nbsp;&nbsp;kind: controller&nbsp;&nbsp;·&nbsp;&nbsp;module: Sample.Pricing.Api&nbsp;&nbsp;·&nbsp;&nbsp;team: null<br>
+docpipe_state:&nbsp;&nbsp;<span style="opacity:.7">accepted: null&nbsp;&nbsp;·&nbsp;&nbsp;review: null</span>
+        </div>
+        <div class="zone tool">
+          <span class="zone-h">генерируемый блок — перезаписывается при каждом прогоне</span>
+&lt;!-- docpipe:generated:start --&gt;<br>
+`Sample.Pricing.Api.Controllers.PricingController` — public class, модуль `Sample.Pricing.Api`.<br>
+| POST | api/v1/Pricing | RecalculateAsync |<br>
+| GET&nbsp; | api/v1/Pricing/{id:guid} | GetAsync |<br>
+&lt;!-- docpipe:generated:end --&gt;
+        </div>
+        <div class="zone human">
+          <span class="zone-h">секции — никогда не затираются инструментом</span>
+## Назначение<br>
+&lt;!-- docpipe:section:start purpose --&gt;<br>
+Точка входа для пересчёта и чтения цен по инструментам…<br>
+&lt;!-- docpipe:section:end purpose --&gt;
+        </div>
+      </div>
+      <p class="tiny" style="margin-top:.8rem">
+        Чужие ключи front matter, посторонние секции и всё остальное в теле документа —
+        тоже неприкосновенны. Инструмент трогает только то, что объявил своим.
+      </p>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════ 7 ══ -->
+    <section id="agent">
+      <div class="eyebrow"><i>07</i> Шаг 3 · наполнение</div>
+      <h2>Основной этап, ради которого всё остальное</h2>
+      <p class="lede">
+        Если бы наполнение происходило вручную, решение не имело бы смысла.
+        Для каждого документа, который нужно создать или проверить, вызывается агент.
+        Документ уже содержит ссылки на кодовую базу и всю метаинформацию — агенту
+        не нужно искать, что читать.
+      </p>
+
+      <div class="cols c2">
+        <div class="card card--agent">
+          <h4>Задачи агента</h4>
+          <ol class="steps">
+            <li>Прочитать документ.</li>
+            <li>Прочитать источники документа — они перечислены в нём самом.</li>
+            <li>Сформировать описание по шаблону.</li>
+          </ol>
+        </div>
+        <div class="card card--acc">
+          <h4>Вход агента — файл-очередь, а не дерево каталогов</h4>
+          <p class="small"><code>docpipe worklist</code> пишет JSON: что делать,
+          с каким документом, почему и в каком порядке. Времени в файле нет —
+          иначе он менялся бы каждый прогон и его нельзя было бы сравнить.
+          Пустая очередь — это записанный файл с нулём записей: отсутствие файла
+          означало бы «прогон не состоялся».</p>
+        </div>
+      </div>
+
+      <h3>Шаблон элемента документации</h3>
+      <p>
+        Агенту передаётся не только элемент документации, но и шаблон — как именно
+        его нужно описать. Это решает две задачи сразу:
+      </p>
+      <ul class="ticks">
+        <li><strong>Разная структура у разных объектов.</strong> HTTP-методы актуальны
+        для контроллера и бессмысленны для grid-сервиса. Тринадцать скелетов на бэкенд
+        и фронт плюс три на бизнес-слой.</li>
+        <li><strong>Простота валидации итогового документа.</strong> Видно, что агент
+        не стёр нужное и дописывал только в отведённые блоки — потому что границы
+        блоков размечены, а не подразумеваются.</li>
+      </ul>
+      <p class="tiny">
+        Отдельное правило, которое легко нарушить: подсказки в шаблонах — только
+        HTML-комментарии. Иначе проверка «секция пуста» посчитает подсказку текстом,
+        и агент решит, что всё дерево уже написано.
+      </p>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════ 8 ══ -->
+    <section id="business">
+      <div class="eyebrow"><i>08</i> Бизнес-слой</div>
+      <h2>Как связать техническую документацию с бизнесовой</h2>
+      <p class="lede">
+        Основной недостаток любого reverse-engineering: из кода можно достать структуру,
+        но нельзя достать бизнес-процесс и бизнес-правило. Бизнес-документация
+        у нас уже существует — задача не в том, чтобы её генерировать, а в том,
+        чтобы <strong>сшить два слоя</strong>.
+      </p>
+
+      <p class="thesis">
+        Стрелка одна: <em>техника ссылается на бизнес</em>. Бизнес-документ не знает
+        ни идентификатора узла, ни пути документа, ни имени класса. Тогда рефакторинг
+        физически не может его сломать: худшее, что случится, — висящий якорь
+        на технической стороне, и чинит его тот же PR, который его сломал.
+      </p>
+
+      <div class="arrow3">
+        <div class="abox">
+          <h5>Реестры платформы</h5>
+          <p><code>services.config</code>, <code>Items_Basic.xml</code>,
+          <code>Items-Workflows.xml</code>, <code>Cashflow.Structure.xml</code></p>
+        </div>
+        <div class="ar">→</div>
+        <div class="abox anchor">
+          <h5>Якорь — точка входа</h5>
+          <p>имя grid-сервиса, <code>JOBTITLE</code>, <code>Id@Version</code> workflow,
+          пара «список + EventType», HTTP-маршрут</p>
+        </div>
+        <div class="ar">←</div>
+        <div class="abox">
+          <h5>Бизнес-документ</h5>
+          <p>процесс, написанный аналитиком: ссылается на якорь и ничего не знает
+          про код</p>
+        </div>
+      </div>
+
+      <p>
+        Часть бизнес-документов оформляется как <strong>точки входа</strong> в бизнес-процессы
+        и связывается с технической частью прямым маппингом через front matter.
+        При этом документируется именно та точка, где начинается работа нашей команды:
+        в ЭлектроКИ мы вступаем, когда нас вызвал оркестратор CFI, — этот шаг и есть
+        точка входа. Что было до неё, можно отметить, но это не обязательно.
+      </p>
+
+      <div class="tw" style="margin-top:1.2rem">
+        <table>
+          <thead><tr><th>Бизнес-процесс</th><th>На что маппится</th><th class="k">Вид якоря</th></tr></thead>
+          <tbody>
+            <tr><td>Кредитоёмкость</td><td>Job AutoML и контроллеры тестовых страниц</td><td class="k">job · route</td></tr>
+            <tr><td>Стандартный процесс</td><td>контроллеры и страницы фронтенда</td><td class="k">route · page</td></tr>
+            <tr><td>ЭлектроКИ</td><td>workflow</td><td class="k">Id@Version</td></tr>
+            <tr><td>Актуализация при пробитии ИПМ/МБП</td><td>event-receiver</td><td class="k">список + EventType</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Почему якорь, а не имя класса</h3>
+      <div class="cols c3">
+        <div class="card card--warn">
+          <h4>Точки входа объявлены не в коде</h4>
+          <p class="small">Джобы, workflow и обработчики событий диспетчеризуются
+          по данным из XML-реестров. Литерала конкретного workflow в C#
+          <strong>не существует структурно</strong> — искать его поиском по коду
+          означало бы вечно красный линт по всем 45 workflow.</p>
+        </div>
+        <div class="card card--warn">
+          <h4>Имя сервиса не выводится из класса</h4>
+          <p class="small"><code>name="CalcDxExcel"</code> при
+          <code>class="…CalcService.DXExcelCalcService"</code>. Имя — независимый
+          идентификатор, который знает вызывающий. Переименование класса якорь
+          не меняет; переименование имени ломает вызовы, то есть является
+          контрактным изменением.</p>
+        </div>
+        <div class="card card--warn">
+          <h4>Путь документа — не идентичность</h4>
+          <p class="small">Путь меняется от вещей без бизнес-смысла — вплоть до того,
+          что он меняется при правке <code>rules.yaml</code>, когда код вообще
+          не трогали.</p>
+        </div>
+      </div>
+
+      <p class="tiny" style="margin-top:1.2rem">
+        <code>business_hash</code> считается по разрешённым фактам и не содержит имён
+        C#-типов. Это проверяемая формулировка требования «рефакторинг без смены смысла
+        не создаёт работы»: переименование класса шага хэш не меняет, добавление шага —
+        меняет.
+      </p>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════ 9 ══ -->
+    <section id="run">
+      <div class="eyebrow"><i>09</i> Демо</div>
+      <h2>Как это работает</h2>
+      <p class="lede">
+        Все команды вызываются из корня репозитория АС CF. Инструмент установлен внутрь
+        него — в <code>docs/ml/docspipe</code>, — поэтому пути в конфигурации заданы
+        относительно корня репозитория, а не относительно каталога с настройками.
+      </p>
+
+      <pre><span class="cm"># 1. Сканирование: что вообще документировать</span>
+<b>docpipe scan</b> --root . \
+    --config docs/ml/docspipe/cashflow-docspipe/docpipe.yaml \
+    --rules  docs/ml/docspipe/cashflow-docspipe/rules.yaml \
+    --jobs 4
+
+<span class="cm"># создаёт дерево модулей и узлов плюс артефакт прогона</span>
+ls docs/ml/docspipe/cashflow-docspipe/artifacts
+<u>doc-tree.json</u>  <i>манифест: детерминированный, коммитится, читается в диффе</i>
+<u>doc-tree.run.json</u>  <i>сидкар: время, хост, статистика, файлы с ошибками разбора</i>
+
+<span class="cm"># 2. Материализация дерева. С --dry-run — только показать, что будет сделано</span>
+<b>docpipe materialize</b> docs/ml/docspipe/cashflow-docspipe/artifacts/doc-tree.json \
+    --root . \
+    --config docs/ml/docspipe/cashflow-docspipe/docpipe.yaml \
+    --rules  docs/ml/docspipe/cashflow-docspipe/rules.yaml \
+    --team ML
+
+<span class="cm"># 3. Очередь документов на создание и ревью</span>
+<b>docpipe worklist</b> docs/ml/docspipe/cashflow-docspipe/artifacts/doc-tree.json \
+    --root . --config docs/ml/docspipe/cashflow-docspipe/docpipe.yaml
+
+<span class="cm"># 4. Запуск агента: проход по очереди и вызов скилла</span>
+<em>npm exec --</em> ai-conductor run docs/ml/flows/agent-docs-update.mjs \
+    --input docs/ml/docspipe/cashflow-docspipe/artifacts/doc-worklist.json \
+    --skill create-documentation --web
+<span class="cm"># дальше — UI, где видно отдельные процессы и выполнение задач</span></pre>
+
+      <div class="cols c3" style="margin-top:1.3rem">
+        <div class="card card--acc">
+          <h4>Шаги 1–3 <span class="tag tag--acc">детерминированно</span></h4>
+          <p class="small">До 30 секунд на весь репозиторий. Можно гонять сколько угодно
+          раз: без изменений в коде результат не меняется, а документы не открываются
+          на запись.</p>
+        </div>
+        <div class="card card--agent">
+          <h4>Шаг 4 <span class="tag tag--agent">агент</span></h4>
+          <p class="small">Запускается пачками примерно по 4 процесса, каждая
+          отрабатывает около минуты. Общее время зависит только от числа документов,
+          требующих создания или ревью.</p>
+        </div>
+        <div class="card">
+          <h4><code>--dry-run</code> и <code>--stats</code></h4>
+          <p class="small">Обе ничего не пишут. Первая показывает дифф против
+          существующего манифеста, вторая — состояние решений и подсказки
+          по правилам. Это рабочий цикл настройки.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════ 10 ══ -->
+    <section id="config">
+      <div class="eyebrow"><i>10</i> Настройки</div>
+      <h2>Четыре файла, и они отвечают на разные вопросы</h2>
+      <p class="lede">
+        Разделение здесь не формальное: <code>rules.yaml</code> переносится между
+        проектами, <code>docpipe.yaml</code> — своё для каждого репозитория,
+        <code>ownership.yaml</code> меняется чаще кода, <code>registries.yaml</code> —
+        это карта того, где платформа объявляет точки входа.
+      </p>
+
+      <div class="cols c2" style="margin-top:1.4rem">
+        <div class="card card--acc">
+          <h4>docpipe.yaml — что документировать и где</h4>
+          <div class="tw"><table>
+            <thead><tr><th class="k">Ключ</th><th>Зачем</th></tr></thead>
+            <tbody>
+              <tr><td class="k">enrolled</td><td>какие проекты входят в документацию. Список <strong>только положительный</strong>: отрицаний нет</td></tr>
+              <tr><td class="k">exclude</td><td>куда не заходить вовсе. Складывается со встроенными <code>**/obj/**</code>, <code>**/bin/**</code>, <code>**/*.g.cs</code></td></tr>
+              <tr><td class="k">domains</td><td>смысловая группировка модулей поверх проектов</td></tr>
+              <tr><td class="k">rules</td><td>путь к набору правил классификации</td></tr>
+              <tr><td class="k">out, cache_dir</td><td>куда писать манифест и где держать кэш разбора</td></tr>
+              <tr><td class="k">templates, docs_root</td><td>откуда брать скелеты и куда класть документы</td></tr>
+              <tr><td class="k">ownership</td><td>путь к правилам владения</td></tr>
+              <tr><td class="k">registries, business_root</td><td>бизнес-слой: где реестры и где каталог процессов</td></tr>
+            </tbody>
+          </table></div>
+          <p class="tiny" style="margin-top:.7rem">
+            Ловушка, которая ничего не ломает видимо: <code>docs_root</code> и раскладка
+            замерзают в манифесте на шаге 1, а шаг 2 читает те же ключи заново.
+            Смена без повторного <code>scan</code> оставила бы все документы навсегда
+            в статусе <code>missing</code> — поэтому префикс сверяется, и расхождение
+            роняет прогон.
+          </p>
+        </div>
+
+        <div class="card card--acc">
+          <h4>rules.yaml — что считать сущностью</h4>
+          <p class="small">Две секции, и порядок между ними жёсткий:</p>
+          <dl class="defs" style="margin-top:.7rem">
+            <dt>exclude:</dt>
+            <dd>Стадия <strong>до</strong> правил, а не участник соревнования с ними.
+            Каждое решение несёт обязательное поле <code>reason</code> — иначе
+            «не документируем 4820» снова становится безымянным числом.
+            Главный рычаг — <code>require_public</code>.</dd>
+            <dt>rules:</dt>
+            <dd>Словарь сущностей проекта. Для АС CF настроено: контроллер,
+            grid-сервис, ignite-compute, workflow, провайдер, репозиторий, сервис.</dd>
+          </dl>
+          <p class="tiny" style="margin-top:.7rem">
+            Следствие порядка: <code>priority: 1000</code> у правила классификации
+            не отменит исключающее правило с <code>priority: 0</code> — их приоритеты
+            не сравниваются никогда. Вырез внутри отсева делается через
+            <code>unless</code>.
+          </p>
+        </div>
+
+        <div class="card card--agent">
+          <h4>ownership.yaml — кто владелец документа</h4>
+          <p class="small">Считается на шаге 2, а не в манифесте: состав команд меняется
+          чаще кода, и попав в <code>doc-tree.json</code>, владение сделало бы манифест
+          зависящим от оргструктуры.</p>
+          <p class="small" style="margin-top:.6rem">Владелец определяется <strong>по узлу,
+          а не по модулю</strong>: соблазн «команда = проект» разбивается о шэренный
+          <code>.csproj</code> — ровно ту ситуацию, ради которой владение и заводится.
+          Восемь предикатов, правила только положительные.</p>
+          <p class="tiny" style="margin-top:.6rem">
+            Сейчас файл — заготовка: команд нет, правил нет, у всех документов
+            <code>team: null</code>. Пустой файл здесь лучше выдуманного.
+          </p>
+        </div>
+
+        <div class="card card--agent">
+          <h4>registries.yaml — где объявлены точки входа</h4>
+          <div class="tw"><table>
+            <thead><tr><th class="k">Реестр</th><th>Что объявляет</th><th class="k">Якорь</th></tr></thead>
+            <tbody>
+              <tr><td class="k">grid-services</td><td>сервисы кластера Ignite и их команды</td><td class="k">@name</td></tr>
+              <tr><td class="k">jobs</td><td>расписания Quartz, интерфейс задания</td><td class="k">JOBTITLE</td></tr>
+              <tr><td class="k">workflows</td><td>определения workflow-core и их шаги</td><td class="k">Id + Version</td></tr>
+              <tr><td class="k">structure</td><td>списки, поля, формы, обработчики событий</td><td class="k">InnerName + EventType</td></tr>
+            </tbody>
+          </table></div>
+          <p class="tiny" style="margin-top:.7rem">
+            Это данные, а не код: добавить вид триггера — значит дописать сюда реестр.
+            Kafka пока пятый и ненайденный: источника перечня топиков в репозитории нет,
+            ведётся вручную.
+          </p>
+          <p class="tiny" style="margin-top:.5rem">
+            <strong>Важно для демо:</strong> отдельного <code>business.yaml</code>
+            не существует. Бизнес-слой настраивается двумя ключами в
+            <code>docpipe.yaml</code> — <code>registries</code> и <code>business_root</code>.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════ 11 ══ -->
+    <section id="cli">
+      <div class="eyebrow"><i>11</i> Справка</div>
+      <h2>Команды библиотеки</h2>
+      <p class="lede">
+        Полный список того, что умеет <code>docpipe</code>. Команды, которые ничего
+        не пишут, отмечены — их можно запускать без последствий в любой момент.
+      </p>
+
+      <h3>Построение и проверка манифеста</h3>
+      <div class="tw"><table>
+        <thead><tr><th class="k">Команда</th><th>Назначение</th><th class="k">Пишет?</th></tr></thead>
+        <tbody>
+          <tr><td class="k">scan</td><td>построить дерево документации по исходникам .NET</td><td class="k">да</td></tr>
+          <tr><td class="k">scan --stats</td><td>состояние решений и подсказки по правилам — рабочий цикл настройки</td><td class="k">нет</td></tr>
+          <tr><td class="k">scan --dry-run</td><td>дифф против существующего манифеста</td><td class="k">нет</td></tr>
+          <tr><td class="k">symbols</td><td>какие именно символы остались без решения; отладка правил</td><td class="k">нет</td></tr>
+          <tr><td class="k">validate</td><td>схема плюс инварианты, которые она не покрывает; код 1 при нарушении</td><td class="k">нет</td></tr>
+          <tr><td class="k">stats</td><td>состав готового манифеста</td><td class="k">нет</td></tr>
+          <tr><td class="k">diff</td><td>что изменилось между двумя манифестами: added, removed, reclassified, moved, signature_changed</td><td class="k">нет</td></tr>
+          <tr><td class="k">schema</td><td>сгенерировать JSON Schema из моделей</td><td class="k">да</td></tr>
+          <tr><td class="k">version</td><td>показать версию docpipe</td><td class="k">нет</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Документы</h3>
+      <div class="tw"><table>
+        <thead><tr><th class="k">Команда</th><th>Назначение</th><th class="k">Пишет?</th></tr></thead>
+        <tbody>
+          <tr><td class="k">materialize</td><td>создать или обновить документы по манифесту</td><td class="k">да</td></tr>
+          <tr><td class="k">worklist</td><td>записать очередь документов для внешнего исполнителя шага 3</td><td class="k">да</td></tr>
+          <tr><td class="k">docs status</td><td>что делать с каждым документом; отчёт человеку и CI</td><td class="k">нет</td></tr>
+          <tr><td class="k">docs accept</td><td>зафиксировать соответствие документа коду</td><td class="k">да</td></tr>
+          <tr><td class="k">docs adopt</td><td>перенести документ вручную</td><td class="k">да</td></tr>
+          <tr><td class="k">docs owners</td><td>кто владеет документами и что не так с правилами владения</td><td class="k">нет</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Фронтенд</h3>
+      <div class="tw"><table>
+        <thead><tr><th class="k">Команда</th><th>Назначение</th><th class="k">Пишет?</th></tr></thead>
+        <tbody>
+          <tr><td class="k">web scan</td><td>построить дерево документации по исходникам фронтенда</td><td class="k">да</td></tr>
+          <tr><td class="k">web link</td><td>свести два манифеста: кто зовёт какой эндпоинт и чего не хватает</td><td class="k">да</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Бизнес-слой</h3>
+      <div class="tw"><table>
+        <thead><tr><th class="k">Команда</th><th>Назначение</th><th class="k">Пишет?</th></tr></thead>
+        <tbody>
+          <tr><td class="k">anchors list</td><td>инвентаризация точек входа по реестрам платформы</td><td class="k">нет</td></tr>
+          <tr><td class="k">anchors explain</td><td>всё, что известно про один якорь: реестр, реализация, узел</td><td class="k">нет</td></tr>
+          <tr><td class="k">anchors which</td><td>какими якорями вызывается этот тип</td><td class="k">нет</td></tr>
+          <tr><td class="k">business new</td><td>скелет бизнес-документа по выведенному из идентификатора пути</td><td class="k">да</td></tr>
+          <tr><td class="k">business build</td><td>пересобрать генерируемые блоки бизнес-документов</td><td class="k">да</td></tr>
+          <tr><td class="k">business status</td><td>что разошлось с реализацией; вход агента</td><td class="k">нет</td></tr>
+          <tr><td class="k">business accept</td><td>зафиксировать соответствие документа реализации</td><td class="k">да</td></tr>
+          <tr><td class="k">business lint</td><td>восемь проверок каталога и отчёт «сколько ещё писать»</td><td class="k">нет</td></tr>
+        </tbody>
+      </table></div>
+
+      <p class="tiny" style="margin-top:1rem">
+        Полезные флаги <code>scan</code>: <code>--jobs N</code> — разбор в N процессов;
+        <code>--scope DIR</code> вместе с <code>--from-manifest</code> — перестроить
+        только один модуль; <code>--fail-on-undecided</code> — код 1, если про какой-то
+        тип решение не принято; <code>--no-cache</code> — не использовать кэш разбора.
+      </p>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════ 12 ══ -->
+    <section id="cost">
+      <div class="eyebrow"><i>12</i> Затраты</div>
+      <h2>Сколько стоит прогон и поддержание</h2>
+
+      <figure class="viz">
+        <figcaption>
+          <p class="viz-title">Полный прогон на АС CF: 17 979 файлов, 490 проектов</p>
+          <p class="viz-sub">Секунды. Первая полоса — верхняя граница, разбор
+          в один процесс. Она здесь не для того, чтобы её показывать, а чтобы было
+          видно, сколько даёт параллельность.</p>
+        </figcaption>
+        <div class="bars">
+          <div class="bar-row" tabindex="0" data-tip="холодный прогон, 1 процесс: 129,4 с&#10;пустой кэш, --jobs 1 — верхняя граница">
+            <div class="bar-label">Холодный, 1 процесс<span>пустой кэш</span></div>
+            <div class="bar-track"><div class="bar" style="--w:86.0%"></div><span class="bar-val">129,4 с</span></div></div>
+          <div class="bar-row" tabindex="0" data-tip="холодный прогон, --jobs 4: 17,8 с&#10;в 7,3 раза быстрее одного процесса">
+            <div class="bar-label">Холодный, <code>--jobs 4</code><span>рабочий режим в CI</span></div>
+            <div class="bar-track"><div class="bar" style="--w:11.8%"></div><span class="bar-val">17,8 с</span></div></div>
+          <div class="bar-row" tabindex="0" data-tip="тёплый кэш, --jobs 4: 8,5 с&#10;попадание определяется хэшем содержимого,&#10;поэтому checkout другой ветки кэш не сбивает">
+            <div class="bar-label">Тёплый кэш, <code>--jobs 4</code><span>повторный прогон</span></div>
+            <div class="bar-track"><div class="bar" style="--w:5.6%"></div><span class="bar-val">8,5 с</span></div></div>
+        </div>
+        <div class="legend"><span>Замер на боевом репозитории, 24 193 символа. Время — из сидкара
+        <code>doc-tree.run.json</code>, без старта интерпретатора.</span></div>
+        <details class="vt">
+          <summary>таблицей</summary>
+          <div class="tw"><table>
+            <thead><tr><th>Режим</th><th class="n">Время</th><th>Примечание</th></tr></thead>
+            <tbody>
+              <tr><td>холодный, <code>--jobs 1</code></td><td class="n">129,4 с</td><td>верхняя граница; так не запускают</td></tr>
+              <tr><td>холодный, <code>--jobs 4</code></td><td class="n">17,8 с</td><td>источник истины в CI</td></tr>
+              <tr><td>первый прогон с кэшем</td><td class="n">19,9 с</td><td>дороже холодного: кэш ещё и пишется</td></tr>
+              <tr><td>тёплый кэш, <code>--jobs 4</code></td><td class="n">8,5 с</td><td>результат побитово равен полному разбору</td></tr>
+            </tbody>
+          </table></div>
+        </details>
+      </figure>
+
+      <div class="cols c2">
+        <div class="card card--acc">
+          <h4>Отдельный прогон</h4>
+          <ul class="ticks">
+            <li><strong>Без AI-агента — до 30 секунд</strong> на весь репозиторий:
+            17,8 с холодный прогон, 8,5 с на тёплом кэше, плюс материализация
+            и построение очереди.</li>
+            <li><strong>С агентом</strong> — зависит от числа документов, требующих
+            создания или ревью. Пачками примерно по 4 процесса, каждая около минуты.</li>
+          </ul>
+        </div>
+        <div class="card card--warn">
+          <h4>Поддержание</h4>
+          <p class="small">Инструмент требует настройки всех конфигурационных файлов
+          и поддержания их в актуальном состоянии. Основная работа уже сделана;
+          потенциально потребуются минорные правки при появлении новых видов
+          документируемых элементов.</p>
+          <p class="small" style="margin-top:.6rem">Признак, что правка нужна, приходит
+          сам: новый тип, про который решения нет, виден в отчёте
+          и роняет CI при <code>--fail-on-undecided</code>.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════ 13 ══ -->
+    <section id="usage">
+      <div class="eyebrow"><i>13</i> Применение</div>
+      <h2>Сценарии использования</h2>
+
+      <div class="cols c2" style="margin-top:1.2rem">
+        <div class="card card--acc">
+          <h4>Обновление по расписанию</h4>
+          <p class="small">Раз в релиз проходим полный пайплайн обновления. Результат
+          заходит отдельным PR в <code>team</code> при отрезании с <code>dev</code>.</p>
+          <p class="small" style="margin-top:.6rem">Отдельный PR — принципиально:
+          дифф документации не смешивается с диффом кода, и его можно ревьюить
+          как документацию, а не как побочный эффект.</p>
+        </div>
+        <div class="card card--acc">
+          <h4>Создание скелета при подтягивании dev/team</h4>
+          <p class="small">Детерминированная часть занимает секунды, поэтому техническую
+          часть документации можно держать актуальной постоянно:</p>
+          <ul class="ticks" style="margin-top:.6rem">
+            <li>подтянули к себе незадокументированную часть — прогнали детерминированную
+            часть пайплайна;</li>
+            <li>закончили новый функционал — прогнали те же команды, чтобы создать
+            скелет документа вместе с кодом.</li>
+          </ul>
+        </div>
+      </div>
+
+      <p class="thesis" style="margin-top:1.6rem">
+        Смысл второго сценария не в скорости, а в моменте: скелет документа появляется
+        <em>тогда же, когда код</em>, и попадает в тот же PR. Документация перестаёт быть
+        отдельной задачей, которую всегда откладывают.
+      </p>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════ 14 ══ -->
+    <section id="limits">
+      <div class="eyebrow"><i>14</i> Честные границы</div>
+      <h2>Что готово и чего пока нет</h2>
+
+      <div class="cols c2">
+        <div>
+          <h4>Готово</h4>
+          <ul class="ticks done">
+            <li><strong>Шаг 1</strong> — детерминированный манифест по исходникам .NET</li>
+            <li><strong>Шаг 2</strong> — документы, зоны, статусы, приёмка</li>
+            <li><strong>Бизнес-слой</strong> — точки входа, каталог процессов,
+            <code>business_hash</code>, линт</li>
+            <li>1458 тестов, детерминизм проверяется отдельными тестами на генерированном
+            дереве</li>
+          </ul>
+        </div>
+        <div>
+          <h4>Что дальше</h4>
+          <ul class="ticks todo">
+            <li><strong>Шаг 3</strong> — очередь агенту готова, сам исполнитель живёт
+            вне этого репозитория</li>
+            <li><strong>Фронтенд на АС CF</strong> — шаг <code>web</code> готов
+            в инструменте, перенос на целевой репозиторий и отладка предстоят</li>
+            <li><strong>Парсер для Python</strong> — третий язык АС CF; механика та же,
+            меняются грамматика и набор правил</li>
+            <li><strong>Общий граф зависимостей</strong> — сейчас связи собираются
+            по слоям (фронт↔бэк, якорь↔узел); общий граф даёт сквозной путь
+            от страницы до провайдера</li>
+            <li><strong>Наполнение бизнес-документации</strong> — каталог, якоря
+            и линт готовы, писать процессы предстоит аналитикам</li>
+          </ul>
+        </div>
+      </div>
+
+      <p class="thesis">
+        Одна вещь, которую стоит запомнить из всего этого: <em>инструмент не решает,
+        что документация хорошая</em>. Он решает, что она <em>существует, актуальна
+        и её расхождение с кодом видно</em>. Всё остальное — работа агента и ревьюера.
+      </p>
+    </section>
+
+    <footer>
+      Подробности по каждому решению — в проектной документации репозитория:
+      <code>README.md</code>, <code>docs/parser-architecture.md</code>,
+      <code>docs/materialize.md</code>, <code>docs/business-layer.md</code>,
+      <code>docs/web.md</code>, <code>CASHFLOW.md</code>.
+      Решения по символам, виды узлов и время прогона — с прогона на репозитории
+      АС CF (17 979 файлов, 490 проектов). Скорость разбора и пример незаконченной
+      настройки — с четырёх открытых .NET-репозиториев.
+    </footer>
+
+    </main>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // Тема: сохраняется, но по умолчанию следует системной.
+  var root = document.documentElement;
+  var btn = document.getElementById("theme");
+  try {
+    var saved = localStorage.getItem("docpipe-theme");
+    if (saved === "dark" || saved === "light") root.setAttribute("data-theme", saved);
+  } catch (e) { /* приватный режим — просто следуем системной теме */ }
+  btn.addEventListener("click", function () {
+    var cur = root.getAttribute("data-theme");
+    var isDark = cur ? cur === "dark"
+                     : matchMedia("(prefers-color-scheme: dark)").matches;
+    var next = isDark ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("docpipe-theme", next); } catch (e) {}
+  });
+
+  // Полоса прогресса чтения.
+  var rail = document.getElementById("rail");
+  function progress() {
+    var h = document.documentElement.scrollHeight - window.innerHeight;
+    rail.style.width = (h > 0 ? (window.scrollY / h) * 100 : 0) + "%";
+  }
+  addEventListener("scroll", progress, { passive: true });
+  addEventListener("resize", progress);
+  progress();
+
+  // Подсветка текущего раздела в оглавлении.
+  var links = Array.prototype.slice.call(document.querySelectorAll(".toc a"));
+  var byId = {};
+  links.forEach(function (a) { byId[a.getAttribute("href").slice(1)] = a; });
+  if ("IntersectionObserver" in window) {
+    var seen = {};
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) { seen[en.target.id] = en.isIntersecting; });
+      var active = null;
+      links.forEach(function (a) {
+        var id = a.getAttribute("href").slice(1);
+        if (seen[id] && !active) active = a;
+        a.classList.remove("on");
+      });
+      if (active) active.classList.add("on");
+    }, { rootMargin: "-10% 0px -70% 0px" });
+    document.querySelectorAll("section[id]").forEach(function (s) { io.observe(s); });
+  }
+
+  // Подсказки графиков. Наведение и фокус с клавиатуры — один путь.
+  var tip = document.getElementById("tip");
+  function show(el) {
+    var text = el.getAttribute("data-tip");
+    if (!text) return;
+    var r = el.getBoundingClientRect();
+    tip.textContent = text;
+    tip.classList.add("on");
+    var x = Math.min(Math.max(r.left + r.width / 2, 130), window.innerWidth - 130);
+    tip.style.left = x + "px";
+    tip.style.top = r.top + "px";
+  }
+  function hide() { tip.classList.remove("on"); }
+  document.querySelectorAll("[data-tip]").forEach(function (el) {
+    el.addEventListener("mouseenter", function () { show(el); });
+    el.addEventListener("mouseleave", hide);
+    el.addEventListener("focus", function () { show(el); });
+    el.addEventListener("blur", hide);
+  });
+  addEventListener("scroll", hide, { passive: true });
+})();
+</script>
+</body>
+</html>
