@@ -1,13 +1,12 @@
 """Почему документ, который лежит на диске, не виден шагу 2.
 
-`scan_docs` отбрасывает файл пятью разными способами и **ни об одном не сообщает**:
-узел просто получает `missing`, а сам файл не попадает в отчёт вообще — ни сиротой,
-ни перенесённым. Отличить «документа нет» от «документ есть, но отброшен» по выводу
-`docs status` и `worklist` невозможно, и именно это делает диагностику долгой.
+Сам прогон теперь про такой файл сообщает: он получает `broken` с отказом
+(`shadowed_docs` в `docpipe/materialize/plan.py`), и `create` поверх него
+не делается. Но статус говорит «обход его не вернул», а не **почему** —
+причин пять, и различить их по выводу `docs status` нельзя. Это делает скрипт.
 
-Скрипт повторяет фильтры `scan_docs` по одному и печатает причину для каждого узла,
-чей документ существует на диске, но не был принят. Фильтры импортируются из самого
-`docpipe`, а не переписываются здесь: копия разошлась бы с оригиналом и стала бы врать.
+Фильтры импортируются из самого `docpipe`, а не переписываются здесь: копия
+однажды уже разошлась с оригиналом (BOM) и стала врать.
 
     uv run python tools/why_missing.py МАНИФЕСТ --config docpipe.yaml --root .
 """
@@ -19,7 +18,12 @@ from pathlib import Path
 from docpipe.config import load_config
 from docpipe.discovery import matches_glob
 from docpipe.materialize.document import DocumentError, read_document
-from docpipe.materialize.plan import DEFAULT_DOCS_SCAN_EXCLUDE, SCHEMA_PREFIX
+from docpipe.materialize.plan import (
+    DEFAULT_DOCS_SCAN_EXCLUDE,
+    SCHEMA_PREFIX,
+    opens_front_matter,
+    scan_docs,
+)
 from docpipe.model import Manifest
 
 
@@ -32,16 +36,17 @@ def drop_reason(path: Path, root: Path, globs: list[str]) -> str | None:
             return f"отброшен фильтром docs_scan_exclude/встроенным: {glob}"
 
     try:
-        head = path.read_bytes()[:4]
+        head = path.read_bytes()[:8]
     except OSError as exc:
-        return f"файл не читается: {exc}"
+        return f"файл не читается: {exc} (станет broken, а не missing)"
 
-    if head not in (b"---\n", b"---\r"):
-        if head[:3] == b"\xef\xbb\xbf":
-            return "UTF-8 BOM в начале файла: пересохраните без BOM"
+    if not opens_front_matter(head):
         if head[:2] in (b"\xff\xfe", b"\xfe\xff"):
             return "файл в UTF-16: пересохраните в UTF-8"
-        return f"первые 4 байта не '---': {head!r} (нет front matter или пустая строка перед ним)"
+        return (
+            f"файл не открывается строкой '---': {head!r}"
+            " (нет front matter либо пустая строка перед ним)"
+        )
 
     try:
         _, parsed = read_document(path)
@@ -90,16 +95,27 @@ def main() -> int:
     dropped: list[tuple[str, str]] = []
     accepted = 0
 
+    # Сверка идёт с ФАКТИЧЕСКИМ выходом обхода, а не только с фильтрами: `rglob`
+    # не заходит в каталоги за симлинком, и такой файл проходит все фильтры
+    # по одному, оставаясь при этом невидимым.
+    seen = {doc.path for doc in scan_docs(root, settings.docs_root, settings.docs_scan_exclude)}
+
     for node in sorted(manifest.nodes, key=lambda item: item.doc_path):
         path = root / node.doc_path
         if not path.is_file():
             absent += 1
             continue
-        reason = drop_reason(path, root, globs)
-        if reason is None:
+        if node.doc_path in seen:
             accepted += 1
-        else:
-            dropped.append((node.doc_path, reason))
+            continue
+        dropped.append(
+            (
+                node.doc_path,
+                drop_reason(path, root, globs)
+                or "все фильтры пройдены, но обход файл не вернул:"
+                " каталог за симлинком (rglob в такие не заходит)",
+            )
+        )
 
     print(f"\nфайл есть и принят:      {accepted}")
     print(f"файла на doc_path нет:   {absent}  (это честный missing либо перенос)")

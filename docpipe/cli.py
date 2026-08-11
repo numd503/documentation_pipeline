@@ -48,6 +48,7 @@ from docpipe.materialize.plan import (
     build_plan,
     check_links,
     scan_docs,
+    shadowed_docs,
     with_links,
 )
 from docpipe.materialize.status import (
@@ -876,6 +877,10 @@ def _prepare(
             teams=teams,
             accept=accept,
             force=force,
+            docs_scan_exclude=tuple(settings.docs_scan_exclude),
+            # Проверка по диску, а не по обходу: узел без файла и узел, чей файл
+            # обход не увидел, — разные состояния, и различить их можно только так.
+            shadowed=tuple(shadowed_docs(root, manifest, existing)),
         ),
     )
     return Step2Inputs(

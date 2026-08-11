@@ -432,3 +432,114 @@ def test_materialize_does_not_import_business() -> None:
     столько, сколько ей передали снаружи.
     """
     assert _imports_of("docpipe/materialize", "docpipe.business") == []
+
+
+# --------------------------------------------------------------------------------------
+# Документ, которого обход не увидел
+# --------------------------------------------------------------------------------------
+
+
+def test_bom_document_is_not_recreated(tmp_path: Path) -> None:
+    """Документ, пересохранённый Блокнотом, остаётся своим.
+
+    Отсев по первым байтам шёл до `utf-8-sig`: файл считался чужим, узел
+    получал `missing`, а `missing` — это `create` поверх написанного.
+    """
+    _run(tmp_path)
+    _write_section(tmp_path, CONTROLLER, "purpose", "Авторский текст.")
+    path = tmp_path / CONTROLLER
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+
+    result = _run(tmp_path)
+
+    assert result.exit_code == 0
+    assert "missing" not in result.stdout
+    assert "Авторский текст." in path.read_text(encoding="utf-8")
+
+
+def test_unrecognised_document_is_refused_not_overwritten(tmp_path: Path) -> None:
+    """Файл на пути узла есть, но обход его не вернул — отказ, а не перезапись.
+
+    Здесь у документа убран `docpipe.schema`; способов стать невидимым больше
+    (симлинк, `docs_scan_exclude`, права), и проверка одна на все: файл на месте
+    узла есть — значит, содержимое неизвестно и трогать его нельзя.
+    """
+    _run(tmp_path)
+    _write_section(tmp_path, CONTROLLER, "purpose", "Авторский текст.")
+    path = tmp_path / CONTROLLER
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("  schema: materialize/1\n", ""),
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    result = _run(tmp_path)
+
+    assert result.exit_code == 1
+    assert "Отказ, файл не тронут:" in result.stdout
+    assert path.read_bytes() == before
+
+
+def test_unrecognised_document_is_not_overwritten_even_with_force(tmp_path: Path) -> None:
+    """`--force` пересоздаёт испорченный документ, сохранив копию, но здесь
+    пересоздавать не из чего: что лежит в файле, инструмент не знает."""
+    _run(tmp_path)
+    path = tmp_path / CONTROLLER
+    path.write_text("--- \nчужой файл на месте документа\n", encoding="utf-8")
+
+    result = _run(tmp_path, "--force")
+
+    assert result.exit_code == 1
+    assert path.read_text(encoding="utf-8") == "--- \nчужой файл на месте документа\n"
+    assert not list(tmp_path.rglob("*.md.broken"))
+
+
+def test_docs_scan_exclude_over_the_docs_tree_stops_the_run(tmp_path: Path) -> None:
+    """Шаблон обхода, накрывший само дерево документов, роняет прогон.
+
+    Иначе `materialize` пишет туда, куда `docs status` не заходит: все документы
+    навсегда `missing` и переписываются каждым прогоном, молча.
+    """
+    _run(tmp_path)
+    config = tmp_path / "docpipe.yaml"
+    config.write_text('docs_scan_exclude:\n  - "docs/modules/**"\n', encoding="utf-8")
+    _write_section(tmp_path, CONTROLLER, "purpose", "Авторский текст.")
+    snapshot = _tree(tmp_path / "docs")
+
+    result = _run(tmp_path, "--config", str(config))
+
+    assert result.exit_code == 1
+    assert "docs_scan_exclude" in result.stdout
+    assert _tree(tmp_path / "docs") == snapshot
+
+
+def test_apply_refuses_to_create_over_an_existing_file(tmp_path: Path) -> None:
+    """Структурный запрет в самой записи, независимо от того, кто собрал план.
+
+    `create` означает «файла не было». Если он есть, картина дерева была
+    неполной, и запись затёрла бы чужой текст без копии.
+    """
+    from docpipe.materialize.apply import apply_plan
+    from docpipe.materialize.plan import MaterializePlan, PlannedDoc
+
+    path = tmp_path / "docs" / "x.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("старое", encoding="utf-8")
+    plan = MaterializePlan(
+        documents=[
+            PlannedDoc(
+                doc_path="docs/x.md",
+                node_id="type:x",
+                file_action="create",
+                status="missing",
+                agent_action="write",
+                content="новое",
+            )
+        ]
+    )
+
+    result = apply_plan(plan, tmp_path)
+
+    assert result.created == []
+    assert result.errors and "уже существует" in result.errors[0]
+    assert path.read_text(encoding="utf-8") == "старое"
