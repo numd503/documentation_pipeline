@@ -17,6 +17,7 @@
 отношения не имеет.
 """
 
+from docpipe.hashing import stable_hash
 from docpipe.model import DocNode
 
 PAGE_KIND = "page"
@@ -73,7 +74,40 @@ def absorb(nodes: list[DocNode]) -> list[DocNode]:
             continue
         absorbed[reached.id] = pages[0]
 
+    inside: dict[str, list[DocNode]] = {}
+    for node in nodes:
+        if node.id in absorbed:
+            inside.setdefault(absorbed[node.id], []).append(node)
+
     return [
-        node.model_copy(update={"absorbed_by": absorbed[node.id]}) if node.id in absorbed else node
+        node.model_copy(update={"absorbed_by": absorbed[node.id]})
+        if node.id in absorbed
+        else _with_aggregate_hashes(node, inside.get(node.id, []))
         for node in nodes
     ]
+
+
+def _with_aggregate_hashes(page: DocNode, inside: list[DocNode]) -> DocNode:
+    """Дописать в хэши страницы хэши поглощённых узлов.
+
+    Без этого правка сервиса, живущего внутри страницы, не помечает её документ
+    устаревшим, и раздел «Логика» остаётся ложью — при том, что своего документа
+    у сервиса больше нет и заметить это негде.
+
+    Два хэша меняются от разного, и это различие сохраняется:
+
+    - `impl_hash` — от **тела** поглощённых: переписали метод сервиса, документ
+      страницы устарел;
+    - `signature_hash` — от **состава**: сервис ушёл из страницы или пришёл в неё,
+      и документ устарел, даже если ни строки в коде не изменилось.
+    """
+    if not inside:
+        return page
+
+    members = sorted(node.id for node in inside)
+    return page.model_copy(
+        update={
+            "impl_hash": stable_hash([page.impl_hash, *sorted(node.impl_hash for node in inside)]),
+            "signature_hash": stable_hash([page.signature_hash, *members]),
+        }
+    )

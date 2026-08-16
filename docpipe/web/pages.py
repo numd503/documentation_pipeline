@@ -28,6 +28,7 @@ from docpipe.model import DocNode, Manifest
 
 PAGE_KIND: Final = "page"
 COMPONENT_KIND: Final = "component"
+STATE_KIND: Final = "state"
 
 # Глубина обхода зависимостей по умолчанию. Два шага — это «страница ->
 # сервис» и «страница -> сервис -> сервис»: столько и нужно, чтобы увидеть
@@ -202,6 +203,25 @@ def _children_of(routes: list[PageRoute], every: list[list[PageRoute]]) -> int:
     return found
 
 
+def state_name(node: DocNode) -> str:
+    """Имя стейта из декоратора `@State({ name: 'innerDebt' })`.
+
+    Именно оно, а не имя класса: переименование `DebtState` смысла не меняет,
+    а `name` — контракт, по которому стейт селектят и который видит человек.
+    """
+    if node.symbol is None:
+        return ""
+    for attribute in node.symbol.attributes:
+        if attribute.name == "State" and "name" in attribute.named_args:
+            return attribute.named_args["name"]
+    return ""
+
+
+def index_by_fqn(manifest: Manifest) -> dict[str, DocNode]:
+    """FQN -> узел. Публичная: этим же индексом ходит по графу шаг 2."""
+    return _index_by_fqn(manifest)
+
+
 def _index_by_fqn(manifest: Manifest) -> dict[str, DocNode]:
     """FQN -> узел. Побеждает лексикографически меньший id, а не порядок в файле."""
     found: dict[str, DocNode] = {}
@@ -235,7 +255,7 @@ def _reachable(node: DocNode, by_fqn: dict[str, DocNode], depth: int) -> dict[st
     return seen
 
 
-def _called(
+def called(
     node: DocNode, by_fqn: dict[str, DocNode], depth: int
 ) -> tuple[list[PageCall], dict[str, tuple[int, list[str]]]]:
     """Вызовы, до которых страница доходит **по вызовам**, и кто в этом участвовал.
@@ -382,7 +402,7 @@ def _notes(page_routes: list[PageRoute], members: int, template: bool, calls: in
 def _page_of(
     node: DocNode, by_fqn: dict[str, DocNode], by_id: dict[str, DocNode], depth: int
 ) -> Page:
-    calls, participants = _called(node, by_fqn, depth)
+    calls, participants = called(node, by_fqn, depth)
 
     # Участники — те, до чьих членов страница дошла **по вызовам**. Список
     # внедрённого сюда не входит: сервис, который внедрили и не зовут,

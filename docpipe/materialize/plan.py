@@ -732,6 +732,20 @@ def _blocking_errors(
     return errors
 
 
+def _orphan_reason(node_id: str | None, absorbed: dict[str, str], titles: dict[str, str]) -> str:
+    """Почему файл осиротел. Две причины, и путать их нельзя.
+
+    «Узла нет» означает, что класс исчез или перестал документироваться.
+    «Поглощён страницей» — что текст переехал в её документ, и человеку надо
+    решить, перенести его туда или отложить. Одна формулировка на оба случая
+    отправила бы половину сирот в неправильную работу.
+    """
+    page = absorbed.get(node_id or "")
+    if page:
+        return f"описывается внутри страницы {titles.get(page, page)}"
+    return "узла с таким id в манифесте нет"
+
+
 def build_plan(
     manifest: Manifest,
     existing: list[ExistingDoc],
@@ -752,10 +766,18 @@ def build_plan(
         node.id: (owner_of(node, ownership).team if ownership else None) for node in manifest.nodes
     }
     by_path = {doc.path: doc for doc in existing if doc.error is None}
-    node_ids = {node.id for node in manifest.nodes}
+
+    # Узлы, у которых есть СВОЙ документ. Поглощённый странице своего файла
+    # не получает: он описывается разделом её документа, и второй файл про то же
+    # разошёлся бы с ним на первой правке. Файлы, оставшиеся от таких узлов,
+    # становятся сиротами и называются в отчёте — молча удалять их нельзя.
+    documented = [node for node in manifest.nodes if not node.absorbed_by]
+    absorbed_by_id = {node.id: node.absorbed_by for node in manifest.nodes if node.absorbed_by}
+    page_titles = {node.id: node.title for node in manifest.nodes}
+    node_ids = {node.id for node in documented}
 
     broken = {doc.path: doc for doc in existing if doc.error is not None}
-    node_paths = {node.doc_path for node in manifest.nodes}
+    node_paths = {node.doc_path for node in documented}
 
     documents: list[PlannedDoc] = []
     for path, doc in sorted(broken.items()):
@@ -782,14 +804,14 @@ def build_plan(
     # Множество строится по ПОЛНОМУ набору узлов, даже при `--team`: фильтр
     # сужает то, что пишется, множество сравнения — никогда.
     unplaced = [doc for doc in existing if doc.error is None and doc.path not in node_paths]
-    homeless = [node for node in manifest.nodes if node.doc_path not in by_path]
+    homeless = [node for node in documented if node.doc_path not in by_path]
     relocations, notes = match_relocations(homeless, unplaced)
     relocated_paths = {doc.path for doc, _ in relocations.values()}
     orphan_docs = [doc for doc in unplaced if doc.node_id not in node_ids]
     shadowed = set(options.shadowed)
     substituted: Counter[str] = Counter()
 
-    for node in sorted(manifest.nodes, key=lambda item: item.doc_path):
+    for node in sorted(documented, key=lambda item: item.doc_path):
         team = teams[node.id]
         if options.teams and team not in options.teams:
             continue
@@ -912,7 +934,7 @@ def build_plan(
                 file_action="unchanged",
                 status="orphan",
                 agent_action="review",
-                reason="узла с таким id в манифесте нет",
+                reason=_orphan_reason(doc.node_id, absorbed_by_id, page_titles),
                 # У сироты узла нет, поэтому команда берётся из её собственного
                 # front matter; иначе она была бы молча приписана текущей.
                 team=doc.docpipe.get("team"),
