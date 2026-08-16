@@ -18,18 +18,19 @@ from docpipe.config import DocpipeConfig
 from docpipe.model import Manifest
 from docpipe.stats import UNDECIDED, collect_stats
 from docpipe.web.tree import run as run_web
+from tests.conftest import sectioned
 
 runner = CliRunner()
-RULES = Path("rules/web.yaml")
+RULES = Path("rules/rules.yaml")
 
 
 @pytest.fixture
 def result(web_workspace: Path) -> Manifest:
-    return run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES)).manifest
+    return run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES, "web")).manifest
 
 
 def _stats(web_workspace: Path, rules: Path = RULES) -> tuple[dict[str, int], dict[str, str]]:
-    ruleset = load_ruleset(rules)
+    ruleset = load_ruleset(rules, "web")
     scan = run_web(web_workspace, DocpipeConfig(), ruleset)
     enrolled = {
         module.id.removeprefix("module:") for module in scan.manifest.modules if module.enrolled
@@ -61,18 +62,18 @@ def test_exclusion_without_a_reason_is_refused_at_load(tmp_path: Path) -> None:
     """Причина обязательна на уровне загрузки, а не на уровне ревью."""
     path = tmp_path / "web.yaml"
     path.write_text(
-        yaml.safe_dump(
+        sectioned(
             {
-                "version": "1",
                 "ruleset_version": "x",
                 "exclude": {"rules": [{"id": "no.reason", "when": {"type_kind": ["const"]}}]},
                 "rules": [],
-            }
+            },
+            "web",
         ),
         encoding="utf-8",
     )
     with pytest.raises(Exception, match="reason"):
-        load_ruleset(path)
+        load_ruleset(path, "web")
 
 
 # --------------------------------------------------------------------------------------
@@ -155,9 +156,11 @@ def test_rule_order_in_the_file_does_not_change_the_numbers(
     Иначе перестановка двух правил в YAML меняет цифры отчёта, а они идут
     в журнал и в CI.
     """
-    raw = yaml.safe_load(RULES.read_text(encoding="utf-8"))
+    document = yaml.safe_load(RULES.read_text(encoding="utf-8"))
+    raw = document["web"]
     raw["rules"] = list(reversed(raw["rules"]))
     raw["exclude"]["rules"] = list(reversed(raw["exclude"]["rules"]))
+    raw = {"version": "1", "web": raw}
 
     shuffled = tmp_path / "web.yaml"
     shuffled.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
@@ -168,7 +171,7 @@ def test_rule_order_in_the_file_does_not_change_the_numbers(
     assert counts == original_counts
     assert reasons == original_reasons
 
-    reordered = run_web(web_workspace, DocpipeConfig(), load_ruleset(shuffled)).manifest
+    reordered = run_web(web_workspace, DocpipeConfig(), load_ruleset(shuffled, "web")).manifest
     assert [(node.id, node.kind) for node in reordered.nodes] == [
         (node.id, node.kind) for node in result.nodes
     ]
@@ -180,7 +183,7 @@ def test_public_requirement_is_off_for_typescript(web_workspace: Path) -> None:
     У TypeScript модификатора `public` на уровне объявления нет вовсе:
     видимость задаётся словом `export`.
     """
-    assert load_ruleset(RULES).exclude.require_public is False
+    assert load_ruleset(RULES, "web").exclude.require_public is False
 
 
 # --------------------------------------------------------------------------------------

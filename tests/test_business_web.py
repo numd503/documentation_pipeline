@@ -18,12 +18,12 @@ from docpipe.config import DocpipeConfig
 from docpipe.model import Manifest
 from docpipe.web.tree import run as run_web
 
-RULES = Path("rules/web.yaml")
+RULES = Path("rules/rules.yaml")
 
 
 @pytest.fixture
 def web(web_workspace: Path) -> Manifest:
-    return run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES)).manifest
+    return run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES, "web")).manifest
 
 
 @pytest.fixture
@@ -121,7 +121,7 @@ def test_page_facts_carry_the_registry_lists(web_workspace: Path) -> None:
             }
         )
     )
-    manifest = run_web(web_workspace, config, load_ruleset(RULES)).manifest
+    manifest = run_web(web_workspace, config, load_ruleset(RULES, "web")).manifest
     empty = Manifest(ruleset_version="x", parser=manifest.parser)
     resolution = resolve(_page("/models/loader/quiz"), build_context([], empty, web=manifest))
 
@@ -149,7 +149,7 @@ def test_renaming_the_component_does_not_change_the_hash(
     shutil.copytree(web_workspace, copy)
 
     def hash_of(root: Path) -> str:
-        manifest = run_web(root, DocpipeConfig(), load_ruleset(RULES)).manifest
+        manifest = run_web(root, DocpipeConfig(), load_ruleset(RULES, "web")).manifest
         empty = Manifest(ruleset_version="x", parser=manifest.parser)
         context = build_context([], empty, web=manifest)
         return business_hash([resolve(_page("/models/loader/quiz"), context)])
@@ -176,7 +176,7 @@ def test_changing_the_route_changes_the_hash(web_workspace: Path, tmp_path: Path
     shutil.copytree(web_workspace, copy)
 
     def hash_of(root: Path) -> str:
-        manifest = run_web(root, DocpipeConfig(), load_ruleset(RULES)).manifest
+        manifest = run_web(root, DocpipeConfig(), load_ruleset(RULES, "web")).manifest
         empty = Manifest(ruleset_version="x", parser=manifest.parser)
         context = build_context([], empty, web=manifest)
         return business_hash([resolve(_page("/models/loader/quiz"), context)])

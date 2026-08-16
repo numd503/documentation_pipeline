@@ -161,7 +161,7 @@ def test_bundle_config_hides_the_tool_from_the_documentation_walk() -> None:
 
 
 def test_bundle_ruleset_loads() -> None:
-    ruleset = load_ruleset(BUNDLE_RULES)
+    ruleset = load_ruleset(BUNDLE_RULES, "dotnet")
     assert ruleset.ruleset_version.startswith("2026-")
     assert {rule.id for rule in ruleset.rules} >= {"controller.aspnet", "service", "workflow"}
 
@@ -178,7 +178,7 @@ def test_bundle_ruleset_keeps_domain_entities_named_like_tests() -> None:
     # («отсекается ли такой каталог»), и от формы записи он зависеть не должен.
     globs = [
         glob
-        for rule in load_ruleset(BUNDLE_RULES).exclude.rules
+        for rule in load_ruleset(BUNDLE_RULES, "dotnet").exclude.rules
         for glob in condition_values(rule.when, "path_glob")
     ]
     assert "**/*Test/**" not in globs
@@ -264,7 +264,9 @@ def test_installed_tree_holds_the_templates(tmp_path: Path) -> None:
     templates = tmp_path / "repo" / "docs/ml/docspipe/cashflow-docspipe/templates"
 
     installed = load_templates(templates)
-    declared = {rule.template for rule in load_ruleset(BUNDLE_RULES).rules if rule.template}
+    declared = {
+        rule.template for rule in load_ruleset(BUNDLE_RULES, "dotnet").rules if rule.template
+    }
     assert declared <= set(installed), declared - set(installed)
     assert sorted(p.name for p in (templates / "examples").glob("*.md"))
 
@@ -429,3 +431,56 @@ def test_documented_invocation_works_in_both_install_modes() -> None:
     text = (DEPLOY / "cashflow-docspipe" / "README.md").read_text(encoding="utf-8")
     assert "python -m docpipe" in text
     assert "PYTHONPATH" in text
+
+
+# --------------------------------------------------------------------------------------
+# Шаг `web` в поставке
+# --------------------------------------------------------------------------------------
+
+
+def test_bundle_config_configures_the_web_step() -> None:
+    """Без секции `web` шаг не запускается, а причина не видна из сообщения.
+
+    Все четыре ключа берут умолчания относительно ТЕКУЩЕГО каталога: правила
+    ищутся в несуществующем `rules/web.yaml`, а манифест и отчёт связи пишутся
+    в корень репозитория продукта — мимо `.gitignore` инструмента.
+    """
+    config = load_config(BUNDLE_CONFIG)
+
+    assert config.web.rules == "docs/ml/docspipe/cashflow-docspipe/rules.yaml"
+    assert config.web.out.startswith("docs/ml/docspipe/cashflow-docspipe/artifacts/")
+    assert config.web.link_out.startswith("docs/ml/docspipe/cashflow-docspipe/artifacts/")
+    assert config.web.roots and config.web.roots != ["."]
+
+
+def test_bundle_web_ruleset_does_not_require_public() -> None:
+    """`require_public: true`, скопированный из секции `dotnet`, отсеял бы весь
+    фронт: у TypeScript модификатора `public` на уровне объявления нет вовсе."""
+    assert load_ruleset(BUNDLE_RULES, "web").exclude.require_public is False
+
+
+def test_installed_tree_holds_the_migration_script(tmp_path: Path) -> None:
+    """Сообщение об ошибке зовёт скрипт переноса по имени, значит он обязан
+    доехать до целевой машины: иначе совет невыполним ровно там, где он нужен."""
+    _install(tmp_path / "repo")
+
+    assert (tmp_path / "repo" / "docs/ml/docspipe/tools/migrate_rules.py").is_file()
+
+
+def test_installer_warns_about_a_flat_ruleset(tmp_path: Path) -> None:
+    """Сохранённый набор старого формата после обновления не загрузится.
+
+    Сказать об этом обязан установщик, а не первый упавший прогон в CI:
+    `keep_configured` файл не трогает, и снаружи обновление выглядит удачным.
+    """
+    repo = tmp_path / "repo"
+    _install(repo)
+    rules = repo / "docs/ml/docspipe/cashflow-docspipe/rules.yaml"
+    rules.write_text("ruleset_version: old\nrules: []\n", encoding="utf-8")
+
+    result = _install(repo)
+
+    assert "старом плоском формате" in result.stderr
+    assert "migrate_rules.py" in result.stderr
+    # Файл при этом не тронут: установщик ничего не переписывает молча.
+    assert rules.read_text(encoding="utf-8").startswith("ruleset_version: old")

@@ -29,7 +29,9 @@ def backend(wild_solution: Path) -> Manifest:
 
 @pytest.fixture
 def frontend(web_workspace: Path) -> Manifest:
-    return run_web(web_workspace, DocpipeConfig(), load_ruleset(Path("rules/web.yaml"))).manifest
+    return run_web(
+        web_workspace, DocpipeConfig(), load_ruleset(Path("rules/rules.yaml"), "web")
+    ).manifest
 
 
 @pytest.fixture
@@ -112,7 +114,9 @@ def test_registry_calls_do_not_merge(web_workspace: Path, backend: Manifest) -> 
             }
         )
     )
-    frontend = run_web(web_workspace, config, load_ruleset(Path("rules/web.yaml"))).manifest
+    frontend = run_web(
+        web_workspace, config, load_ruleset(Path("rules/rules.yaml"), "web")
+    ).manifest
     report = build_report(backend, frontend)
 
     assert _links(report, "api/items/query") == ["models", "users"]

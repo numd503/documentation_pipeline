@@ -21,12 +21,12 @@ from docpipe.web.tree import parser_versions
 from docpipe.web.tree import run as run_web
 
 runner = CliRunner()
-RULES = Path("rules/web.yaml")
+RULES = Path("rules/rules.yaml")
 
 
 @pytest.fixture
 def manifest(web_workspace: Path) -> Manifest:
-    return run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES)).manifest
+    return run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES, "web")).manifest
 
 
 # --------------------------------------------------------------------------------------
@@ -138,7 +138,7 @@ def test_result_does_not_depend_on_the_listing_order(
             yield dirpath, list(reversed(dirnames)), list(reversed(filenames))
 
     monkeypatch.setattr(os, "walk", shuffled)
-    assert run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES)).manifest == manifest
+    assert run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES, "web")).manifest == manifest
 
 
 # --------------------------------------------------------------------------------------
@@ -147,8 +147,8 @@ def test_result_does_not_depend_on_the_listing_order(
 
 
 def test_cache_is_reused_between_runs(web_workspace: Path, tmp_path: Path) -> None:
-    first = run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES), cache_dir=tmp_path)
-    second = run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES), cache_dir=tmp_path)
+    first = run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES, "web"), cache_dir=tmp_path)
+    second = run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES, "web"), cache_dir=tmp_path)
 
     assert first.manifest == second.manifest
     assert (tmp_path / "parse-web.sqlite").is_file()
@@ -160,7 +160,7 @@ def test_grammar_upgrade_invalidates_the_cache(web_workspace: Path, tmp_path: Pa
     Хэш содержимого при апгрейде не меняется, поэтому попадание в кэш дало бы
     устаревший результат, и единственный способ это заметить — сверить версии.
     """
-    run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES), cache_dir=tmp_path)
+    run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES, "web"), cache_dir=tmp_path)
 
     database = tmp_path / "parse-web.sqlite"
     current = parser_versions()
@@ -177,7 +177,7 @@ def test_web_cache_does_not_fight_the_dotnet_cache(web_workspace: Path, tmp_path
 
     Версии грамматик у них разные, а запись о версии в базе одна.
     """
-    run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES), cache_dir=tmp_path)
+    run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES, "web"), cache_dir=tmp_path)
     assert (tmp_path / "parse-web.sqlite").is_file()
     assert not (tmp_path / "parse.sqlite").exists()
 
@@ -202,7 +202,7 @@ def test_registry_table_reaches_the_keys(web_workspace: Path) -> None:
             }
         )
     )
-    result = run_web(web_workspace, config, load_ruleset(RULES))
+    result = run_web(web_workspace, config, load_ruleset(RULES, "web"))
     items = next(node for node in result.manifest.nodes if node.title == "ItemsService")
 
     assert sorted(call.key.discriminator for call in items.web_calls) == ["", "", "models", "users"]
@@ -217,7 +217,7 @@ def test_url_rewrite_is_applied_per_module(web_workspace: Path) -> None:
     config = DocpipeConfig(
         web=WebConfig.model_validate({"url_rewrite": [{"module": "widget", "strip_prefix": "/pm"}]})
     )
-    result = run_web(web_workspace, config, load_ruleset(RULES))
+    result = run_web(web_workspace, config, load_ruleset(RULES, "web"))
     by_title = {node.title: node for node in result.manifest.nodes}
 
     assert [call.key.route for call in by_title["WidgetService"].web_calls] == [
@@ -229,7 +229,7 @@ def test_url_rewrite_is_applied_per_module(web_workspace: Path) -> None:
 
 def test_roots_narrow_the_scan(web_workspace: Path) -> None:
     config = DocpipeConfig(web=WebConfig(roots=["nx-app"]))
-    result = run_web(web_workspace, config, load_ruleset(RULES))
+    result = run_web(web_workspace, config, load_ruleset(RULES, "web"))
 
     assert {node.module for node in result.manifest.nodes} == {"widget"}
 

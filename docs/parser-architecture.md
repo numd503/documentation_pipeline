@@ -168,7 +168,7 @@ docpipe/
 Правила и схемы лежат вне пакета, потому что они — конфигурация, а не код:
 
 ```
-rules/dotnet.yaml             правила классификации
+rules/rules.yaml              правила классификации: секции dotnet и web
 schema/doc-tree.schema.json   генерируется из pydantic-моделей
 docpipe.yaml                  конфигурация запуска
 ```
@@ -189,7 +189,7 @@ docpipe.yaml                  конфигурация запуска
                                           resolve ──▶ SymbolIndex (FQN → Symbol)
                                               │        + замыкание наследования
                                               ▼
-                             endpoints ──▶  classify  ◀── rules/dotnet.yaml
+                             endpoints ──▶  classify  ◀── rules/rules.yaml
                                    di ──▶      │
                                               ▼
                                             tree ──▶ DocNode[]
@@ -239,7 +239,7 @@ base list как сырой текст, атрибуты с аргументам
 
 ### 4.4 Classify
 
-Движок правил из `rules/dotnet.yaml`. Предикаты:
+Движок правил из секции `dotnet` файла `rules/rules.yaml`. Предикаты:
 `attribute`, `base_type` (прямые), `inherits` (транзитивное замыкание), `name_regex`,
 `name_suffix`, `namespace_regex`, `path_glob`, `type_kind`, `modifier`,
 `has_member_with_attribute`.
@@ -383,7 +383,7 @@ scoped(prev, scope) == full(repo), если вне scope не менялось #
 ## 7. CLI
 
 ```
-docpipe scan --root PATH [--config docpipe.yaml] [--rules rules/dotnet.yaml]
+docpipe scan --root PATH [--config docpipe.yaml] [--rules rules/rules.yaml]
              [--out artifacts/doc-tree.json]
              [--scope DIR]... [--from-manifest FILE]
              [--no-cache] [--stats] [--dry-run] [--jobs N]
@@ -431,7 +431,7 @@ docpipe schema --out schema/doc-tree.schema.json
 
 ## 9. Точки расширения
 
-- **Новый вид сущности** — правило в `rules/dotnet.yaml` + шаблон. Код не трогается.
+- **Новый вид сущности** — правило в секции языка + шаблон. Код не трогается.
 - **Новый предикат** — одна функция в `classify.py` + запись в реестре предикатов.
 - **Новый язык** (Python, TypeScript) — новый пакет рядом с `dotnet/`, отдающий тот же
   `FileParseResult`. `resolve`/`classify`/`tree`/`emit` переиспользуются как есть.

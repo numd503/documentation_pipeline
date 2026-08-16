@@ -217,7 +217,7 @@ def scan(
     # момент, когда человек первый раз пробует команду руками, — плохой обмен.
     try:
         settings = load_config(config)
-        ruleset = load_ruleset(rules or Path(settings.rules))
+        ruleset = load_ruleset(rules or Path(settings.rules), "dotnet")
         previous = (
             Manifest.model_validate_json(from_manifest.read_text(encoding="utf-8"))
             if from_manifest
@@ -420,7 +420,7 @@ def symbols(
 
     try:
         settings = load_config(config)
-        ruleset = load_ruleset(rules or Path(settings.rules))
+        ruleset = load_ruleset(rules or Path(settings.rules), "dotnet")
     except (OSError, ValueError) as exc:
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -566,7 +566,7 @@ def web_scan(
 
     try:
         settings = load_config(config)
-        ruleset = load_ruleset(rules or Path(settings.web.rules))
+        ruleset = load_ruleset(rules or Path(settings.web.rules), "web")
     except (OSError, ValueError) as exc:
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc

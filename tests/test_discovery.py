@@ -366,7 +366,7 @@ def test_config_defaults() -> None:
     assert config.roots == ["."]
     assert config.enrolled == ["**"]
     assert config.domains == {}
-    assert config.rules == "rules/dotnet.yaml"
+    assert config.rules == "rules/rules.yaml"
 
 
 def test_config_from_file(tmp_path: Path) -> None:

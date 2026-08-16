@@ -23,8 +23,7 @@ from docpipe.web.tree import PROMOTIONS
 
 TEMPLATES = Path("templates")
 EXAMPLES = TEMPLATES / "examples"
-RULES = Path("rules/dotnet.yaml")
-WEB_RULES = Path("rules/web.yaml")
+RULES = Path("rules/rules.yaml")
 
 
 @pytest.fixture
@@ -48,7 +47,7 @@ def test_skeletons_match_rule_templates(templates: dict[str, object]) -> None:
     нельзя. Ослабь сравнение до `>=` — и тест перестанет ловить забытый скелет,
     ради чего он и написан.
 
-    Наборов правил два, а каталог шаблонов один: скелеты не делятся по языкам,
+    Секций правил две, а каталог шаблонов один: скелеты не делятся по языкам,
     потому что вид сущности — не свойство языка. Сравнивается объединение.
 
     К объявленным правилами добавляются виды-повышения шага `web` (`page`,
@@ -56,10 +55,9 @@ def test_skeletons_match_rule_templates(templates: dict[str, object]) -> None:
     и наличие HTTP-вызовов. Без них тест перестал бы ловить забытый скелет
     ровно у тех двух видов, которые в наборе правил не объявишь.
     """
+    document = yaml.safe_load(RULES.read_text("utf-8"))
     declared = {
-        rule["template"]
-        for path in (RULES, WEB_RULES)
-        for rule in yaml.safe_load(path.read_text("utf-8"))["rules"]
+        rule["template"] for section in ("dotnet", "web") for rule in document[section]["rules"]
     }
     declared |= {template for _, template in PROMOTIONS.values()}
 

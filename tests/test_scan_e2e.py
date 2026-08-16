@@ -11,6 +11,7 @@ from docpipe.cli import app
 from docpipe.config import DocpipeConfig
 from docpipe.emit import map_files_to_modules, parse_files, run_meta_path, scan
 from docpipe.model import Manifest, RunMeta
+from tests.conftest import sectioned
 
 GOLDEN = Path("tests/golden/doc-tree.json")
 runner = CliRunner()
@@ -81,7 +82,7 @@ def _repo_with_tooling_inside(sample_solution: Path, tmp_path: Path) -> Path:
     (а в нём — фикстуры на C#) внутри сканируемого репозитория.
 
     Каталог назван `fixtures`, а не `tests/fixtures`, намеренно: сегмент `tests`
-    отсеялся бы правилом `**/tests/**` из `rules/dotnet.yaml`, и узла не было бы
+    отсеялся бы правилом `**/tests/**` из `rules/rules.yaml`, и узла не было бы
     даже без исключения. Модулем посторонний проект стал бы всё равно, а его
     символы всё равно попали бы в индекс — то есть проверка исключения
     маскировалась бы отсевом на другом уровне.
@@ -135,7 +136,7 @@ def test_out_from_config_is_used_when_flag_is_absent(sample_solution: Path, tmp_
     from_config = tmp_path / "from-config/doc-tree.json"
     from_flag = tmp_path / "from-flag/doc-tree.json"
     config.write_text(
-        yaml.safe_dump({"rules": "rules/dotnet.yaml", "out": str(from_config)}), encoding="utf-8"
+        yaml.safe_dump({"rules": "rules/rules.yaml", "out": str(from_config)}), encoding="utf-8"
     )
 
     assert (
@@ -344,8 +345,10 @@ def test_missing_rules_file_is_reported(sample_solution: Path, tmp_path: Path) -
 def test_broken_rules_file_is_reported(sample_solution: Path, tmp_path: Path) -> None:
     rules = tmp_path / "rules.yaml"
     rules.write_text(
-        "ruleset_version: t\nrules:\n  - {id: r, kind: k, template: t, priority: 1,"
-        " when: {attribut: [X]}}\n",
+        sectioned(
+            "ruleset_version: t\nrules:\n  - {id: r, kind: k, template: t, priority: 1,"
+            " when: {attribut: [X]}}\n"
+        ),
         encoding="utf-8",
     )
     result = runner.invoke(

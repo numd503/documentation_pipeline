@@ -108,8 +108,22 @@ def build_tree(
     return build_nodes(
         index,
         modules,
-        load_ruleset(rules or Path("rules/dotnet.yaml")),
+        load_ruleset(rules or Path("rules/rules.yaml"), "dotnet"),
         config or DocpipeConfig(),
         [registration for result in results for registration in result.di_registrations],
         {key: extract_endpoints(symbol) for key, symbol in index.items()},
     )
+
+
+def sectioned(body: "dict[str, object] | str", section: str = "dotnet") -> str:
+    """Файл правил в секционном формате: тело — содержимое ОДНОЙ секции.
+
+    Тесты пишут содержимое секции, а не файл целиком: обёртка одна на все
+    и потому не расходится, а сами случаи остаются читаемыми.
+    """
+    import yaml as _yaml
+
+    if isinstance(body, dict):
+        return _yaml.safe_dump({"version": "1", section: body}, allow_unicode=True, sort_keys=False)
+    lines = [f"  {line}" if line.strip() else "" for line in body.splitlines()]
+    return f'version: "1"\n{section}:\n' + "\n".join(lines) + "\n"

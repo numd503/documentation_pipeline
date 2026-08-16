@@ -136,3 +136,65 @@ registries: "docs/ml/docspipe/cashflow-docspipe/registries.yaml"
 # Каталог попадает под `docs_scan_exclude` ниже, и это правильно: бизнес-документы
 # отбираются по `docpipe.schema: business/1`, а не обходом дерева шага 2.
 business_root: "docs/ml/docspipe/cashflow-docspipe/business"
+
+# --------------------------------------------------------------------------
+# Шаг `web`: фронтенд на Angular
+# --------------------------------------------------------------------------
+# Секция необязательна для шага 1, но БЕЗ НЕЁ `docpipe web scan` не работает:
+# все четыре ключа берут умолчания, и все четыре на этой раскладке неверны.
+# `rules` по умолчанию — `rules/web.yaml` относительно ТЕКУЩЕГО каталога,
+# `out` и `link_out` — `artifacts/…` тоже относительно текущего, то есть
+# в корень репозитория продукта и мимо .gitignore инструмента.
+#
+# Порядок настройки тот же, что у шага 1:
+#
+#     web scan --stats   -> посмотреть срез «решение не принято» и модули
+#     -> дописать правило в секцию `web` файла rules.yaml -> повторить
+web:
+  # Где искать фронты. Семь модулей разведаны в docs/findings-cashflow-frontend.md;
+  # начинать имеет смысл с одного (ML), а не со всех сразу: правила
+  # настраиваются под раскладку, и на семи сразу непонятно, какая из них
+  # дала непокрытый символ.
+  roots:
+    - "sbt.cms.cashflow.subrepo/Sbt.CMS.Cashflow.ML"
+    # - "sbt.cms.cashflow.subrepo/Sbt.CMS.Cashflow.Front"
+    # - "sbt.cashflow.tm.subrepo/TypedModels.Front.Angular"
+    # - "sbt.cashflow.portfolio.subrepo/PM.Front"
+    # - "sbt.cms.subrepo/Sbt.CMS.Front"            # nx, а не angular.json
+    # - "sbt.cashflow.realty.subrepo/Sbt.Cashflow.Front.Angular"
+    # - "sbt.cashflow.stresstest/StressTest.Front"
+
+  # Тот же файл, что и у шага 1, — секция `web` внутри него.
+  rules: "docs/ml/docspipe/cashflow-docspipe/rules.yaml"
+
+  # Манифест фронта и отчёт связи фронт↔бэк. Рядом с манифестом шага 1,
+  # чтобы попасть под ту же строку .gitignore.
+  out: "docs/ml/docspipe/cashflow-docspipe/artifacts/doc-tree.web.json"
+  link_out: "docs/ml/docspipe/cashflow-docspipe/artifacts/web-link.json"
+
+  # Что прокси модуля делает с URL по дороге к бэкенду. Без этого маршрут
+  # фронта не сойдётся с маршрутом контроллера, и `web link` покажет вызовы
+  # несопоставленными.
+  #
+  # ОТСУТСТВИЕ ЗАПИСИ О МОДУЛЕ — НЕ «преобразования нет». Это ненастроенный
+  # модуль, и отчёт связи называет его вслух; пустые поля при указанном
+  # `module` означают «проверено, не преобразуется».
+  #
+  # Имя модуля берётся из вывода `web scan --stats`, а не придумывается:
+  # его считает сам инструмент из angular.json / project.json / package.json.
+  # Префиксы разведаны (docs/findings-cashflow-frontend.md, раздел про прокси):
+  #
+  #   ML                          префикса нет
+  #   PM.Front                    ^/pm      -> ''
+  #   Sbt.CMS.Cashflow.Front      ^/cf      -> ''
+  #   Sbt.Cashflow.Front.Angular  ^/realty  -> ''
+  #   TypedModels.Front.Angular   ^/tm      -> ''
+  #   Sbt.CMS.Front (admin)       ^/api/    -> /admin/api/   ДОПИСЫВАЕТСЯ
+  url_rewrite: []
+
+  # Маршруты платформы, у которых смысл вызова определяет не маршрут,
+  # а значение параметра: `api/items/query` с `listInnerName` в теле и
+  # `api/items?listInnerName=…` в query — один маршрут на много смыслов.
+  # Различитель идёт в ключ вызова, но НЕ участвует в сопоставлении
+  # с эндпоинтом. Заполняется, когда дойдёт до модулей, читающих реестр.
+  registry_calls: []

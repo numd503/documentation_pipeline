@@ -133,6 +133,28 @@ keep_configured "$SOURCE/deploy/cashflow-docspipe/docpipe.yaml" \
     "$DEST/cashflow-docspipe/docpipe.yaml" "cashflow-docspipe/docpipe.yaml"
 keep_configured "$SOURCE/deploy/cashflow-docspipe/rules.yaml" \
     "$DEST/cashflow-docspipe/rules.yaml" "cashflow-docspipe/rules.yaml"
+
+# Файл правил стал секционным: `dotnet:` и `web:` в одном файле. Сохранённый
+# набор старого формата после обновления не загрузится — и сказать об этом
+# обязан установщик, а не первый упавший прогон в CI. Скрипт переноса кладётся
+# рядом именно поэтому: сообщение об ошибке зовёт его по имени.
+mkdir -p "$DEST/tools"
+cp "$SOURCE/tools/migrate_rules.py" "$DEST/tools/migrate_rules.py"
+
+if [ -f "$DEST/cashflow-docspipe/rules.yaml" ] &&
+    ! grep -q '^dotnet:' "$DEST/cashflow-docspipe/rules.yaml"; then
+    cat >&2 <<EOF
+
+  ВНИМАНИЕ: ваш rules.yaml в старом плоском формате, прогон его не примет.
+  Перенос сохраняет комментарии и делается одной командой:
+
+      uv run --project $SUBDIR python $SUBDIR/tools/migrate_rules.py \\
+          --dotnet $SUBDIR/cashflow-docspipe/rules.yaml \\
+          --out    $SUBDIR/cashflow-docspipe/rules.yaml
+
+  Затем допишите в файл секцию \`web:\` — её эталон лежит в rules.yaml.new.
+EOF
+fi
 # Заготовка без команд и правил: работает, но ничего не раздаёт. Приезжает
 # вместе с путём на себя в docpipe.yaml — иначе конфигурация ссылалась бы
 # на файл, которого в поставке нет.
@@ -277,6 +299,14 @@ cat <<EOF
 
   cd \$CF_ROOT                                        # out в конфигурации от текущего каталога
   docpipe scan --root . --config \$BUNDLE/docpipe.yaml --stats --jobs 4
+
+Фронт (шаг web) настраивается тем же порядком и теми же двумя файлами:
+секция \`web:\` в docpipe.yaml и секция \`web:\` в rules.yaml.
+
+  docpipe web scan --root . --config \$BUNDLE/docpipe.yaml --stats
+  docpipe web scan --root . --config \$BUNDLE/docpipe.yaml
+  docpipe web link \$BUNDLE/artifacts/doc-tree.json \$BUNDLE/artifacts/doc-tree.web.json \\
+      --config \$BUNDLE/docpipe.yaml
 
 Настройка под проект — в $DEST/cashflow-docspipe/README.md
 EOF

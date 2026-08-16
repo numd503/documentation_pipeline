@@ -13,13 +13,15 @@ from docpipe.explain import Selection, format_selection, select, selection_json
 from docpipe.stats import UNDECIDED, collect_stats
 
 runner = CliRunner()
-RULES = Path("rules/dotnet.yaml")
+RULES = Path("rules/rules.yaml")
 
 
 def _select(root: Path, **kwargs: Any) -> Selection:
     result = run(root)
     enrolled = {module.project_file for module in result.manifest.modules if module.enrolled}
-    return select(result.index, result.manifest.nodes, load_ruleset(RULES), enrolled, **kwargs)
+    return select(
+        result.index, result.manifest.nodes, load_ruleset(RULES, "dotnet"), enrolled, **kwargs
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -36,7 +38,9 @@ def test_selection_agrees_with_the_report(sample_solution: Path) -> None:
     """
     result = run(sample_solution)
     enrolled = {module.project_file for module in result.manifest.modules if module.enrolled}
-    stats = collect_stats(result.index, result.manifest.nodes, load_ruleset(RULES), enrolled)
+    stats = collect_stats(
+        result.index, result.manifest.nodes, load_ruleset(RULES, "dotnet"), enrolled
+    )
 
     for state, expected in (
         ("undecided", stats.counts.get("undecided", 0)),
@@ -44,7 +48,11 @@ def test_selection_agrees_with_the_report(sample_solution: Path) -> None:
         ("interface_covered", stats.counts.get("interface_covered", 0)),
     ):
         selection = select(
-            result.index, result.manifest.nodes, load_ruleset(RULES), enrolled, state=state
+            result.index,
+            result.manifest.nodes,
+            load_ruleset(RULES, "dotnet"),
+            enrolled,
+            state=state,
         )
         assert selection.total == expected, state
 
