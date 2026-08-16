@@ -12,9 +12,9 @@
 """
 
 import posixpath
-import re
 import socket
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.metadata import version as package_version
@@ -38,6 +38,7 @@ from docpipe.model import (
     RunMeta,
     SourceSpan,
     Symbol,
+    Usage,
     WebCall,
 )
 from docpipe.route import RewriteRule
@@ -57,8 +58,17 @@ from docpipe.web.resolve import (
     build_context,
     build_symbol_index,
     compute_closures,
+    module_fqn,
+    resolve_name,
 )
 from docpipe.web.routes import RouteScan, build_routes
+from docpipe.web.usage import (
+    RawUsage,
+    constructor_bindings,
+    extract_usages,
+    injected_fields,
+    parameter_types,
+)
 
 
 def parser_versions() -> ParserVersions:
@@ -87,10 +97,16 @@ class WebScanResult:
 
 @dataclass(frozen=True)
 class _Parsed:
-    """Разбор одного файла: символы и факты о вызовах из одного дерева."""
+    """Разбор одного файла: символы и факты из одного дерева.
+
+    Всё, что здесь перечислено, берётся за один проход по дереву: второй
+    разбор того же файла ради соседнего факта стоит столько же, сколько первый.
+    """
 
     result: FileParseResult
     calls: list[RawCall]
+    usages: list[RawUsage]
+    injected: list[tuple[int, str, str]]
 
 
 def _parse_files(root: Path, relatives: list[str], cache: ParseCache | None) -> list[_Parsed]:
@@ -108,7 +124,14 @@ def _parse_files(root: Path, relatives: list[str], cache: ParseCache | None) -> 
         result = cached if cached is not None else parse_source(source, relative, tree=tree)
         if cache is not None and cached is None:
             cache.put(result)
-        parsed.append(_Parsed(result=result, calls=extract_calls(tree.root_node, relative)))
+        parsed.append(
+            _Parsed(
+                result=result,
+                calls=extract_calls(tree.root_node, relative),
+                usages=extract_usages(tree.root_node, relative),
+                injected=injected_fields(tree.root_node),
+            )
+        )
 
     parsed.sort(key=lambda item: item.result.path)
     return parsed
@@ -276,42 +299,68 @@ def _promote(
     return kind, template
 
 
-def _parameter_types(signature: str) -> list[str]:
-    """Типы параметров конструктора TypeScript: `constructor(private http: HttpClient)`.
+def _usages_of(
+    symbol: Symbol,
+    parsed_by_file: dict[str, _Parsed],
+    ranges: MemberRanges,
+    ctx: ResolveContext,
+    by_fqn: dict[str, Symbol],
+) -> tuple[list[Usage], Counter[str]]:
+    """Рёбра графа вызовов, исходящие из символа, и счётчики того, что не вышло.
 
-    Порядок в TS обратный C#: там `Тип имя`, здесь `имя: Тип`. Общую функцию
-    из `tree.parameter_types` переиспользовать нельзя — она разберёт `private`
-    как тип и выдаст зависимость от модификатора.
+    Тип получателя берётся из **своего** класса: пары «имя -> тип» собираются
+    из конструктора и из полей `inject(…)`, попавших в диапазон символа. Таблица
+    на файл подставила бы чужой тип там, где два класса в одном файле объявляют
+    одноимённое поле, — молча и правдоподобно.
 
-    Дженерик и объединение типов срезаются по первому небуквенному символу:
-    `Store<AppState>` — зависимость от `Store`, а не от его параметра.
+    Имя типа разрешается таблицей импортов файла, а не глобальным индексом
+    простых имён: одноимённые классы в разных каталогах — норма для TypeScript,
+    где единица изоляции файл.
     """
-    inner = signature.partition("(")[2].rpartition(")")[0]
-    if not inner.strip():
-        return []
+    if not symbol.sources:
+        return [], Counter()
 
-    found: list[str] = []
-    depth = 0
-    current: list[str] = []
-    for char in inner:
-        if char in "<([{":
-            depth += 1
-        elif char in ">)]}":
-            depth -= 1
-        if char == "," and depth == 0:
-            found.append("".join(current))
-            current = []
+    file = symbol.sources[0].path
+    parsed = parsed_by_file.get(file)
+    if parsed is None:
+        return [], Counter()
+
+    span = symbol.sources[0]
+    bindings: dict[str, str] = {}
+    for member in symbol.members:
+        if member.kind == "constructor":
+            for name, type_name in constructor_bindings(member.signature):
+                bindings.setdefault(name, type_name)
+    for line, name, type_name in parsed.injected:
+        if span.start <= line <= span.end:
+            bindings.setdefault(name, type_name)
+
+    found: dict[tuple[str, str, str], Usage] = {}
+    counters: Counter[str] = Counter()
+    for usage in parsed.usages:
+        if not span.start <= usage.line <= span.end:
             continue
-        current.append(char)
-    found.append("".join(current))
 
-    types: list[str] = []
-    for part in found:
-        annotation = part.partition(":")[2].strip()
-        name = re.split(r"[^\w$.]", annotation, maxsplit=1)[0] if annotation else ""
-        if name:
-            types.append(name)
-    return types
+        bound = bindings.get(usage.receiver)
+        if bound is None:
+            # Локальная переменная, поле без типа, чужая цепочка. Ложное ребро
+            # втянуло бы в страницу посторонний сервис, поэтому только счётчик.
+            counters["unresolved"] += 1
+            continue
+
+        declared = resolve_name(bound, file, ctx)
+        target = f"{module_fqn(declared)}.{bound}" if declared else ""
+        if not target or target not in by_fqn:
+            # `HttpClient`, `Router`, `Store` — внешние типы. Это не пробел
+            # разбора: у них нет узла документации, и ребро вести некуда.
+            counters["external"] += 1
+            continue
+
+        counters["resolved"] += 1
+        key = (target, usage.method, ranges.of(file, usage.line))
+        found.setdefault(key, Usage(target=key[0], member=key[1], via=key[2]))
+
+    return [found[key] for key in sorted(found)], counters
 
 
 def _dependencies(symbol: Symbol, by_name: dict[str, str]) -> list[Dependency]:
@@ -320,12 +369,16 @@ def _dependencies(symbol: Symbol, by_name: dict[str, str]) -> list[Dependency]:
     В Angular внедрение конструкторное — `inject(…)` встречается на боевом
     модуле девять раз против сотен конструкторов, — поэтому другого источника
     зависимостей на фронте практически нет.
+
+    Разбор сигнатуры живёт в `web/usage.py` и общий с графом вызовов: две копии
+    разошлись бы на первой же форме параметра, и зависимости узла перестали бы
+    сходиться с его рёбрами.
     """
     found: list[Dependency] = []
     for member in symbol.members:
         if member.kind != "constructor":
             continue
-        for name in _parameter_types(member.signature):
+        for name in parameter_types(member.signature):
             target = by_name.get(name)
             found.append(
                 Dependency(
@@ -341,6 +394,26 @@ def _dependencies(symbol: Symbol, by_name: dict[str, str]) -> list[Dependency]:
     return [seen[key] for key in sorted(seen)]
 
 
+def _usages(
+    index: dict[str, Symbol],
+    parsed: list[_Parsed],
+    ranges: MemberRanges,
+    ctx: ResolveContext,
+) -> tuple[dict[str, list[Usage]], Counter[str]]:
+    """Граф вызовов: FQN источника -> рёбра, плюс счётчики неудач."""
+    parsed_by_file = {item.result.path: item for item in parsed}
+    by_fqn = {symbol.fqn: symbol for symbol in sorted(index.values(), key=lambda s: s.fqn)}
+
+    edges: dict[str, list[Usage]] = {}
+    counters: Counter[str] = Counter()
+    for fqn in sorted(by_fqn):
+        found, counted = _usages_of(by_fqn[fqn], parsed_by_file, ranges, ctx, by_fqn)
+        counters.update(counted)
+        if found:
+            edges[fqn] = found
+    return edges, counters
+
+
 def build_nodes(
     index: dict[str, Symbol],
     modules: list[WebModule],
@@ -348,12 +421,13 @@ def build_nodes(
     config: DocpipeConfig,
     calls: dict[str, list[WebCall]],
     routes: dict[str, list[RouteEntry]],
+    uses: dict[str, list[Usage]] | None = None,
 ) -> tuple[list[Module], list[DocNode]]:
     """Собрать модули и узлы документации фронта.
 
     Вызовы попадают на узел **того файла, где записаны**: связь строит сервис,
     а не страница, и приписать их странице значило бы соврать о том, кто зовёт.
-    Путь «страница → эндпоинт» собирает F13 по цепочке, а не подменой автора.
+    Путь «страница → эндпоинт» собирается по рёбрам `uses`, а не подменой автора.
     """
     configured = [module.module for module in modules]
     by_key = {module.key: module.module for module in modules}
@@ -411,6 +485,7 @@ def build_nodes(
                 impl_hash=symbol.impl_hash,
                 web_calls=node_calls,
                 routes=node_routes,
+                uses=(uses or {}).get(symbol.fqn, []),
             )
         )
 
@@ -453,8 +528,10 @@ def run(
     sources = {relative: (root / relative).read_bytes() for relative in found.ts_files}
     routes = build_routes(sources, context)
 
+    uses, usage_counts = _usages(index, parsed, ranges, context)
+
     configured, nodes = build_nodes(
-        index, modules, ruleset, config, calls_by_file, _routes_by_component(routes)
+        index, modules, ruleset, config, calls_by_file, _routes_by_component(routes), uses
     )
 
     manifest = Manifest(
@@ -482,6 +559,13 @@ def run(
             "registry_unresolved": len(calls.registry_unresolved),
             "routes": len(routes.entries),
             "routes_unresolved": routes.unresolved,
+            # Три числа вместо одного: ребро найдено, получатель внешний
+            # (`HttpClient`, `Router`, `Store` — узла документации у них нет),
+            # получатель не разрешён вовсе. Одно число «рёбер 128» не сказало бы,
+            # сколько графа потеряно.
+            "usages": usage_counts["resolved"],
+            "usages_external": usage_counts["external"],
+            "usages_unresolved": usage_counts["unresolved"],
         },
         parse_error_files=broken,
     )

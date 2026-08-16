@@ -1,0 +1,25 @@
+{
+  "docpipe_version": "0.1.0",
+  "duration_seconds": 0.033,
+  "generated_at": "2026-08-16T20:14:56+00:00",
+  "host": "fedora",
+  "parse_error_files": [],
+  "stats": {
+    "controller": 2,
+    "declarations": 11,
+    "documented": 6,
+    "files": 11,
+    "ignite_service": 1,
+    "interface_covered": 2,
+    "modules": 2,
+    "modules_enrolled": 2,
+    "nodes": 6,
+    "not_documented": 1,
+    "parse_errors": 0,
+    "provider": 1,
+    "service": 1,
+    "symbols": 10,
+    "undecided": 1,
+    "workflow": 1
+  }
+}

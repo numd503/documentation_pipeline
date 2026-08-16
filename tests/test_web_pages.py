@@ -159,7 +159,7 @@ def test_page_with_features_but_no_calls_names_the_ngxs_gap(manifest: Manifest) 
 
     page = _page(trimmed, "DetailComponent")
 
-    assert page.members == 3
+    assert page.members == 4
     assert NOTE_NO_CALLS in page.notes
     assert NOTE_NO_FEATURES not in page.notes
 

@@ -103,6 +103,7 @@
       },
       "template": "controller",
       "title": "BaseApiController",
+      "uses": [],
       "web_calls": []
     },
     {
@@ -249,6 +250,7 @@
       },
       "template": "controller",
       "title": "PricingController",
+      "uses": [],
       "web_calls": []
     },
     {
@@ -340,6 +342,7 @@
       },
       "template": "ignite-service",
       "title": "RiskComputeService",
+      "uses": [],
       "web_calls": []
     },
     {
@@ -417,6 +420,7 @@
       },
       "template": "provider",
       "title": "CurveProvider",
+      "uses": [],
       "web_calls": []
     },
     {
@@ -543,6 +547,7 @@
       },
       "template": "service",
       "title": "PricingService",
+      "uses": [],
       "web_calls": []
     },
     {
@@ -603,6 +608,7 @@
       },
       "template": "workflow",
       "title": "ValuationWorkflow",
+      "uses": [],
       "web_calls": []
     }
   ],
