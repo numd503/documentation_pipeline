@@ -25,7 +25,7 @@ from docpipe.business.status import accepted_state as business_accepted_state
 from docpipe.business.status import format_statuses as format_business_statuses
 from docpipe.business.status import statuses as business_statuses
 from docpipe.classify import load_ruleset
-from docpipe.config import DocpipeConfig, load_config
+from docpipe.config import DocpipeConfig, candidate_inputs, load_config, resolve_input
 from docpipe.diff import diff_manifests, format_changes
 from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
@@ -217,7 +217,7 @@ def scan(
     # момент, когда человек первый раз пробует команду руками, — плохой обмен.
     try:
         settings = load_config(config)
-        ruleset = load_ruleset(rules or Path(settings.rules), "dotnet")
+        ruleset = load_ruleset(rules or resolve_input(settings.rules, config), "dotnet")
         previous = (
             Manifest.model_validate_json(from_manifest.read_text(encoding="utf-8"))
             if from_manifest
@@ -420,7 +420,7 @@ def symbols(
 
     try:
         settings = load_config(config)
-        ruleset = load_ruleset(rules or Path(settings.rules), "dotnet")
+        ruleset = load_ruleset(rules or resolve_input(settings.rules, config), "dotnet")
     except (OSError, ValueError) as exc:
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -566,7 +566,7 @@ def web_scan(
 
     try:
         settings = load_config(config)
-        ruleset = load_ruleset(rules or Path(settings.web.rules), "web")
+        ruleset = load_ruleset(rules or resolve_input(settings.web.rules, config), "web")
     except (OSError, ValueError) as exc:
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -820,7 +820,7 @@ def docs_explain(
             raise typer.Exit(code=1)
 
 
-def _load_ownership_quietly(settings: DocpipeConfig) -> Ownership | None:
+def _load_ownership_quietly(settings: DocpipeConfig, config: Path | None) -> Ownership | None:
     """Правила владения для селектора `only.team` на шаге 2.
 
     Нечитаемые правила здесь не роняют прогон и не печатают ничего: шаг 2
@@ -831,13 +831,17 @@ def _load_ownership_quietly(settings: DocpipeConfig) -> Ownership | None:
     if not settings.ownership:
         return None
     try:
-        return load_ownership(Path(settings.ownership))
+        return load_ownership(resolve_input(settings.ownership, config))
     except (OSError, ValueError):
         return None
 
 
 def _with_business_links(
-    context: BuildContext, manifest: Manifest, root: Path, settings: DocpipeConfig
+    context: BuildContext,
+    manifest: Manifest,
+    root: Path,
+    settings: DocpipeConfig,
+    config: Path | None,
 ) -> BuildContext:
     """Досыпать в контекст шага 2 обратный индекс бизнес-каталога.
 
@@ -853,9 +857,9 @@ def _with_business_links(
         return context
 
     try:
-        anchors, _ = read_anchors(manifest, Path(settings.registries), root)
+        anchors, _ = read_anchors(manifest, resolve_input(settings.registries, config), root)
         catalog = load_catalog(root, settings.business_root)
-        ownership = _load_ownership_quietly(settings)
+        ownership = _load_ownership_quietly(settings, config)
         links = backlinks(
             catalog, build_resolve_context(anchors, manifest, root=root, ownership=ownership)
         )
@@ -914,8 +918,10 @@ def _prepare(
 ) -> Step2Inputs:
     """Общая подготовка команд шага 2: манифест, шаблоны, владение, план."""
     settings = load_config(config)
-    templates_path = templates_dir or Path(settings.templates)
-    ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
+    templates_path = templates_dir or resolve_input(settings.templates, config)
+    ownership_path = ownership_file or (
+        resolve_input(settings.ownership, config) if settings.ownership else None
+    )
 
     try:
         manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
@@ -933,6 +939,7 @@ def _prepare(
         manifest,
         root,
         settings,
+        config,
     )
     existing = scan_docs(root, settings.docs_root, settings.docs_scan_exclude)
     plan = build_plan(
@@ -1208,7 +1215,9 @@ def docs_owners(
 ) -> None:
     """Кто владеет документами и что не так с правилами владения."""
     settings = load_config(config)
-    path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
+    path = ownership_file or (
+        resolve_input(settings.ownership, config) if settings.ownership else None
+    )
 
     # Сообщения здесь длиннее обычного намеренно. Владение — необязательная
     # настройка, файла с ним в репозитории нет, и «файл не найден» без объяснения
@@ -1312,7 +1321,7 @@ def _load_anchors(
         raise typer.Exit(code=2) from exc
 
 
-def _registries_path(registries: Path | None, settings: DocpipeConfig) -> Path:
+def _registries_path(registries: Path | None, settings: DocpipeConfig, config: Path | None) -> Path:
     """Путь к описанию реестров: флаг важнее конфигурации, но конфигурация читается.
 
     Раньше команды `anchors` ключ `registries` не читали вовсе — у `list` не было
@@ -1322,7 +1331,7 @@ def _registries_path(registries: Path | None, settings: DocpipeConfig) -> Path:
     if registries is not None:
         return registries
     if settings.registries:
-        return Path(settings.registries)
+        return resolve_input(settings.registries, config)
     typer.echo("Реестры не заданы: --registries или ключ `registries`", err=True)
     raise typer.Exit(code=2)
 
@@ -1353,7 +1362,7 @@ def anchors_list(
     их по манифесту нельзя.
     """
     anchors, errors = _load_anchors(
-        manifest_path, _registries_path(registries, load_config(config)), root
+        manifest_path, _registries_path(registries, load_config(config), config), root
     )
     selected = filter_anchors(anchors, kind or [], team or [])
 
@@ -1392,14 +1401,16 @@ def anchors_explain(
     а заголовок workflow — кириллицу.
     """
     settings = load_config(config)
-    anchors, _ = _load_anchors(manifest_path, _registries_path(registries, settings), root)
+    anchors, _ = _load_anchors(manifest_path, _registries_path(registries, settings, config), root)
     found = [anchor for anchor in anchors if ref in (anchor.ref, anchor.display)]
 
     if not found:
         typer.echo(f"Якорь не найден: {ref}", err=True)
         raise typer.Exit(code=1)
 
-    ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
+    ownership_path = ownership_file or (
+        resolve_input(settings.ownership, config) if settings.ownership else None
+    )
     try:
         ownership = load_ownership(ownership_path) if ownership_path else None
     except (OSError, ValueError) as exc:
@@ -1499,18 +1510,29 @@ app.add_typer(business_app, name="business")
 BUSINESS_TEMPLATES = "business"
 
 
-def _business_template(directory: Path, kind: str) -> str:
-    path = directory / f"{kind}.md"
-    try:
-        return path.read_bytes().decode("utf-8-sig")
-    except OSError as exc:
-        typer.echo(
-            f"Скелет не найден: {path}."
-            " Каталог берётся из ключа `templates` плюс `business`;"
-            " задать явно — флагом --templates",
-            err=True,
-        )
-        raise typer.Exit(code=2) from exc
+def _business_template(directories: list[Path], kind: str) -> str:
+    """Скелет по первому кандидату, где он есть.
+
+    Кандидатов несколько, потому что путь в `docpipe.yaml` пишут и от текущего
+    каталога, и от самой конфигурации. Перечислять их в отказе обязательно:
+    «не найден» с одним путём заставляет гадать, искался ли второй, и это ровно
+    тот случай, когда виновата раскладка поставки, а не команда.
+    """
+    tried = [directory / f"{kind}.md" for directory in directories]
+    for path in tried:
+        try:
+            return path.read_bytes().decode("utf-8-sig")
+        except OSError:
+            continue
+
+    typer.echo(
+        f"Скелет не найден: {', '.join(str(path) for path in tried)}."
+        " Каталог берётся из ключа `templates` плюс `business`"
+        " — от текущего каталога, затем от каталога docpipe.yaml;"
+        " задать явно — флагом --templates",
+        err=True,
+    )
+    raise typer.Exit(code=2)
 
 
 @business_app.command("new")
@@ -1557,7 +1579,13 @@ def business_new(
     # только в репозитории разработки: в установке инструмент лежит не в корне
     # сканируемого репозитория, и по умолчанию искалось бы несуществующее.
     template = _business_template(
-        templates_dir or Path(settings.templates) / BUSINESS_TEMPLATES, kind
+        [templates_dir]
+        if templates_dir
+        else [
+            directory / BUSINESS_TEMPLATES
+            for directory in candidate_inputs(settings.templates, config)
+        ],
+        kind,
     )
     head = (
         "---\ndocpipe:\n"
@@ -1816,13 +1844,19 @@ def _business_context(
     """
     settings = load_config(config)
     anchors, registry_errors = _load_anchors(
-        manifest_path, _registries_path(registries_file, settings), root
+        manifest_path, _registries_path(registries_file, settings, config), root
     )
     manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
 
     # Манифест фронта необязателен: репозиторий без фронта его не собирает,
     # и якорей `page` в таком каталоге нет. Путь по умолчанию — `web.out`
     # из конфигурации; файла нет — страниц просто ноль, а не отказ.
+    #
+    # Второй ступени поиска здесь НЕТ намеренно, хотя это чтение. `web.out` —
+    # цель записи `web scan`, и писатель второй ступени получить не может:
+    # угадывать, куда писать, инструмент не должен. Дай её одному читателю —
+    # и один ключ разошёлся бы на две раскладки: `web scan` пишет в один файл,
+    # `business build` читает другой.
     web_path = web_manifest or Path(settings.web.out)
     web = (
         Manifest.model_validate_json(web_path.read_text(encoding="utf-8"))
@@ -1830,7 +1864,27 @@ def _business_context(
         else None
     )
 
-    ownership_path = ownership_file or (Path(settings.ownership) if settings.ownership else None)
+    # Зато молчать об этом нельзя. «Страниц ноль» — законный исход, и по нему
+    # не отличить репозиторий без фронта от прогона из другого каталога.
+    # Единственный различимый признак — манифест лежит рядом с конфигурацией:
+    # значит, фронт разбирали, а команду позвали не оттуда.
+    if web is None and web_manifest is None:
+        beside = next(
+            (path for path in candidate_inputs(settings.web.out, config)[1:] if path.is_file()),
+            None,
+        )
+        if beside is not None:
+            typer.echo(
+                f"Манифест фронта не прочитан: {web_path} — страниц будет ноль."
+                f" Рядом с docpipe.yaml он есть ({beside}), но ключ `web.out` —"
+                " цель записи `web scan` и считается от текущего каталога:"
+                " позовите команду оттуда же или задайте --web-manifest.",
+                err=True,
+            )
+
+    ownership_path = ownership_file or (
+        resolve_input(settings.ownership, config) if settings.ownership else None
+    )
     try:
         ownership = load_ownership(ownership_path) if ownership_path else None
     except (OSError, ValueError) as exc:
