@@ -96,6 +96,7 @@ from docpipe.stats import (
 from docpipe.web.link import CATEGORIES as LINK_CATEGORIES
 from docpipe.web.link import build_report as build_link_report
 from docpipe.web.link import format_report as format_link_report
+from docpipe.web.overrides import Overrides, load_overrides
 from docpipe.web.pages import DEFAULT_DEPTH
 from docpipe.web.pages import FORMATS as PAGE_FORMATS
 from docpipe.web.pages import build_report as build_pages_report
@@ -285,6 +286,24 @@ def scan(
             "и не дали ни одного типа — см. parse_error_files в сидкаре."
         )
     _check_undecided(result.stats, fail_on_undecided)
+
+
+def _load_page_overrides(
+    pages: Path | None, settings: DocpipeConfig, config: Path | None
+) -> Overrides:
+    """Ручной состав страниц. Файла нет — пустые правила, а не отказ.
+
+    Репозиторий, где обход находит страницы сам, ничего не дописывает руками,
+    и требовать от него файл значило бы делать настройку обязательной там,
+    где она не нужна. Но **названный** файл обязан существовать: молча
+    проигнорировать `--pages` значит потерять решения человека.
+    """
+    if pages is not None:
+        return load_overrides(pages)
+    if not settings.web.pages:
+        return Overrides()
+    path = resolve_input(settings.web.pages, config)
+    return load_overrides(path) if path.is_file() else Overrides()
 
 
 def _check_undecided(stats: Stats, fail: bool) -> None:
@@ -536,6 +555,10 @@ def web_scan(
     rules: Annotated[
         Path | None, typer.Option("--rules", help="Набор правил классификации фронта.")
     ] = None,
+    pages: Annotated[
+        Path | None,
+        typer.Option("--pages", help="Ручной состав страниц. Без флага — `web.pages`."),
+    ] = None,
     out: Annotated[
         Path | None,
         typer.Option(
@@ -556,6 +579,13 @@ def web_scan(
             help="Код 1, если про какой-то символ фронта решение не принято. Для CI.",
         ),
     ] = False,
+    fail_on_stale_overrides: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-stale-overrides",
+            help="Код 1, если правило из `pages.yaml` ни на что не легло. Для CI.",
+        ),
+    ] = False,
     top: Annotated[
         int,
         typer.Option("--top", help="Сколько строк показывать в каждом срезе --stats."),
@@ -573,6 +603,7 @@ def web_scan(
     try:
         settings = load_config(config)
         ruleset = load_ruleset(rules or resolve_input(settings.web.rules, config), "web")
+        overrides = _load_page_overrides(pages, settings, config)
     except (OSError, ValueError) as exc:
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -580,7 +611,13 @@ def web_scan(
     cache_dir = None if no_cache else root / settings.cache_dir
     destination = out or Path(settings.web.out)
 
-    result = run_web_scan(root, settings, ruleset, cache_dir)
+    try:
+        result = run_web_scan(root, settings, ruleset, cache_dir, overrides)
+    except ValueError as exc:
+        # Неоднозначное правило снятия. Выбор наугад здесь означал бы, что
+        # инструмент сам решает, какую страницу убрать из документации.
+        typer.echo(f"Ошибка в ручном составе страниц: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
 
     # Счётчик «решение не принято» считается по СВОЕМУ набору и своим флагом.
     # Общий флаг с шагом 1 означал бы, что настройка фронта роняет CI бэкенда:
@@ -617,12 +654,28 @@ def web_scan(
     typer.echo(
         f"Страниц: {stats['routes']}, из них маршрут не собран у {stats['routes_unresolved']}."
     )
+    if result.overrides.added or result.overrides.removed:
+        typer.echo(
+            f"Ручной состав: добавлено {len(result.overrides.added)}, "
+            f"снято {len(result.overrides.removed)}."
+        )
+    for rule in result.overrides.stale:
+        # Печатается всегда: правило, переставшее совпадать, иначе исчезает
+        # вместе со страницей и не оставляет следа ни в одном отчёте.
+        typer.echo(f"Внимание: {rule.describe()}", err=True)
     if result.meta.parse_error_files:
         typer.echo(
             f"Внимание: {len(result.meta.parse_error_files)} файлов разобраны с ошибками "
             "и не дали ни одного объявления — см. parse_error_files в сидкаре."
         )
     _check_undecided(statistics, fail_on_undecided)
+    if fail_on_stale_overrides and result.overrides.stale:
+        typer.echo(
+            f"Отказ: правил в ручном составе страниц, не легших ни на что: "
+            f"{len(result.overrides.stale)}.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
 
 @web_app.command("link")

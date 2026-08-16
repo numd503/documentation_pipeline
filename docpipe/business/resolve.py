@@ -163,6 +163,11 @@ def build_context(
 
     pages: dict[str, list[DocNode]] = {}
     for node in web.nodes if web else []:
+        if node.kind != "page":
+            # Маршрут в таблице есть, а вид страницы снят руками (`pages.yaml`).
+            # Считать такой узел страницей значило бы вернуть в покрытие экран,
+            # который человек из документации убрал.
+            continue
         for entry in node.routes:
             if entry.route_unresolved:
                 # Маршрут собрать не удалось: якорь на него поставить нельзя,

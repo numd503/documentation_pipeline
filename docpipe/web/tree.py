@@ -15,7 +15,7 @@ import posixpath
 import socket
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -50,6 +50,13 @@ from docpipe.web.modules import (
     discover_modules,
     load_aliases,
     map_files_to_modules,
+)
+from docpipe.web.overrides import (
+    MANUAL_SOURCE,
+    MANUAL_TABLE,
+    OverrideReport,
+    Overrides,
+    StaleRule,
 )
 from docpipe.web.parser import parse_source, parse_tree
 from docpipe.web.resolve import (
@@ -100,6 +107,7 @@ class WebScanResult:
     index: dict[str, Symbol]
     calls: CallScan
     routes: RouteScan
+    overrides: OverrideReport = field(default_factory=OverrideReport)
 
 
 @dataclass(frozen=True)
@@ -570,6 +578,99 @@ def _usages(
     return edges, counters, handlers.type_by_member
 
 
+def apply_overrides(
+    routes: dict[str, list[RouteEntry]],
+    overrides: Overrides,
+    by_fqn: dict[str, Symbol],
+) -> tuple[dict[str, list[RouteEntry]], set[str], OverrideReport]:
+    """Наложить ручные правила на таблицу маршрутов.
+
+    Порядок фиксирован: автоматика -> добавления -> снятия. Снятие сильнее
+    добавления, потому что это последнее слово человека.
+
+    Возвращает маршруты, множество снятых компонентов и отчёт. Отчёт нужен
+    даже когда всё сработало: правило, которое перестало на что-то ложиться,
+    иначе исчезает вместе со страницей и не оставляет следа.
+    """
+    updated = {fqn: list(items) for fqn, items in routes.items()}
+    stale: list[StaleRule] = []
+    added: list[str] = []
+
+    for rule in overrides.add:
+        if rule.component not in by_fqn:
+            stale.append(StaleRule(kind="add-missed", key=rule.component, reason=rule.reason))
+            continue
+        # Лишним правило считается, только когда обход нашёл **этот же**
+        # маршрут. Вторая точка входа у той же страницы — законный случай:
+        # экран открывается и по своему пути, и из окна печати.
+        if any(
+            entry.path == rule.normalized and not entry.route_unresolved
+            for entry in updated.get(rule.component, [])
+        ):
+            stale.append(StaleRule(kind="add-redundant", key=rule.component, reason=rule.reason))
+            continue
+        updated.setdefault(rule.component, []).append(
+            RouteEntry(
+                path=rule.normalized,
+                component=rule.component,
+                source=MANUAL_SOURCE,
+                table=MANUAL_TABLE,
+            )
+        )
+        added.append(rule.component)
+
+    demoted: set[str] = set()
+    for removal in overrides.remove:
+        matched = _removal_targets(removal.component, removal.normalized, updated)
+        if not matched:
+            key = removal.component or f"/{removal.normalized}"
+            stale.append(StaleRule(kind="remove-missed", key=key, reason=removal.reason))
+            continue
+        demoted.update(matched)
+
+    return (
+        {fqn: sorted(items, key=_route_key) for fqn, items in updated.items()},
+        demoted,
+        OverrideReport(added=sorted(added), removed=sorted(demoted), stale=stale),
+    )
+
+
+def _route_key(entry: RouteEntry) -> tuple[str, str, str, str]:
+    return (entry.path, entry.component, entry.source, entry.table)
+
+
+def _removal_targets(component: str, route: str, routes: dict[str, list[RouteEntry]]) -> set[str]:
+    """Кого снимает правило. Неоднозначное снятие — отказ, а не выбор наугад.
+
+    Компонент, стоящий на двух маршрутах (`create` и `edit` — один класс),
+    снимается целиком: вид у него один. Поэтому правило по маршруту, которое
+    задело бы и второй маршрут, обязано отказать и назвать, что нашлось.
+    """
+    if component:
+        return {component} if component in routes else set()
+
+    matched = {
+        fqn
+        for fqn, items in routes.items()
+        if any(entry.path == route and not entry.route_unresolved for entry in items)
+    }
+    for fqn in sorted(matched):
+        others = sorted(
+            {
+                entry.path
+                for entry in routes[fqn]
+                if not entry.route_unresolved and entry.path != route
+            }
+        )
+        if others:
+            raise ValueError(
+                f"снятие по маршруту /{route} неоднозначно: {fqn} стои́т ещё на "
+                + ", ".join(f"/{path}" for path in others)
+                + ". Снимайте по `component`, если хотите убрать страницу целиком."
+            )
+    return matched
+
+
 def build_nodes(
     index: dict[str, Symbol],
     modules: list[WebModule],
@@ -578,6 +679,7 @@ def build_nodes(
     calls: dict[str, list[WebCall]],
     routes: dict[str, list[RouteEntry]],
     uses: dict[str, list[Usage]] | None = None,
+    demoted: set[str] | None = None,
 ) -> tuple[list[Module], list[DocNode]]:
     """Собрать модули и узлы документации фронта.
 
@@ -614,8 +716,10 @@ def build_nodes(
             routes.get(symbol.fqn, []),
             key=lambda entry: (entry.path, entry.component, entry.source, entry.table),
         )
-        kind, template = _promote(
-            classification.kind, classification.template, node_calls, node_routes
+        kind, template = (
+            (classification.kind, classification.template)
+            if symbol.fqn in (demoted or set())
+            else _promote(classification.kind, classification.template, node_calls, node_routes)
         )
 
         nodes.append(
@@ -653,6 +757,7 @@ def run(
     config: DocpipeConfig | None = None,
     ruleset: Ruleset | None = None,
     cache_dir: Path | None = None,
+    overrides: Overrides | None = None,
 ) -> WebScanResult:
     """Прогон шага `web`: исходники -> манифест, метаданные и срезы."""
     started = time.perf_counter()
@@ -685,8 +790,11 @@ def run(
     sources = {relative: (root / relative).read_bytes() for relative in found.ts_files}
     routes = build_routes(sources, context)
 
+    by_component, demoted, override_report = apply_overrides(
+        _routes_by_component(routes), overrides or Overrides(), {s.fqn: s for s in index.values()}
+    )
     configured, nodes = build_nodes(
-        index, modules, ruleset, config, calls_by_file, _routes_by_component(routes), uses
+        index, modules, ruleset, config, calls_by_file, by_component, uses, demoted
     )
 
     manifest = Manifest(
@@ -727,10 +835,20 @@ def run(
             "dispatches": usage_counts["dispatches"],
             "actions_without_handler": usage_counts["actions_without_handler"],
             "selects": usage_counts["selects"],
+            "pages_added": len(override_report.added),
+            "pages_removed": len(override_report.removed),
+            "overrides_stale": len(override_report.stale),
         },
         parse_error_files=broken,
     )
-    return WebScanResult(manifest=manifest, meta=meta, index=index, calls=calls, routes=routes)
+    return WebScanResult(
+        manifest=manifest,
+        meta=meta,
+        index=index,
+        calls=calls,
+        routes=routes,
+        overrides=override_report,
+    )
 
 
 def _context(

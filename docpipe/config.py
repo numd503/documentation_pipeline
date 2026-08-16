@@ -91,6 +91,10 @@ class WebConfig(BaseModel):
     out: str = "artifacts/doc-tree.web.json"
     link_out: str = "artifacts/web-link.json"
 
+    # Ручной состав страниц. Пустая строка — файла нет, и это законно:
+    # репозиторий, где обход находит всё сам, ничего не дописывает руками.
+    pages: str = ""
+
     # Пустой список — законное значение: значит, проверено и ничего
     # не преобразуется. Читается сверху вниз, первое совпадение выигрывает.
     url_rewrite: list[UrlRewrite] = Field(default_factory=list)

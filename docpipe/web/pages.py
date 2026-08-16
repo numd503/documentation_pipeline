@@ -57,6 +57,13 @@ NOTE_NO_CALLS: Final = (
 )
 REASON_NO_ROUTE: Final = "маршрута нет: в таблицах роутов этот компонент не встретился"
 
+# Маршрут есть, а вида страницы нет — так выглядит снятие руками через
+# `pages.yaml`. Причину снятия знает тот файл, а манифест хранит факт: узел
+# стои́т в таблице роутов и страницей при этом не является.
+REASON_MANUAL: Final = (
+    "снята вручную: маршрут в таблице есть, а вид страницы отменён — см. `pages.yaml`"
+)
+
 
 class _Base(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -148,6 +155,7 @@ class NotAPage(_Base):
     title: str
     module: str
     doc_path: str
+    routes: list[str] = Field(default_factory=list)
     reason: str = REASON_NO_ROUTE
 
 
@@ -464,7 +472,16 @@ def build_report(
     ]
     not_pages = sorted(
         (
-            NotAPage(node_id=node.id, title=node.title, module=node.module, doc_path=node.doc_path)
+            NotAPage(
+                node_id=node.id,
+                title=node.title,
+                module=node.module,
+                doc_path=node.doc_path,
+                routes=sorted({f"/{entry.path}" for entry in node.routes}),
+                # Маршрут у компонента есть, а вида страницы нет — значит вид
+                # отменён руками. Другого способа получить такую пару нет.
+                reason=REASON_MANUAL if node.routes else REASON_NO_ROUTE,
+            )
             for node in manifest.nodes
             if node.kind == COMPONENT_KIND
         ),
@@ -602,7 +619,12 @@ def format_report(report: PagesReport, show_not_pages: bool = False) -> str:
 
     if show_not_pages:
         lines += ["", f"Компоненты, страницами не ставшие ({len(report.not_pages)}):"]
-        lines += [f"  {item.title}   [{item.module}]   {item.reason}" for item in report.not_pages]
+        lines += [
+            f"  {item.title}   [{item.module}]"
+            + (f"   {' '.join(item.routes)}" if item.routes else "")
+            + f"   {item.reason}"
+            for item in report.not_pages
+        ]
 
     lines += ["", "Итого:"]
     lines += [f"  {report.counts[key]:>5}  {title}" for key, title in _SUMMARY]
