@@ -51,8 +51,9 @@ NOTE_NO_FEATURES: Final = (
     "признаков функционала не найдено: ни членов, ни внешнего шаблона, ни вызовов"
 )
 NOTE_NO_CALLS: Final = (
-    "вызовов не найдено, но функционал есть: поход за данными через "
-    "dispatch(new Action()) -> стейт -> сервис по конструкторным зависимостям не виден"
+    "страница не ходит за данными сама: ни прямого вызова сервиса, ни диспатча. "
+    "Обычно так выглядит экран, которому данные приходят через @Input от родителя "
+    "либо из платформенного грида"
 )
 REASON_NO_ROUTE: Final = "маршрута нет: в таблицах роутов этот компонент не встретился"
 
@@ -86,13 +87,20 @@ class PageDependency(_Base):
 
 
 class PageCall(_Base):
-    """HTTP-вызов, найденный у страницы или у того, что она тянет."""
+    """HTTP-вызов, до которого страница доходит **по вызовам**.
+
+    `through` — узел и метод, в котором вызов записан (`ModelService.byId`);
+    `action` — тип экшена, если до цели дошли диспатчем. Оба поля обязаны быть
+    видны: список эндпоинтов страницы не факт манифеста, а вывод по графу,
+    и без пути его нельзя проверить.
+    """
 
     http_method: str
     route: str
     discriminator: str = ""
-    through: str  # заголовок узла, на котором записан вызов
-    depth: int  # 0 — вызов записан в самом компоненте страницы
+    through: str  # `ModelService.byId` — где вызов записан
+    action: str = ""  # `[Inner Debt] Load`, если дошли диспатчем
+    depth: int  # 1 — вызов метода, который страница зовёт сама
 
 
 class Page(_Base):
@@ -108,6 +116,11 @@ class Page(_Base):
     template: bool = False
     dependencies: list[PageDependency] = Field(default_factory=list)
     calls: list[PageCall] = Field(default_factory=list)
+
+    # Сколько эндпоинтов **достижимо** по внедрению — величина до P01–P03.
+    # Оставлена рядом намеренно: разница между ней и длиной `calls` и есть
+    # мера того, сколько чужого приезжало в документ страницы.
+    reachable_calls: int = 0
     notes: list[str] = Field(default_factory=list)
 
 
@@ -170,17 +183,115 @@ def _reachable(node: DocNode, by_fqn: dict[str, DocNode], depth: int) -> dict[st
     return seen
 
 
-def _calls_of(node: DocNode, through: str, depth: int) -> list[PageCall]:
-    return [
-        PageCall(
-            http_method=call.key.http_method,
-            route=call.key.route,
-            discriminator=call.key.discriminator,
-            through=through,
-            depth=depth,
+def _called(
+    node: DocNode, by_fqn: dict[str, DocNode], depth: int
+) -> tuple[list[PageCall], dict[str, int]]:
+    """Вызовы, до которых страница доходит **по вызовам**, и кто в этом участвовал.
+
+    Обход идёт по парам «узел, член», а не по узлам: ребро `uses` говорит
+    не «страница знает сервис», а «член страницы зовёт вот этот член сервиса»,
+    и вызовы берутся только из этого члена. Именно замена одного другим убирает
+    с боевой страницы 51 эндпоинт вместо семи.
+
+    Возвращает вызовы и участников (FQN -> шаг), потому что оба считаются одним
+    обходом: второй такой же разошёлся бы с первым на первой правке.
+    """
+    calls: dict[tuple[str, str, str, str, str], PageCall] = {}
+    participants: dict[str, int] = {}
+
+    # Собственные вызовы страницы — шаг ноль. Компонент, который зовёт `http`
+    # сам, в Angular редкость, но он есть, и потерять его нельзя: до этого
+    # эндпоинта страница доходит вообще без посредников.
+    for call in node.web_calls:
+        key = (
+            call.key.http_method,
+            call.key.route,
+            call.key.discriminator,
+            f"{node.title}.{call.member}" if call.member else node.title,
+            "",
         )
-        for call in node.web_calls
-    ]
+        calls.setdefault(
+            key,
+            PageCall(
+                http_method=key[0],
+                route=key[1],
+                discriminator=key[2],
+                through=key[3],
+                depth=0,
+            ),
+        )
+
+    # Состояние обхода: (FQN узла, член этого узла, тип экшена на пути сюда).
+    frontier: list[tuple[str, str, str]] = []
+    for usage in node.uses:
+        frontier.append((usage.target, usage.member, usage.action))
+
+    seen: set[tuple[str, str]] = set()
+    for level in range(1, depth + 1):
+        following: list[tuple[str, str, str]] = []
+        for fqn, member, action in sorted(frontier):
+            if (fqn, member) in seen:
+                continue
+            seen.add((fqn, member))
+
+            reached = by_fqn.get(fqn)
+            if reached is None:
+                continue
+            participants.setdefault(fqn, level)
+
+            for call in reached.web_calls:
+                # Вызов из другого метода того же сервиса к странице отношения
+                # не имеет: сервис на тридцать методов зовут ради двух.
+                if call.member != member:
+                    continue
+                key = (
+                    call.key.http_method,
+                    call.key.route,
+                    call.key.discriminator,
+                    f"{reached.title}.{member}",
+                    action,
+                )
+                calls.setdefault(
+                    key,
+                    PageCall(
+                        http_method=key[0],
+                        route=key[1],
+                        discriminator=key[2],
+                        through=key[3],
+                        action=key[4],
+                        depth=level,
+                    ),
+                )
+
+            for usage in reached.uses:
+                if usage.via == member:
+                    following.append((usage.target, usage.member, action or usage.action))
+        frontier = following
+
+    return [calls[key] for key in sorted(calls)], participants
+
+
+def _reachable_calls(node: DocNode, by_fqn: dict[str, DocNode], depth: int) -> int:
+    """Сколько эндпоинтов **достижимо** по внедрению — величина до P01–P03.
+
+    Считается по тем же зависимостям, что и раньше, и печатается рядом
+    с настоящим числом. Разница — не дефект, а мера: на боевом модуле
+    у `ForecastComponent` 13 внедрённых сервисов давали 51 эндпоинт.
+    """
+    reached = _reachable(node, by_fqn, depth)
+    by_id = {item.id: item for item in by_fqn.values()}
+    keys = {
+        (call.key.http_method, call.key.route, call.key.discriminator) for call in node.web_calls
+    }
+    for node_id in reached:
+        target = by_id.get(node_id)
+        if target is None:
+            continue
+        keys |= {
+            (call.key.http_method, call.key.route, call.key.discriminator)
+            for call in target.web_calls
+        }
+    return len(keys)
 
 
 def _has_template(node: DocNode) -> bool:
@@ -216,33 +327,25 @@ def _notes(page_routes: list[PageRoute], members: int, template: bool, calls: in
 def _page_of(
     node: DocNode, by_fqn: dict[str, DocNode], by_id: dict[str, DocNode], depth: int
 ) -> Page:
-    reached = _reachable(node, by_fqn, depth)
+    calls, participants = _called(node, by_fqn, depth)
 
+    # Участники — те, до чьих членов страница дошла **по вызовам**. Список
+    # внедрённого сюда не входит: сервис, который внедрили и не зовут,
+    # к содержанию документа страницы отношения не имеет.
     dependencies = sorted(
         (
             PageDependency(
-                node_id=node_id,
-                title=by_id[node_id].title,
-                kind=by_id[node_id].kind,
+                node_id=by_fqn[fqn].id,
+                title=by_fqn[fqn].title,
+                kind=by_fqn[fqn].kind,
                 depth=level,
-                doc_path=by_id[node_id].doc_path,
+                doc_path=by_fqn[fqn].doc_path,
             )
-            for node_id, level in reached.items()
+            for fqn, level in participants.items()
+            if fqn in by_fqn
         ),
         key=lambda item: (item.depth, item.title, item.node_id),
     )
-
-    calls = _calls_of(node, node.title, 0)
-    for dependency in dependencies:
-        calls += _calls_of(by_id[dependency.node_id], dependency.title, dependency.depth)
-
-    # Один и тот же вызов может быть записан дважды (перегрузки одного метода
-    # сервиса), а в отчёте это шум: ключ вызова здесь и есть единица смысла.
-    unique = {
-        (call.http_method, call.route, call.discriminator, call.through, call.depth): call
-        for call in calls
-    }
-    calls = [unique[key] for key in sorted(unique)]
 
     routes = sorted(
         (
@@ -270,6 +373,7 @@ def _page_of(
         template=template,
         dependencies=dependencies,
         calls=calls,
+        reachable_calls=_reachable_calls(node, by_fqn, depth),
         notes=_notes(routes, members, template, len(calls)),
     )
 
@@ -318,6 +422,11 @@ def build_report(
         "routes_unresolved": sum(1 for page in pages for item in page.routes if item.unresolved),
         "unanchorable": sum(1 for page in pages if NOTE_UNANCHORABLE in page.notes),
         "without_calls": sum(1 for page in pages if not page.calls),
+        # Две величины рядом: сколько эндпоинтов страницы зовут и сколько
+        # их было бы, считай мы по внедрению. Разница — мера того, сколько
+        # чужого приезжало в документ до графа вызовов.
+        "endpoints_called": sum(len(page.calls) for page in pages),
+        "endpoints_reachable": sum(page.reachable_calls for page in pages),
         "without_features": sum(1 for page in pages if NOTE_NO_FEATURES in page.notes),
         "components_without_route": len(not_pages),
         "nodes_total": len(manifest.nodes),
@@ -364,7 +473,9 @@ def _call_line(call: PageCall) -> str:
     key = f"{call.http_method} /{call.route}"
     if call.discriminator:
         key += f" [{call.discriminator}]"
-    where = "в самом компоненте" if call.depth == 0 else f"через {call.through}, шаг {call.depth}"
+    where = "в самой странице" if call.depth == 0 else f"через {call.through}, шаг {call.depth}"
+    if call.action:
+        where += f", диспатч {call.action}"
     return f"{key}   <- {where}"
 
 
@@ -389,12 +500,19 @@ def _block(page: Page) -> list[str]:
     for index, dependency in enumerate(page.dependencies):
         lines.append(
             _line(
-                "тянет" if index == 0 else "",
+                "зовёт" if index == 0 else "",
                 f"{dependency.title} ({dependency.kind}, шаг {dependency.depth})",
             )
         )
-    for index, call in enumerate(page.calls):
-        lines.append(_line("вызовы" if index == 0 else "", _call_line(call)))
+    lines.append(
+        _line(
+            "эндпоинтов",
+            f"{len(page.calls)} зовёт, {page.reachable_calls} достижимо по внедрению "
+            "(вторая величина — инвентарь, а не состав страницы)",
+        )
+    )
+    for call in page.calls:
+        lines.append(_line("", _call_line(call)))
     for index, note in enumerate(page.notes):
         lines.append(_line("заметки" if index == 0 else "", note))
     return lines
@@ -403,7 +521,9 @@ def _block(page: Page) -> list[str]:
 _SUMMARY: Final[tuple[tuple[str, str], ...]] = (
     ("pages", "страниц"),
     ("unanchorable", "из них якорь поставить нельзя: маршрут не восстановлен"),
-    ("without_calls", "без единого вызова на этой глубине"),
+    ("without_calls", "без единого вызова: за данными не ходят сами"),
+    ("endpoints_called", "эндпоинтов зовут страницы"),
+    ("endpoints_reachable", "эндпоинтов было бы, считай мы по внедрению"),
     ("without_features", "без признаков функционала: ни членов, ни шаблона, ни вызовов"),
     ("components_without_route", "компонентов без маршрута — страницами не стали"),
 )
@@ -431,9 +551,10 @@ def format_report(report: PagesReport, show_not_pages: bool = False) -> str:
     if report.counts["without_calls"]:
         lines += [
             "",
-            "«Без вызовов» не означает «без API»: экшены NGXS создаются в теле метода, "
-            "а не внедряются конструктором, поэтому путь dispatch -> стейт -> сервис "
-            "обходом по зависимостям не виден.",
+            "«Без вызовов» здесь означает, что страница не ходит за данными сама: "
+            "ни прямого вызова сервиса, ни диспатча экшена. Вызовы из шаблона "
+            '(`(click)="save()"`, `service.ready$ | async`) разбор не видит — '
+            "грамматика Angular-шаблонов в дерево не входит.",
         ]
     return "\n".join(lines)
 
