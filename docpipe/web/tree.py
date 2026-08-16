@@ -366,7 +366,8 @@ def build_nodes(
             key=lambda call: (call.file, call.line, call.key.route),
         )
         node_routes = sorted(
-            routes.get(symbol.fqn, []), key=lambda entry: (entry.path, entry.component)
+            routes.get(symbol.fqn, []),
+            key=lambda entry: (entry.path, entry.component, entry.source, entry.table),
         )
         kind, template = _promote(
             classification.kind, classification.template, node_calls, node_routes
