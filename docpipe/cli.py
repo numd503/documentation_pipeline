@@ -68,7 +68,7 @@ from docpipe.materialize.worklist import (
     build_worklist,
     select_documents,
 )
-from docpipe.model import Manifest, RunMeta
+from docpipe.model import DocNode, Manifest, RunMeta
 from docpipe.registry import load_registries, read_registry
 from docpipe.registry.anchors import (
     ResolvedAnchor,
@@ -1320,8 +1320,22 @@ def docs_adopt(
         problems.append(f"{from_path}: файла нет")
     if target.exists():
         problems.append(f"{to_path}: цель занята")
-    if to_path not in {node.doc_path for node in manifest.nodes}:
+
+    claiming = {node.doc_path: node for node in manifest.nodes}
+    if to_path not in claiming:
         problems.append(f"{to_path}: ни один узел манифеста не претендует на этот путь")
+
+    # Узел, поглощённый страницей, своего документа не получает вовсе, поэтому
+    # переносить на его путь бессмысленно: файл тут же снова стал бы сиротой.
+    # Слить текст в раздел страницы автоматически нельзя — это авторский текст,
+    # и место ему выбирает человек, а не совпадение имён.
+    absorbed = _absorbing_page(manifest, from_path, existing)
+    if absorbed:
+        problems.append(
+            f"{from_path}: узел описывается внутри страницы {absorbed.title} "
+            f"({absorbed.doc_path}). Перенесите текст в её разделы «Состояние» "
+            "и «Логика» руками, затем удалите файл."
+        )
 
     moving = next((doc for doc in existing if doc.path == from_path), None)
     if moving is not None and moving.node_id:
@@ -1353,6 +1367,17 @@ def docs_adopt(
     rebuilt = _prepare(manifest_path, root, config, templates_dir, ownership_file).plan
     apply_plan(rebuilt, root)
     typer.echo(f"Перенесено: {from_path} → {to_path}")
+
+
+def _absorbing_page(manifest: Manifest, path: str, existing: list[ExistingDoc]) -> DocNode | None:
+    """Страница, внутри которой описан узел этого документа. Иначе `None`."""
+    doc = next((item for item in existing if item.path == path), None)
+    node = next(
+        (item for item in manifest.nodes if item.id == (doc.node_id if doc else None)), None
+    )
+    if node is None or not node.absorbed_by:
+        return None
+    return next((item for item in manifest.nodes if item.id == node.absorbed_by), None)
 
 
 @docs_app.command("owners")
