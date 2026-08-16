@@ -543,3 +543,22 @@ def test_apply_refuses_to_create_over_an_existing_file(tmp_path: Path) -> None:
     assert result.created == []
     assert result.errors and "уже существует" in result.errors[0]
     assert path.read_text(encoding="utf-8") == "старое"
+
+
+def test_report_says_where_documents_were_updated(tmp_path: Path) -> None:
+    """«Обновлено: N» не отвечает на первый вопрос — что именно перепишут.
+    Раскладка по каталогам, а не список: на боевом объёме это тысячи строк."""
+    import json
+
+    _run(tmp_path)
+    payload = json.loads(GOLDEN_MANIFEST.read_text(encoding="utf-8"))
+    for node in payload["nodes"]:
+        node["domain"] = "Другой домен"
+    changed = tmp_path / "changed.json"
+    changed.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    result = runner.invoke(app, ["materialize", str(changed), "--root", str(tmp_path), "--dry-run"])
+
+    assert result.exit_code == 0
+    assert "Где было бы обновлено:" in result.stdout
+    assert "docs/modules/controllers/Sample.Common" in result.stdout

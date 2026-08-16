@@ -128,8 +128,11 @@ docs_scan_exclude:
 
 `scan_docs` отбрасывает файл пятью способами. Сам прогон о факте сообщает —
 такой узел получает `broken` с отказом, а не `missing`, — но какой именно
-фильтр сработал, по статусу не видно. Это показывает `tools/why_missing.py`:
+фильтр сработал, по статусу не видно. Это показывает `docs explain`:
 
 ```bash
-uv run python tools/why_missing.py МАНИФЕСТ --config docpipe.yaml --root .
+docpipe docs explain МАНИФЕСТ ПУТЬ --config docpipe.yaml --root .
 ```
+
+Он же отвечает на вопрос «почему `update`, а не `create`»: показывает разницу
+между файлом и тем, что будет записано, с разбивкой по зонам.

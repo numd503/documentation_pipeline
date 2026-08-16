@@ -60,7 +60,7 @@ def test_writes_the_file_after_materialize(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     queue = _read(out)
-    assert queue["schema_version"] == "1.0"
+    assert queue["schema_version"] == "1.1"
     assert queue["totals"] == {"documents": 6, "selected": 6, "truncated": False}
     assert {entry["action"] for entry in queue["documents"]} == {"write"}
     # Документы созданы: статус `empty`, а не `missing`, — материализовать нечего.
@@ -359,3 +359,15 @@ def test_scan_and_materialize_agree_on_the_configured_tree(tmp_path: Path) -> No
     # Документы найдены на новом месте: ни один не `missing`.
     assert queue["needs_materialize"] is False
     assert all(entry["doc_path"].startswith("documentation/tech/") for entry in queue["documents"])
+
+
+def test_entry_carries_the_file_action(tmp_path: Path) -> None:
+    """Очередь и `docs status --format json` собираются одной функцией, поэтому
+    поле обязано быть в обеих. `extra="forbid"` у записи это и стережёт."""
+    _materialize(tmp_path)
+    out = tmp_path / "artifacts" / "doc-worklist.json"
+
+    _worklist(tmp_path, out)
+    queue = _read(out)
+
+    assert {doc["file_action"] for doc in queue["documents"]} == {"unchanged"}

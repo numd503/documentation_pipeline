@@ -82,6 +82,7 @@ def test_json_shape(tmp_path: Path) -> None:
     first = payload["documents"][0]
     assert set(first) == {
         "action",
+        "file_action",
         "reason",
         "changes",
         "doc_path",
@@ -355,3 +356,73 @@ def test_unknown_team_is_rejected_by_worklist(tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert not (tmp_path / "queue.json").exists()
+
+
+# --------------------------------------------------------------------------------------
+# Действие с файлом
+# --------------------------------------------------------------------------------------
+#
+# `status` описывает содержимое документа, `file_action` — что прогон сделает
+# с файлом. Раньше наружу выходило только первое, и вопрос «что именно
+# перепишут» ответа не имел ни в одном отчёте.
+
+
+def _with_domain(tmp_path: Path, domain: str) -> Path:
+    """Тот же манифест с другим доменом: поле проекции, документ не меняется."""
+    payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    for node in payload["nodes"]:
+        node["domain"] = domain
+    changed = tmp_path / "changed.json"
+    changed.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return changed
+
+
+def test_file_action_is_shown_as_a_column(tmp_path: Path) -> None:
+    _materialize(tmp_path)
+
+    out = _status(tmp_path).stdout
+
+    assert "unchanged" in out
+    assert f"empty       unchanged  {CONTROLLER}" in out
+
+
+def test_file_action_filters_the_selection(tmp_path: Path) -> None:
+    _materialize(tmp_path)
+    changed = _with_domain(tmp_path, "Другой домен")
+
+    updated = _status(tmp_path, "--file-action", "update", manifest=changed)
+    untouched = _status(tmp_path, "--file-action", "unchanged", manifest=changed)
+
+    assert updated.exit_code == 0
+    assert updated.stdout.count("update") >= 6
+    assert "всего            6" in updated.stdout
+    assert "всего            0" in untouched.stdout
+
+
+def test_unknown_file_action_is_rejected(tmp_path: Path) -> None:
+    """Опечатка в значении иначе дала бы пустую выборку, неотличимую от честной."""
+    result = _status(tmp_path, "--file-action", "updated")
+
+    assert result.exit_code == 2
+    assert "неизвестные значения updated" in result.stderr
+
+
+def test_current_document_stays_visible_when_it_is_rewritten(tmp_path: Path) -> None:
+    """Документ в порядке, а файл перепишут — раньше об этом не было ни строки.
+
+    Смена домена меняет проекцию: статус остаётся `current`, `file_action`
+    становится `update`, и подробный список показывал только первое.
+    """
+    _materialize(tmp_path)
+    for name in ("purpose", "api", "behaviour", "collaboration", "notes"):
+        _fill(tmp_path, CONTROLLER, name, "Написано человеком.")
+    runner.invoke(app, ["docs", "accept", str(MANIFEST), CONTROLLER, "--root", str(tmp_path)])
+
+    # Принятый и не переписываемый документ в подробностях не показывается:
+    # ради этого `current` из них и исключён.
+    assert CONTROLLER not in _status(tmp_path).stdout
+
+    changed = _with_domain(tmp_path, "Другой домен")
+    loud = _status(tmp_path, manifest=changed).stdout
+
+    assert f"current     update     {CONTROLLER}" in loud

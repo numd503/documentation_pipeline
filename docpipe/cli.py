@@ -33,6 +33,7 @@ from docpipe.explain import ANY, format_selection, select, selection_json
 from docpipe.hashing import content_hash, stable_json_dumps
 from docpipe.materialize.apply import apply_plan, format_result, write_atomic
 from docpipe.materialize.build import BuildContext, build_context
+from docpipe.materialize.explain import format_explain_document, zone_diff
 from docpipe.materialize.ownership import (
     Ownership,
     explain,
@@ -41,6 +42,7 @@ from docpipe.materialize.ownership import (
     owner_of,
 )
 from docpipe.materialize.plan import (
+    DEFAULT_DOCS_SCAN_EXCLUDE,
     ExistingDoc,
     MaterializePlan,
     PlannedDoc,
@@ -53,6 +55,7 @@ from docpipe.materialize.plan import (
 )
 from docpipe.materialize.status import (
     AGENT_ACTIONS,
+    FILE_ACTIONS,
     STATUSES,
     filter_documents,
     format_status,
@@ -707,7 +710,14 @@ def docs_status(
     ] = None,
     action: Annotated[
         list[str] | None,
-        typer.Option("--action", help="Только эти решения: write, review, skip."),
+        typer.Option("--action", help="Только эти решения агента: write, review, skip."),
+    ] = None,
+    file_action: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--file-action",
+            help="Только эти действия с файлом: create, update, unchanged, relocate, refuse.",
+        ),
     ] = None,
     fail_on: Annotated[
         list[str] | None,
@@ -722,6 +732,7 @@ def docs_status(
     """
     for name, values, allowed in (
         ("--action", action, AGENT_ACTIONS),
+        ("--file-action", file_action, FILE_ACTIONS),
         ("--fail-on", fail_on, STATUSES),
     ):
         unknown = sorted(set(values or ()) - allowed)
@@ -739,7 +750,7 @@ def docs_status(
     )
     plan = with_links(loaded.plan, check_links(loaded.existing, root))
 
-    selected = filter_documents(plan.documents, paths or [], action or [])
+    selected = filter_documents(plan.documents, paths or [], action or [], file_action or [])
     typer.echo(
         format_status_json(plan, selected)
         if output_format == "json"
@@ -748,6 +759,65 @@ def docs_status(
 
     if plan.errors or (fail_on and {doc.status for doc in selected} & set(fail_on)):
         raise typer.Exit(code=1)
+
+
+@docs_app.command("explain")
+def docs_explain(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага 1.")],
+    doc_path: Annotated[
+        Path, typer.Argument(help="Путь документа: репо-относительный или обычный.")
+    ],
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория.")] = Path("."),
+    config: Annotated[Path | None, typer.Option("--config", help="docpipe.yaml.")] = None,
+    templates_dir: Annotated[
+        Path | None, typer.Option("--templates", help="Каталог шаблонов.")
+    ] = None,
+    ownership_file: Annotated[
+        Path | None, typer.Option("--ownership", help="Правила владения.")
+    ] = None,
+    show_diff: Annotated[
+        bool, typer.Option("--diff", help="Показать полный unified diff, а не только зоны.")
+    ] = False,
+) -> None:
+    """Почему с этим документом сделают именно это. Ничего не пишет.
+
+    Отчёт по дереву группирует по статусу и на три вопроса не отвечает: какой
+    фильтр обхода отбросил лежащий на диске файл, чем собранный текст отличается
+    от него и не задевает ли перезапись авторские секции. Здесь — по шагам
+    и про один документ.
+    """
+    loaded = _prepare(manifest_path, root, config, templates_dir, ownership_file)
+
+    # Путь принимается в любом виде, лишь бы указывал на то же место: репо-
+    # относительный из отчёта, обычный из оболочки с дополнением по Tab,
+    # абсолютный. Требовать один вид значило бы заставлять человека
+    # преобразовывать путь руками ровно тогда, когда он и так что-то ищет.
+    target = doc_path.as_posix()
+    try:
+        target = doc_path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        target = target[2:] if target.startswith("./") else target
+
+    plan = with_links(loaded.plan, check_links(loaded.existing, root))
+    if plan.errors:
+        typer.echo(format_status(plan, []))
+        raise typer.Exit(code=1)
+
+    doc = next((item for item in plan.documents if item.doc_path == target), None)
+    globs = DEFAULT_DOCS_SCAN_EXCLUDE + list(loaded.settings.docs_scan_exclude)
+    typer.echo(format_explain_document(target, doc, root, globs, show_diff))
+
+    if doc is None:
+        raise typer.Exit(code=1)
+
+    # Затронутая авторская секция — не «изменение», а нарушение инварианта
+    # шага 2, поэтому код возврата: такую находку надо ловить проверкой,
+    # а не глазами в выводе.
+    if doc.content is not None and (root / target).is_file():
+        raw = (root / target).read_bytes().decode("utf-8-sig")
+        before = raw.replace("\r\n", "\n").replace("\r", "\n")
+        if zone_diff(before, doc.content).touches_authored:
+            raise typer.Exit(code=1)
 
 
 def _load_ownership_quietly(settings: DocpipeConfig) -> Ownership | None:
