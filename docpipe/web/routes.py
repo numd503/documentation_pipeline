@@ -86,6 +86,24 @@ class RouteTable:
     name: str
     node: Node
 
+    @property
+    def origin(self) -> "_Origin":
+        return _Origin(file=self.file, table=self.name)
+
+
+@dataclass(frozen=True)
+class _Origin:
+    """Откуда пришла ветка: файл таблицы и имя массива.
+
+    Ходит по обходу вместо одного пути к файлу, потому что дерево собирается
+    межфайлово: у ветки, приехавшей спредом, файл объявления и файл корневой
+    таблицы — разные, и по одному имени файла нельзя сказать, какой из восьми
+    массивов `Routes` дал эту страницу.
+    """
+
+    file: str
+    table: str
+
 
 @dataclass
 class RouteScan:
@@ -248,29 +266,38 @@ def _walk(
     for element in table.node.named_children:
         if element.type != "object":
             continue
-        _branch(element, prefix, table.file, scan, trees, ctx, visited)
+        _branch(element, prefix, table.origin, scan, trees, ctx, visited)
 
 
 def _branch(
     element: Node,
     prefix: str,
-    file: str,
+    origin: _Origin,
     scan: RouteScan,
     trees: _Trees,
     ctx: ResolveContext,
     visited: set[tuple[str, str]],
 ) -> None:
+    file = origin.file
     path_node = _pair(element, "path")
     segment = _literal(path_node)
 
     if path_node is not None and segment is None:
         # Сегмент собран выражением: дойти по таблице сюда можно, а путь
         # собрать нельзя. Это состояние, а не отсутствие узла.
+        #
+        # Путь нормализуется тем же `normalize_route`, что и у восстановленных
+        # веток: иначе накопленный префикс уезжает в вывод как записан — с `:id`
+        # и в исходном регистре, — и в одном списке оказываются две формы
+        # одного пути. Расхождение видно только глазами и только у того,
+        # кто знает про эту ветку кода.
         scan.entries.append(
             RouteEntry(
-                path=prefix,
+                path=normalize_route(prefix),
                 component=_component_of(element, file, ctx) or "",
                 route_unresolved=True,
+                source=origin.file,
+                table=origin.table,
             )
         )
         return
@@ -284,11 +311,18 @@ def _branch(
 
     component = _component_of(element, file, ctx)
     if component:
-        scan.entries.append(RouteEntry(path=normalize_route(full), component=component))
+        scan.entries.append(
+            RouteEntry(
+                path=normalize_route(full),
+                component=component,
+                source=origin.file,
+                table=origin.table,
+            )
+        )
 
     children = _pair(element, "children")
     if children is not None and children.type == "array":
-        _children(children, full, file, scan, trees, ctx, visited)
+        _children(children, full, origin, scan, trees, ctx, visited)
 
     lazy = _pair(element, "loadChildren")
     if lazy is not None:
@@ -301,7 +335,7 @@ def _branch(
 def _children(
     array: Node,
     prefix: str,
-    file: str,
+    origin: _Origin,
     scan: RouteScan,
     trees: _Trees,
     ctx: ResolveContext,
@@ -310,11 +344,11 @@ def _children(
     """Элементы `children`: свои объекты и спреды импортированных массивов."""
     for element in array.named_children:
         if element.type == "object":
-            _branch(element, prefix, file, scan, trees, ctx, visited)
+            _branch(element, prefix, origin, scan, trees, ctx, visited)
             continue
         if element.type == "spread_element":
             name = _text(next((c for c in element.named_children), None))
-            table = _array_of(name, file, trees, ctx) if name else None
+            table = _array_of(name, origin.file, trees, ctx) if name else None
             if table is not None:
                 _walk(table, prefix, scan, trees, ctx, visited)
 
@@ -364,5 +398,7 @@ def build_routes(sources: dict[str, bytes], ctx: ResolveContext) -> RouteScan:
             continue
         _walk(table, "", scan, trees, ctx, visited)
 
-    scan.entries.sort(key=lambda entry: (entry.path, entry.component))
+    # Источник входит в ключ: две записи, совпадающие путём и компонентом,
+    # различаются только им, и без него их порядок задавал бы обход.
+    scan.entries.sort(key=lambda entry: (entry.path, entry.component, entry.source, entry.table))
     return scan

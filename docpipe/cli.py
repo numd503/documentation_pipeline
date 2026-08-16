@@ -96,6 +96,12 @@ from docpipe.stats import (
 from docpipe.web.link import CATEGORIES as LINK_CATEGORIES
 from docpipe.web.link import build_report as build_link_report
 from docpipe.web.link import format_report as format_link_report
+from docpipe.web.pages import DEFAULT_DEPTH
+from docpipe.web.pages import FORMATS as PAGE_FORMATS
+from docpipe.web.pages import build_report as build_pages_report
+from docpipe.web.pages import format_report as format_pages_report
+from docpipe.web.pages import report_csv as pages_csv
+from docpipe.web.pages import report_json as pages_json
 from docpipe.web.tree import run as run_web_scan
 
 app = typer.Typer(
@@ -681,6 +687,77 @@ def web_link(
             err=True,
         )
         raise typer.Exit(code=1)
+
+
+@web_app.command("pages")
+def web_pages(
+    manifest_path: Annotated[Path, typer.Argument(help="Манифест шага `web`.")],
+    output_format: Annotated[
+        str, typer.Option("--format", help=f"Один из: {', '.join(PAGE_FORMATS)}.")
+    ] = "text",
+    depth: Annotated[
+        int,
+        typer.Option("--depth", help="Глубина обхода зависимостей при поиске вызовов страницы."),
+    ] = DEFAULT_DEPTH,
+    route: Annotated[
+        str, typer.Option("--route", help="Только страницы, в маршруте которых есть подстрока.")
+    ] = "",
+    module: Annotated[
+        str, typer.Option("--module", help="Только страницы этого модуля (подстрока имени).")
+    ] = "",
+    not_pages: Annotated[
+        bool,
+        typer.Option("--not-pages", help="Дописать компоненты, страницами не ставшие, и почему."),
+    ] = False,
+) -> None:
+    """Показать страницы фронта и почему каждая из них страница.
+
+    Вид `page` — единственный, который не выдаётся правилом: правило говорит
+    «компонент», а страницей его делает повышение по таблице роутов. Поэтому
+    ни `scan --stats`, ни `symbols` этот вид объяснить не могут, и цифру
+    «страниц N» до этой команды нечем было проверить.
+
+    Вызовы страницы **вычисляются обходом** зависимостей, а не читаются полем:
+    `web_calls` лежат на узле сервиса, где вызов и записан. Отсюда `--depth`
+    и указание посредника у каждого вызова.
+    """
+    if output_format not in PAGE_FORMATS:
+        typer.echo(
+            f"Неизвестный формат: {output_format}. Известные: {', '.join(PAGE_FORMATS)}.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if depth < 0:
+        raise typer.BadParameter("глубина не может быть отрицательной", param_hint="--depth")
+
+    try:
+        manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Не удалось прочитать манифест: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    report = build_pages_report(manifest, depth=depth, route=route, module=module)
+
+    if output_format == "json":
+        typer.echo(pages_json(report))
+        return
+    if output_format == "csv":
+        typer.echo(pages_csv(report), nl=False)
+        return
+
+    typer.echo(format_pages_report(report, show_not_pages=not_pages))
+
+    # Пустой список у манифеста с узлами — это не «страниц нет», а «таблица
+    # роутов не собралась»: она опознаётся по аннотации типа (`: Routes`),
+    # и фронт на `RouterModule.forRoot([...])` с массивом на месте не даст
+    # ни одной записи, не дав и ни одной ошибки разбора.
+    if not report.counts["pages"] and manifest.nodes:
+        typer.echo(
+            "\nНи одной страницы. Таблица роутов опознаётся по аннотации типа "
+            "(`const x: Routes = [...]`); массив, объявленный прямо в "
+            "`RouterModule.forRoot([...])` или без аннотации, таблицей не считается.",
+            err=True,
+        )
 
 
 docs_app = typer.Typer(

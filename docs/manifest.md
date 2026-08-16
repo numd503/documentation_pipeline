@@ -86,7 +86,7 @@ artifacts/doc-tree.run.json   сидкар — всё про конкретны�
 
 | Поле | Что |
 |---|---|
-| `routes[]` | маршруты страницы: `path`, `component`, `route_unresolved` |
+| `routes[]` | маршруты страницы: `path`, `component`, `route_unresolved`, `source`, `table` |
 | `web_calls[]` | HTTP-вызовы: файл, строка, ключ `(метод, маршрут, различитель)`, уверенность |
 
 Состав файла и команды — в [`web.md`](web.md).

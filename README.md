@@ -63,12 +63,12 @@
 | ✅ **Шаг 1**, T00–T26 | `docpipe scan`: детерминированный манифест `doc-tree.json` по исходникам |
 | ✅ **Шаг 2**, M01–M13 | `docpipe materialize` и `docpipe docs`: документы, зоны, статусы, приёмка |
 | ✅ **Бизнес-слой**, B01–B11 | `docpipe anchors` и `docpipe business`: точки входа, каталог процессов, `business_hash` |
-| ✅ **Шаг `web`**, F01–F18 | `docpipe web scan` и `docpipe web link`: манифест фронта той же схемы и связь фронт↔бэк |
+| ✅ **Шаг `web`**, F01–F19 | `docpipe web scan`, `docpipe web link` и `docpipe web pages`: манифест фронта той же схемы, связь фронт↔бэк и список страниц с обоснованием |
 | ⬜ Шаг 3 | наполнение документов агентом. Очередь ему готова (`docpipe worklist`), сам исполнитель — вне этого репозитория |
 | ⬜ T05b | связанные исходники `<Compile Include>` — отложена, см. [findings-stress.md](docs/findings-stress.md) |
 | ⬜ цепочка NGXS | `dispatch(new X(…))` не разбирается: у страницы нет связи с эндпоинтом через стейт, см. F14 в [плане фронтенда](docs/frontend-implementation-plan.md) |
 
-1496 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
+1526 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
 
 Что уже работает сквозным прогоном:
 
@@ -83,6 +83,7 @@ docpipe docs accept artifacts/doc-tree.json PATH        # зафиксирова
 # фронтенд на Angular
 docpipe web scan --root . --out artifacts/doc-tree.web.json                  # манифест фронта
 docpipe web link artifacts/doc-tree.json artifacts/doc-tree.web.json         # кто зовёт какой эндпоинт
+docpipe web pages artifacts/doc-tree.web.json --not-pages                     # какие страницы и почему
 docpipe materialize artifacts/doc-tree.web.json --root .                     # документы фронта
 
 # бизнес-документация
