@@ -179,7 +179,8 @@ cp "$SOURCE/deploy/cashflow-docspipe/README.md" "$DEST/cashflow-docspipe/README.
 # ПУТЬ СЮДА ОБЯЗАН БЫТЬ В docpipe.yaml. Значение `templates` по умолчанию —
 # "templates" относительно ТЕКУЩЕГО каталога (как и `out`), а команды зовутся
 # из корня репозитория АС CF. То есть по умолчанию ищется $CF_ROOT/templates,
-# которого нет и не будет.
+# которого нет и не будет. Вторая ступень поиска — каталог самого docpipe.yaml —
+# спасла бы и короткое значение, но явный путь надёжнее и остаётся.
 mkdir -p "$DEST/cashflow-docspipe/templates/examples"
 for tpl in "$SOURCE"/templates/*.md "$SOURCE"/templates/examples/*.md; do
     rel="${tpl#"$SOURCE"/templates/}"
