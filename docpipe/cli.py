@@ -406,7 +406,10 @@ def symbols(
         str,
         typer.Option(
             "--state",
-            help="undecided, not_documented, documented, not_enrolled, interface_covered или any.",
+            help=(
+                "undecided, not_documented, documented, not_enrolled, "
+                "interface_covered, page_covered или any."
+            ),
         ),
     ] = UNDECIDED,
     module: Annotated[
@@ -422,6 +425,10 @@ def symbols(
     no_cache: Annotated[
         bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
     ] = False,
+    lang: Annotated[
+        str,
+        typer.Option("--lang", help="cs (шаг 1) либо ts (шаг `web`). По умолчанию cs."),
+    ] = "cs",
     output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
 ) -> None:
     """Показать сами символы, а не счётчики: что именно осталось без решения.
@@ -443,21 +450,38 @@ def symbols(
             param_hint="--state",
         )
 
+    if lang not in ("cs", "ts"):
+        raise typer.BadParameter("известны cs и ts", param_hint="--lang")
+
+    # Секция правил и есть язык: набор .NET, прочитанный шагом `web`, отсеял бы
+    # весь фронт целиком (`require_public` на TypeScript), и это молчаливая
+    # ловушка, а не ошибка загрузки.
+    section = "dotnet" if lang == "cs" else "web"
     try:
         settings = load_config(config)
-        ruleset = load_ruleset(rules or resolve_input(settings.rules, config), "dotnet")
+        settings_rules = settings.rules if lang == "cs" else settings.web.rules
+        ruleset = load_ruleset(rules or resolve_input(settings_rules, config), section)
     except (OSError, ValueError) as exc:
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    result = run_scan(
-        root, settings, ruleset, None if no_cache else root / settings.cache_dir, jobs
-    )
+    cache_dir = None if no_cache else root / settings.cache_dir
+    if lang == "cs":
+        scanned = run_scan(root, settings, ruleset, cache_dir, jobs)
+        index, manifest = scanned.index, scanned.manifest
+        configured = {module.project_file for module in manifest.modules if module.enrolled}
+    else:
+        web = run_web_scan(root, settings, ruleset, cache_dir)
+        index, manifest = web.index, web.manifest
+        configured = {
+            module.id.removeprefix("module:") for module in manifest.modules if module.enrolled
+        }
+
     selection = select(
-        result.index,
-        result.manifest.nodes,
+        index,
+        manifest.nodes,
         ruleset,
-        {module.project_file for module in result.manifest.modules if module.enrolled},
+        configured,
         state=state,
         module=module,
         namespace=namespace,

@@ -19,6 +19,7 @@ from docpipe.model import DocNode, Symbol
 from docpipe.stats import (
     STATE_TITLES,
     Decision,
+    absorbed_pages,
     decide,
     documented_base_types,
     plural,
@@ -80,10 +81,11 @@ def select(
     выборка расходились бы в числах, и доверять было бы нельзя ни одному.
     """
     documented_bases = documented_base_types(nodes)
+    absorbed = absorbed_pages(nodes)
 
     rows: list[Row] = []
     for symbol in index.values():
-        decision = decide(symbol, ruleset, enrolled, documented_bases)
+        decision = decide(symbol, ruleset, enrolled, documented_bases, absorbed)
         if state != ANY and decision.state != state:
             continue
         if module and not _matches_module(symbol, module):
@@ -159,6 +161,8 @@ def _public_members(symbol: Symbol) -> str:
 
 
 def _decision_line(decision: Decision) -> str:
+    if decision.page:
+        return f"{STATE_TITLES[decision.state]}: {decision.page} ({decision.kind})"
     if decision.exclusion is not None:
         return (
             f"{STATE_TITLES[decision.state]}: {decision.exclusion.id} — {decision.exclusion.reason}"

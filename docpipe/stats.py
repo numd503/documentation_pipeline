@@ -59,6 +59,13 @@ _SUFFIXES = (
 
 DOCUMENTED = "documented"
 INTERFACE_COVERED = "interface_covered"
+
+# Символ, который документируется внутри документа страницы (P07). Решение,
+# а не пробел: отдельного файла у него нет, но описан он будет — разделом
+# «Логика» или «Состояние» той страницы, которая одна до него дотягивается.
+# Отдельная категория нужна ровно затем же, зачем `interface_covered`:
+# не засорять `undecided`, единственное число, которое обязано идти к нулю.
+PAGE_COVERED = "page_covered"
 UNDECIDED = "undecided"
 NOT_DOCUMENTED = "not_documented"
 NOT_ENROLLED = "not_enrolled"
@@ -71,12 +78,13 @@ STATE_TITLES: dict[str, str] = {
     NOT_DOCUMENTED: "не документируем",
     NOT_ENROLLED: "вне области",
     INTERFACE_COVERED: "интерфейс с реализацией",
+    PAGE_COVERED: "документируется внутри страницы",
     UNDECIDED: "решение не принято",
 }
 
 # Категории, которые не являются видами сущностей. Отделены, потому что попадают
 # в разные части отчёта: виды — в таблицу видов, эти четыре — в блок решений.
-_SPECIAL = (NOT_DOCUMENTED, UNDECIDED, INTERFACE_COVERED, NOT_ENROLLED)
+_SPECIAL = (NOT_DOCUMENTED, UNDECIDED, INTERFACE_COVERED, NOT_ENROLLED, PAGE_COVERED)
 
 
 @dataclass(frozen=True)
@@ -93,10 +101,29 @@ class Decision:
     exclusion: ExcludeRule | None = None
     matched_rules: list[str] = field(default_factory=list)
 
+    # Заголовок страницы, внутри документа которой символ описывается.
+    # Заполнен только у `page_covered`: без имени страницы состояние
+    # неотличимо от «документируем где-то там».
+    page: str = ""
+
 
 def documented_base_types(nodes: list[DocNode]) -> set[str]:
     """FQN всех базовых типов документируемых узлов — вход для `interface_covered`."""
     return {fqn for node in nodes if node.symbol for fqn in node.symbol.base_type_closure}
+
+
+def absorbed_pages(nodes: list[DocNode]) -> dict[str, str]:
+    """FQN -> заголовок страницы, поглотившей узел. Вход для `page_covered`.
+
+    Считается по манифесту, а не по правилам: поглощение — свойство графа
+    вызовов, и правило о нём ничего не знает.
+    """
+    titles = {node.id: node.title for node in nodes}
+    return {
+        node.symbol.fqn: titles.get(node.absorbed_by, node.absorbed_by)
+        for node in nodes
+        if node.symbol and node.absorbed_by
+    }
 
 
 def decide(
@@ -104,6 +131,7 @@ def decide(
     ruleset: Ruleset,
     enrolled: set[str] | None = None,
     documented_bases: frozenset[str] | set[str] = frozenset(),
+    absorbed: dict[str, str] | None = None,
 ) -> Decision:
     """Состояние одного символа. Порядок проверок значим и повторяться не должен.
 
@@ -118,10 +146,12 @@ def decide(
         return Decision(state=NOT_DOCUMENTED, exclusion=exclusion)
 
     if (classification := classify(symbol, ruleset)) is not None:
+        page = (absorbed or {}).get(symbol.fqn, "")
         return Decision(
-            state=DOCUMENTED,
+            state=PAGE_COVERED if page else DOCUMENTED,
             kind=classification.kind,
             matched_rules=classification.matched_rules,
+            page=page,
         )
 
     if symbol.type_kind == "interface" and symbol.fqn in documented_bases:
@@ -172,10 +202,16 @@ def collect_stats(
     reasons: dict[str, str] = {}
     rest: list[Symbol] = []
 
+    absorbed = absorbed_pages(nodes)
+
     for symbol in index.values():
-        decision = decide(symbol, ruleset, enrolled, documented_bases)
+        decision = decide(symbol, ruleset, enrolled, documented_bases, absorbed)
         # Документируемые считаются по видам: вид — это и есть содержание решения.
-        counts[decision.kind or decision.state] += 1
+        # Поглощённые — по состоянию: у них вид есть, но своего документа нет,
+        # и в таблице видов они бы обещали файлы, которых не будет.
+        counts[
+            decision.state if decision.state in _SPECIAL else (decision.kind or decision.state)
+        ] += 1
         if decision.exclusion is not None:
             skipped[decision.exclusion.id] += 1
             reasons[decision.exclusion.id] = decision.exclusion.reason
@@ -295,6 +331,11 @@ def format_decisions(stats: Stats) -> str:
         ),
         ("вне области", stats.counts.get(NOT_ENROLLED, 0), "enrolled в docpipe.yaml"),
         ("интерфейс с реализацией", stats.counts.get(INTERFACE_COVERED, 0), "решил инструмент"),
+        (
+            "документируется внутри страницы",
+            stats.counts.get(PAGE_COVERED, 0),
+            "решил инструмент: одна страница",
+        ),
     ]
     last = (
         ("РЕШЕНИЕ НЕ ПРИНЯТО", undecided, "<- это и есть работа")
