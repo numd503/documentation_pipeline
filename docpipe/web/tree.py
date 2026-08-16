@@ -43,6 +43,7 @@ from docpipe.model import (
 )
 from docpipe.route import RewriteRule
 from docpipe.tree import doc_path_for, signature_hash
+from docpipe.web.absorb import absorb
 from docpipe.web.calls import CallScan, RawCall, RegistryCall, build_calls, extract_calls
 from docpipe.web.members import MemberRanges, member_ranges
 from docpipe.web.modules import (
@@ -749,7 +750,10 @@ def build_nodes(
             )
         )
 
-    return configured, sorted(nodes, key=lambda node: node.id)
+    # Поглощение считается на готовом списке: правило про то, сколько СТРАНИЦ
+    # дотягивается до узла, а страницы известны только после классификации
+    # и повышения.
+    return configured, absorb(sorted(nodes, key=lambda node: node.id))
 
 
 def run(
@@ -838,6 +842,7 @@ def run(
             "pages_added": len(override_report.added),
             "pages_removed": len(override_report.removed),
             "overrides_stale": len(override_report.stale),
+            "absorbed": sum(1 for node in nodes if node.absorbed_by),
         },
         parse_error_files=broken,
     )

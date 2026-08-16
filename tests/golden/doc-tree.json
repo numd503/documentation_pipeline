@@ -34,6 +34,7 @@
   ],
   "nodes": [
     {
+      "absorbed_by": "",
       "dependencies": [],
       "doc_path": "docs/modules/controllers/Sample.Common/base-api-controller.md",
       "domain": "Sample.Common",
@@ -107,6 +108,7 @@
       "web_calls": []
     },
     {
+      "absorbed_by": "",
       "dependencies": [
         {
           "confidence": "high",
@@ -254,6 +256,7 @@
       "web_calls": []
     },
     {
+      "absorbed_by": "",
       "dependencies": [],
       "doc_path": "docs/modules/ignite_services/Sample.Pricing.Api/risk-compute-service.md",
       "domain": "Sample.Pricing.Api",
@@ -346,6 +349,7 @@
       "web_calls": []
     },
     {
+      "absorbed_by": "",
       "dependencies": [
         {
           "confidence": "high",
@@ -424,6 +428,7 @@
       "web_calls": []
     },
     {
+      "absorbed_by": "",
       "dependencies": [
         {
           "confidence": "high",
@@ -551,6 +556,7 @@
       "web_calls": []
     },
     {
+      "absorbed_by": "",
       "dependencies": [],
       "doc_path": "docs/modules/workflows/Sample.Pricing.Api/valuation-workflow.md",
       "domain": "Sample.Pricing.Api",
