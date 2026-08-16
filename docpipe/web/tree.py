@@ -43,6 +43,7 @@ from docpipe.model import (
 from docpipe.route import RewriteRule
 from docpipe.tree import doc_path_for, signature_hash
 from docpipe.web.calls import CallScan, RawCall, RegistryCall, build_calls, extract_calls
+from docpipe.web.members import MemberRanges, member_ranges
 from docpipe.web.modules import (
     WebModule,
     discover_modules,
@@ -141,12 +142,19 @@ def _rewrite_for(module: WebModule, config: DocpipeConfig) -> RewriteRule | None
 
 
 def _calls_by_file(
-    parsed: list[_Parsed], modules: list[WebModule], config: DocpipeConfig
+    parsed: list[_Parsed],
+    modules: list[WebModule],
+    config: DocpipeConfig,
+    ranges: MemberRanges,
 ) -> tuple[CallScan, dict[str, list[WebCall]]]:
     """Вызовы, разобранные по правилам своего модуля.
 
     Правило берётся по модулю файла, а не одно на прогон: у семи фронтов
     репозитория семь разных `pathRewrite`, и общий ключ склеил бы их маршруты.
+
+    Здесь же вызову проставляется член, в котором он записан: дальше по этому
+    полю страница отличит «зову метод, который ходит вот сюда» от «внедрил
+    сервис, у которого есть такой метод».
     """
     by_module: dict[str, list[RawCall]] = {}
     module_of_file = map_files_to_modules([item.result.path for item in parsed], modules)
@@ -166,9 +174,16 @@ def _calls_by_file(
             rewrite=_rewrite_for(module, config),
             registry=registry,
         )
-        calls.extend(scan.calls)
+
+        def with_member(call: WebCall) -> WebCall:
+            return call.model_copy(update={"member": ranges.of(call.file, call.line)})
+
+        calls.extend(with_member(call) for call in scan.calls)
         unresolved.extend(scan.unresolved)
-        registry_unresolved.extend(scan.registry_unresolved)
+        # Тот же список проходит ту же обработку: `registry_unresolved` —
+        # подмножество `calls`, и разное наполнение полей у одного вызова
+        # в двух списках читалось бы как два разных вызова.
+        registry_unresolved.extend(with_member(call) for call in scan.registry_unresolved)
 
     grouped: dict[str, list[WebCall]] = {}
     for call in calls:
@@ -433,7 +448,8 @@ def run(
         root, compute_closures(build_symbol_index(results, file_to_module, context))
     )
 
-    calls, calls_by_file = _calls_by_file(parsed, modules, config)
+    ranges = member_ranges(index.values())
+    calls, calls_by_file = _calls_by_file(parsed, modules, config, ranges)
     sources = {relative: (root / relative).read_bytes() for relative in found.ts_files}
     routes = build_routes(sources, context)
 
