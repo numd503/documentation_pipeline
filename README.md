@@ -64,10 +64,10 @@
 | ✅ **Шаг 2**, M01–M13 | `docpipe materialize` и `docpipe docs`: документы, зоны, статусы, приёмка |
 | ✅ **Бизнес-слой**, B01–B11 | `docpipe anchors` и `docpipe business`: точки входа, каталог процессов, `business_hash` |
 | ✅ **Шаг `web`**, F01–F19 | `docpipe web scan`, `docpipe web link` и `docpipe web pages`: манифест фронта той же схемы, связь фронт↔бэк и список страниц с обоснованием |
-| ⬜ **Страница как единица документации**, P01–P12 | точный список вызовов страницы, ручной состав через `pages.yaml`, документ с разделами «Состояние» и «Логика» — [план](docs/pages-implementation-plan.md) |
+| ✅ **Страница как единица документации**, P01–P12 | граф вызовов, `pages.yaml`, документ-агрегат с разделами «Состояние» и «Логика» — [справочник](docs/pages.md) |
 | ⬜ Шаг 3 | наполнение документов агентом. Очередь ему готова (`docpipe worklist`), сам исполнитель — вне этого репозитория |
 | ⬜ T05b | связанные исходники `<Compile Include>` — отложена, см. [findings-stress.md](docs/findings-stress.md) |
-| ⬜ цепочка NGXS | `dispatch(new X(…))` не разбирается: у страницы нет связи с эндпоинтом через стейт — задача P03 в [плане страниц](docs/pages-implementation-plan.md) |
+| ⬜ вызовы из шаблона | `(click)="save()"` и `service.ready$ | async` в `.html` разбор не видит: нужна грамматика Angular-шаблонов, см. «не входит» в [плане страниц](docs/pages-implementation-plan.md) |
 
 1526 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
 
@@ -85,6 +85,7 @@ docpipe docs accept artifacts/doc-tree.json PATH        # зафиксирова
 docpipe web scan --root . --out artifacts/doc-tree.web.json                  # манифест фронта
 docpipe web link artifacts/doc-tree.json artifacts/doc-tree.web.json         # кто зовёт какой эндпоинт
 docpipe web pages artifacts/doc-tree.web.json --not-pages                     # какие страницы и почему
+docpipe web scan --root . --pages pages.yaml                                  # ручной состав страниц
 docpipe materialize artifacts/doc-tree.web.json --root .                     # документы фронта
 
 # бизнес-документация
