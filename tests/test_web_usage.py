@@ -160,3 +160,20 @@ def test_decorated_parameter_keeps_its_name() -> None:
 
 def test_empty_constructor_binds_nothing() -> None:
     assert constructor_bindings("constructor()") == []
+
+
+def test_colon_inside_a_decorator_argument_does_not_become_a_type() -> None:
+    """`@Inject('http://token')` — двоеточие внутри строки, а не разделитель.
+
+    Наивный `partition(":")` дал бы тип `//token…`: выдуманную зависимость
+    с правдоподобным именем, которую потом ищут в индексе и не находят.
+    """
+    assert constructor_bindings(
+        "constructor(@Inject('http://token') private readonly api: ApiService)"
+    ) == [("api", "ApiService")]
+
+
+def test_colon_inside_an_object_argument_does_not_become_a_type() -> None:
+    assert constructor_bindings("constructor(@SetApiUrl({ url: 'api/ml' }) private http: Api)") == [
+        ("http", "Api")
+    ]

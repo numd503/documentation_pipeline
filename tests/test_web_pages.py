@@ -25,6 +25,8 @@ from docpipe.web.pages import (
     NOTE_NO_FEATURES,
     NOTE_UNANCHORABLE,
     Page,
+    PageRoute,
+    _children_of,
     build_report,
     format_report,
     report_csv,
@@ -312,3 +314,50 @@ def test_calls_of_another_method_of_the_same_service_do_not_leak(manifest: Manif
     routes = {call.route for call in _page(manifest, "DetailComponent").calls}
 
     assert "api/ml/debtsconsgroup/savealternative" not in routes
+
+
+# --------------------------------------------------------------------------------------
+# Дочерние страницы: факт, а не эвристика (P05)
+# --------------------------------------------------------------------------------------
+
+
+def test_container_is_recognised_by_its_children_not_by_its_size(manifest: Manifest) -> None:
+    """`ShellComponent` — корень дерева: под ним лежат все остальные страницы.
+
+    Именно число дочерних разводит контейнер и экран с детьми: на боевом
+    модуле `/forecast/{}` имеет семь дочерних при 45 членах и своих вызовах,
+    а `…/structuring` — три дочерние, два члена и ни одного вызова.
+    """
+    assert _page(manifest, "ShellComponent").children == 4
+    assert _page(manifest, "QuizComponent").children == 0
+
+
+def test_children_are_counted_by_segments_not_by_substring() -> None:
+    """Иначе `/forecast` оказался бы родителем `/forecaster`."""
+    parent = [PageRoute(path="forecast")]
+    other = [PageRoute(path="forecaster")]
+    child = [PageRoute(path="forecast/daily")]
+
+    assert _children_of(parent, [parent, other]) == 0
+    assert _children_of(parent, [parent, child]) == 1
+
+
+def test_dependency_names_the_members_it_is_called_for(manifest: Manifest) -> None:
+    """Ответ на вопрос «почему этот участник в списке».
+
+    На боевом прогоне так в списке шести страниц оказался `SetApiUrl`,
+    и по отчёту нельзя было понять, что именно от него зовут.
+    """
+    detail = _page(manifest, "DetailComponent")
+
+    assert [(item.title, item.members) for item in detail.dependencies] == [
+        ("ModelService", ["byId", "forUpdate"])
+    ]
+
+
+def test_csv_carries_the_path_of_every_call(manifest: Manifest) -> None:
+    """Разметку страниц ведут по этому файлу — «через кого» нужнее всего там."""
+    text = report_csv(build_report(manifest))
+
+    assert "дочерних" in text.splitlines()[0]
+    assert "<-ModelService.byId#1" in text

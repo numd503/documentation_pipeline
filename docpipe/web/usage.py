@@ -163,7 +163,7 @@ def constructor_bindings(signature: str) -> list[tuple[str, str]]:
 
     bindings: list[tuple[str, str]] = []
     for part in parts:
-        name, _, annotation = part.partition(":")
+        name, annotation = _split_annotation(part)
         # Имя параметра — последнее слово до двоеточия: перед ним стоят
         # модификаторы (`private readonly`) и декораторы (`@Inject(TOKEN)`).
         words = _WHITESPACE.sub(" ", name).strip().split(" ")
@@ -172,6 +172,32 @@ def constructor_bindings(signature: str) -> list[tuple[str, str]]:
         if parameter and type_name:
             bindings.append((parameter, type_name))
     return bindings
+
+
+def _split_annotation(part: str) -> tuple[str, str]:
+    """Разделить `имя` и `Тип` по двоеточию **вне скобок и строк**.
+
+    Наивный `partition(":")` режет по двоеточию внутри аргумента декоратора:
+    `@Inject('http://token') private api: ApiService` даёт тип `//token…`,
+    то есть выдуманную зависимость с правдоподобным именем. Форма не редкая —
+    так задают токены внедрения и адреса.
+    """
+    depth = 0
+    quote = ""
+    for index, char in enumerate(part):
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in "\"'`":
+            quote = char
+        elif char in "<([{":
+            depth += 1
+        elif char in ">)]}":
+            depth -= 1
+        elif char == ":" and depth == 0:
+            return part[:index], part[index + 1 :]
+    return part, ""
 
 
 def parameter_types(signature: str) -> list[str]:
