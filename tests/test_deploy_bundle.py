@@ -246,6 +246,9 @@ def test_installed_tree_holds_exactly_one_ruleset(tmp_path: Path) -> None:
     assert rulesets == [
         "cashflow-docspipe/docpipe.yaml",
         "cashflow-docspipe/ownership.yaml",
+        # Ручной состав страниц: приезжает пустым, при обновлении сохраняется —
+        # в нём решения человека о том, что считать страницей.
+        "cashflow-docspipe/pages.yaml",
         "cashflow-docspipe/registries.yaml",
         "cashflow-docspipe/rules.yaml",
     ]
@@ -484,3 +487,33 @@ def test_installer_warns_about_a_flat_ruleset(tmp_path: Path) -> None:
     assert "migrate_rules.py" in result.stderr
     # Файл при этом не тронут: установщик ничего не переписывает молча.
     assert rules.read_text(encoding="utf-8").startswith("ruleset_version: old")
+
+
+def test_bundle_pages_file_loads_and_is_empty(tmp_path: Path) -> None:
+    """Поставочный `pages.yaml` — рабочий файл без правил, а не текст про файл.
+
+    Пустой он намеренно: состав страниц — решение настройщика, и придуманные
+    за него правила пришлось бы вычищать. Но грузиться он обязан с первого дня,
+    иначе первый же прогон с `web.pages` упадёт на поставке.
+    """
+    from docpipe.web.overrides import load_overrides
+
+    _install(tmp_path / "repo")
+    path = tmp_path / "repo" / "docs/ml/docspipe/cashflow-docspipe/pages.yaml"
+
+    overrides = load_overrides(path)
+
+    assert overrides.empty
+
+
+def test_bundle_config_points_at_its_pages_file(tmp_path: Path) -> None:
+    """Ключ, указывающий на файл, которого нет в поставке, — та же ловушка,
+    на которой шаг `web` уже стоял: настройка выглядит сделанной, а её нет."""
+    import yaml
+
+    _install(tmp_path / "repo")
+    bundle = tmp_path / "repo" / "docs/ml/docspipe/cashflow-docspipe"
+    config = yaml.safe_load((bundle / "docpipe.yaml").read_text(encoding="utf-8"))
+
+    assert config["web"]["pages"].endswith("cashflow-docspipe/pages.yaml")
+    assert (bundle / "pages.yaml").is_file()

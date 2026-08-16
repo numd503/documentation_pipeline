@@ -160,6 +160,10 @@ fi
 # на файл, которого в поставке нет.
 keep_configured "$SOURCE/deploy/cashflow-docspipe/ownership.yaml" \
     "$DEST/cashflow-docspipe/ownership.yaml" "cashflow-docspipe/ownership.yaml"
+# Ручной состав страниц фронта. Приезжает пустым и сохраняется при обновлении:
+# в нём решения человека о том, что считать страницей, и потерять их нельзя.
+keep_configured "$SOURCE/deploy/cashflow-docspipe/pages.yaml" \
+    "$DEST/cashflow-docspipe/pages.yaml" "cashflow-docspipe/pages.yaml"
 # Описание реестров платформы: без него `docpipe anchors` и `docpipe business`
 # отказываются работать с «Реестры не заданы», а пути внутри него — первое,
 # что придётся сверить с реальной раскладкой субрепозиториев.

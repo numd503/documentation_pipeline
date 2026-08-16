@@ -128,6 +128,30 @@ docpipe materialize $BUNDLE/artifacts/doc-tree.web.json --root . --config $BUNDL
 docpipe docs status $BUNDLE/artifacts/doc-tree.web.json --root . --config $BUNDLE/docpipe.yaml
 ```
 
+### Страницы
+
+Единица документации фронта — **страница**, а не класс: сервис, до которого
+дотягивается только один экран, описывается внутри его документа. Список
+страниц и обоснование каждой:
+
+```bash
+docpipe web pages $BUNDLE/artifacts/doc-tree.web.json --not-pages
+docpipe web pages $BUNDLE/artifacts/doc-tree.web.json --format csv > pages.csv
+```
+
+Что снять и что добавить руками — в `pages.yaml` бандла (он приезжает пустым
+и при обновлении сохраняется). Первыми туда идут layout-обёртки: у ML это
+`RoutesComponent` на маршруте `/`. Отчёт помечает их заметками «маршрут пустой»
+и «признаков функционала не найдено».
+
+Правило, переставшее совпадать, печатается всегда; в CI закрепляется флагом:
+
+```bash
+docpipe web scan --root . --config $BUNDLE/docpipe.yaml --fail-on-stale-overrides
+```
+
+Подробности — в `docs/pages.md` репозитория инструмента.
+
 Порядок настройки такой же, как у шага 1: `--stats`, посмотреть «решение
 не принято», дописать одно правило, повторить. Три вещи, специфичные
 для этого репозитория:

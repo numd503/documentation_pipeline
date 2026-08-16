@@ -171,6 +171,10 @@ web:
   # Тот же файл, что и у шага 1, — секция `web` внутри него.
   rules: "docs/ml/docspipe/cashflow-docspipe/rules.yaml"
 
+  # Ручной состав страниц: чем дополнить и что снять с того, что нашёл обход.
+  # Пустой файл — законное состояние; см. docs/pages.md.
+  pages: "docs/ml/docspipe/cashflow-docspipe/pages.yaml"
+
   # Манифест фронта и отчёт связи фронт↔бэк. Рядом с манифестом шага 1,
   # чтобы попасть под ту же строку .gitignore.
   out: "docs/ml/docspipe/cashflow-docspipe/artifacts/doc-tree.web.json"
