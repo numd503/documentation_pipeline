@@ -252,7 +252,7 @@ def run(
     """
     started = time.perf_counter()
     config = config or DocpipeConfig()
-    ruleset = ruleset or load_ruleset(Path(config.rules))
+    ruleset = ruleset or load_ruleset(Path(config.rules), "dotnet")
     versions = parser_versions()
 
     found = discover(root, exclude_globs(config), scope, config.roots)

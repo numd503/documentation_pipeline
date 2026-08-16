@@ -17,14 +17,14 @@ from docpipe.classify import (
 from docpipe.dotnet.parser import parse_file, parse_source
 from docpipe.dotnet.resolve import build_symbol_index, compute_closures
 from docpipe.model import Symbol
-from tests.conftest import by_fqn, index_of
+from tests.conftest import by_fqn, index_of, sectioned
 
-RULES = Path("rules/dotnet.yaml")
+RULES = Path("rules/rules.yaml")
 
 
 @pytest.fixture
 def ruleset():  # type: ignore[no-untyped-def]
-    return load_ruleset(RULES)
+    return load_ruleset(RULES, "dotnet")
 
 
 @pytest.fixture
@@ -161,7 +161,7 @@ def test_fluent_base_matches_rule(wild_solution: Path) -> None:
     symbol = by_fqn(compute_closures(index_of(wild_solution)))[
         "Wild.Api.Endpoints.AuthenticateEndpoint"
     ]
-    ruleset = load_ruleset(RULES)
+    ruleset = load_ruleset(RULES, "dotnet")
 
     assert "EndpointBaseAsync" in base_type_candidates(symbol.base_types_raw[0])
     assert classify(symbol, ruleset) is None  # в наборе по умолчанию правила REPR нет
@@ -175,18 +175,17 @@ def test_fluent_base_matches_rule(wild_solution: Path) -> None:
 def _ruleset_with(when: dict, tmp_path: Path, exclude: dict | None = None):  # type: ignore[no-untyped-def]
     path = tmp_path / "r.yaml"
     path.write_text(
-        yaml.safe_dump(
+        sectioned(
             {
                 "version": "1",
                 "ruleset_version": "test",
                 "exclude": exclude or {},
                 "rules": [{"id": "r", "kind": "k", "template": "t", "priority": 1, "when": when}],
             },
-            allow_unicode=True,
         ),
         encoding="utf-8",
     )
-    return load_ruleset(path)
+    return load_ruleset(path, "dotnet")
 
 
 def test_attribute_predicate(tmp_path: Path) -> None:
@@ -374,8 +373,8 @@ def test_reference_set_migration_changed_nothing(
     символ отсеян; какие символы отсеяны — тем же.
     """
     before_path = tmp_path / "before.yaml"
-    before_path.write_text(_REFERENCE_SET_BEFORE_MIGRATION, encoding="utf-8")
-    before, after = load_ruleset(before_path), load_ruleset(RULES)
+    before_path.write_text(sectioned(_REFERENCE_SET_BEFORE_MIGRATION), encoding="utf-8")
+    before, after = load_ruleset(before_path, "dotnet"), load_ruleset(RULES, "dotnet")
 
     for root in (sample_solution, wild_solution):
         symbols = compute_closures(index_of(root)).values()
@@ -485,7 +484,7 @@ def test_condition_values_walks_combinators() -> None:
 
 
 def test_default_ruleset_loads() -> None:
-    ruleset = load_ruleset(RULES)
+    ruleset = load_ruleset(RULES, "dotnet")
     assert ruleset.ruleset_version == "2026-07-30.1"
     assert {rule.id for rule in ruleset.exclude.rules} == {
         "generated.code",
@@ -512,7 +511,7 @@ def test_unknown_predicate_fails_at_load(tmp_path: Path) -> None:
     """
     path = tmp_path / "r.yaml"
     path.write_text(
-        yaml.safe_dump(
+        sectioned(
             {
                 "ruleset_version": "test",
                 "rules": [
@@ -529,7 +528,7 @@ def test_unknown_predicate_fails_at_load(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="неизвестный предикат"):
-        load_ruleset(path)
+        load_ruleset(path, "dotnet")
 
 
 def test_duplicate_rule_id_fails_at_load(tmp_path: Path) -> None:
@@ -542,16 +541,16 @@ def test_duplicate_rule_id_fails_at_load(tmp_path: Path) -> None:
         "when": {"type_kind": ["class"]},
     }
     path.write_text(
-        yaml.safe_dump({"ruleset_version": "t", "rules": [rule, dict(rule)]}), encoding="utf-8"
+        sectioned({"ruleset_version": "t", "rules": [rule, dict(rule)]}), encoding="utf-8"
     )
     with pytest.raises(ValueError, match="повтор id"):
-        load_ruleset(path)
+        load_ruleset(path, "dotnet")
 
 
 def test_bad_regex_fails_at_load(tmp_path: Path) -> None:
     path = tmp_path / "r.yaml"
     path.write_text(
-        yaml.safe_dump(
+        sectioned(
             {
                 "ruleset_version": "t",
                 "rules": [
@@ -568,17 +567,17 @@ def test_bad_regex_fails_at_load(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="регулярное выражение"):
-        load_ruleset(path)
+        load_ruleset(path, "dotnet")
 
 
 def test_missing_rule_field_fails_at_load(tmp_path: Path) -> None:
     path = tmp_path / "r.yaml"
     path.write_text(
-        yaml.safe_dump({"ruleset_version": "t", "rules": [{"id": "r", "kind": "k"}]}),
+        sectioned({"ruleset_version": "t", "rules": [{"id": "r", "kind": "k"}]}),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="без полей"):
-        load_ruleset(path)
+        load_ruleset(path, "dotnet")
 
 
 # --------------------------------------------------------------------------------------
@@ -608,8 +607,8 @@ def test_rule_order_in_file_does_not_matter(tmp_path: Path) -> None:
     results = []
     for order in (rules, list(reversed(rules))):
         path = tmp_path / f"r{len(results)}.yaml"
-        path.write_text(yaml.safe_dump({"ruleset_version": "t", "rules": order}), encoding="utf-8")
-        results.append(classify(symbol, load_ruleset(path)))
+        path.write_text(sectioned({"ruleset_version": "t", "rules": order}), encoding="utf-8")
+        results.append(classify(symbol, load_ruleset(path, "dotnet")))
 
     assert results[0] == results[1]
     assert results[0] is not None
@@ -705,7 +704,7 @@ def _with_unless(tmp_path: Path, unless: dict | None):  # type: ignore[no-untype
         rule["unless"] = unless
     path = tmp_path / "r.yaml"
     path.write_text(
-        yaml.safe_dump(
+        sectioned(
             {
                 "version": "1",
                 "ruleset_version": "test",
@@ -720,11 +719,10 @@ def _with_unless(tmp_path: Path, unless: dict | None):  # type: ignore[no-untype
                     }
                 ],
             },
-            allow_unicode=True,
         ),
         encoding="utf-8",
     )
-    return load_ruleset(path)
+    return load_ruleset(path, "dotnet")
 
 
 def test_unless_carves_the_wanted_types_out_of_the_exclusion(tmp_path: Path) -> None:
@@ -790,3 +788,79 @@ def test_unless_accepts_combinators(tmp_path: Path) -> None:
 
     assert not is_excluded(symbols["CalcService"], ruleset)
     assert not is_excluded(symbols["CalcOptions"], ruleset)
+
+
+# --------------------------------------------------------------------------------------
+# Секционный формат файла правил
+# --------------------------------------------------------------------------------------
+#
+# Один файл на проект, по секции на шаг. Секцию называет вызывающий: угадывать
+# её загрузчик не имеет права, потому что цена ошибки — .NET-правила,
+# применённые к TypeScript, то есть пустое дерево без единого сообщения.
+
+
+def test_both_sections_live_in_one_file(tmp_path: Path) -> None:
+    path = tmp_path / "rules.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "version": "1",
+                "dotnet": {"ruleset_version": "net.1", "rules": []},
+                "web": {"ruleset_version": "web.1", "rules": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_ruleset(path, "dotnet").ruleset_version == "net.1"
+    assert load_ruleset(path, "web").ruleset_version == "web.1"
+    # `version` — свойство формата файла, а не набора: два разных значения
+    # в одном файле означали бы два разных разбора одного файла.
+    assert load_ruleset(path, "web").version == "1"
+
+
+def test_missing_section_is_refused_and_names_what_is_there(tmp_path: Path) -> None:
+    path = tmp_path / "rules.yaml"
+    path.write_text(
+        yaml.safe_dump({"version": "1", "dotnet": {"ruleset_version": "net.1", "rules": []}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="нет секции `web:`.*dotnet"):
+        load_ruleset(path, "web")
+
+
+def test_flat_file_is_refused_with_the_migration_command(tmp_path: Path) -> None:
+    """Старый плоский файл — отказ с командой переноса, а не молчаливый разбор.
+
+    Прочитанный шагом `web`, он дал бы .NET-правила на TypeScript:
+    `require_public: true` отсеял бы весь фронт, и дерево вышло бы пустым.
+    """
+    path = tmp_path / "rules.yaml"
+    path.write_text(yaml.safe_dump({"ruleset_version": "old", "rules": []}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="старом плоском формате") as failure:
+        load_ruleset(path, "dotnet")
+    assert "migrate_rules.py" in str(failure.value)
+
+
+def test_section_without_version_is_refused(tmp_path: Path) -> None:
+    """`ruleset_version` уходит в манифест и в `business_hash`: умолчание здесь
+    дало бы двум разным наборам одну версию в отчётах."""
+    path = tmp_path / "rules.yaml"
+    path.write_text(yaml.safe_dump({"web": {"rules": []}}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="нет `ruleset_version`"):
+        load_ruleset(path, "web")
+
+
+def test_errors_name_the_section(tmp_path: Path) -> None:
+    """Одного пути в сообщении мало: в файле две секции, и надо знать, в какой."""
+    path = tmp_path / "rules.yaml"
+    path.write_text(
+        yaml.safe_dump({"web": {"ruleset_version": "t", "rules": [{"id": "r", "kind": "k"}]}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"rules\.yaml:web"):
+        load_ruleset(path, "web")

@@ -410,7 +410,7 @@ def run(
     """Прогон шага `web`: исходники -> манифест, метаданные и срезы."""
     started = time.perf_counter()
     config = config or DocpipeConfig()
-    ruleset = ruleset or load_ruleset(Path(config.web.rules))
+    ruleset = ruleset or load_ruleset(Path(config.web.rules), "web")
     versions = parser_versions()
 
     found = discover(root, exclude_globs(config), roots=config.web.roots)

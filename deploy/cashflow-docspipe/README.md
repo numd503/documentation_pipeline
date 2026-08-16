@@ -51,6 +51,18 @@ docpipe --help                                                         # все 
 
 `--rules` задавать не нужно: путь к `rules.yaml` прописан в `docpipe.yaml`.
 
+Файл правил **один на проект и секционный**: `dotnet:` читают `scan`,
+`symbols` и `validate`, `web:` — `web scan`. Секцию называет команда,
+и умолчания у неё нет: плоский файл, прочитанный шагом `web`, дал бы
+правила .NET на TypeScript, а `require_public: true` отсеял бы весь фронт
+разом — без единого сообщения об ошибке. Набор, оставшийся от прежней
+версии поставки, переносится с сохранением комментариев:
+
+```bash
+uv run --project $DOCPIPE python $DOCPIPE/tools/migrate_rules.py \
+    --dotnet $BUNDLE/rules.yaml --out $BUNDLE/rules.yaml
+```
+
 Результат прогона:
 
 ```
@@ -96,6 +108,53 @@ docpipe symbols --root . --config $BUNDLE/docpipe.yaml --state not_documented --
 Правило, покрывающее 500 типов, полезнее пяти правил по десять. Останавливаться,
 когда «решение не принято» дойдёт до нуля или до остатка, который вы согласны держать;
 после этого закрепить `--fail-on-undecided` в CI.
+
+## Шаг `web`: фронтенд на Angular
+
+Отдельный манифест той же схемы, та же машина материализации. Настраивается
+двумя секциями: `web:` в `docpipe.yaml` (где искать фронты, куда писать,
+что делает прокси с URL) и `web:` в `rules.yaml` (что считать страницей,
+компонентом, сервисом).
+
+```bash
+cd $CF_ROOT
+
+docpipe web scan --root . --config $BUNDLE/docpipe.yaml --stats   # состояние решений
+docpipe web scan --root . --config $BUNDLE/docpipe.yaml           # манифест фронта
+docpipe web link $BUNDLE/artifacts/doc-tree.json \
+                 $BUNDLE/artifacts/doc-tree.web.json \
+                 --config $BUNDLE/docpipe.yaml                    # связь фронт↔бэк
+docpipe materialize $BUNDLE/artifacts/doc-tree.web.json --root . --config $BUNDLE/docpipe.yaml
+docpipe docs status $BUNDLE/artifacts/doc-tree.web.json --root . --config $BUNDLE/docpipe.yaml
+```
+
+Порядок настройки такой же, как у шага 1: `--stats`, посмотреть «решение
+не принято», дописать одно правило, повторить. Три вещи, специфичные
+для этого репозитория:
+
+**Начинать с одного фронта.** В `web.roots` сейчас включён только
+`Sbt.CMS.Cashflow.ML`; остальные шесть перечислены рядом закомментированными.
+Правила настраиваются под раскладку, и на семи модулях сразу непонятно, чья
+именно раскладка дала непокрытый символ. Разведка всех семи —
+в `docs/findings-cashflow-frontend.md` основного репозитория.
+
+**Заполнить `url_rewrite` по мере подключения фронтов.** Отсутствие записи
+о модуле — это не «преобразования нет», а ненастроенный модуль, и отчёт связи
+называет его вслух. Пустые поля при указанном `module` означают «проверено,
+не преобразуется». Префиксы разведаны и выписаны в комментарии рядом с ключом.
+
+**`require_public` в секции `web` обязан остаться `false`.** У TypeScript
+модификатора `public` на уровне объявления нет вовсе: видимость задаётся
+словом `export`. Значение, скопированное из секции `dotnet`, даёт пустое
+дерево без единого сообщения об ошибке.
+
+Результат прогона:
+
+```
+artifacts/doc-tree.web.json       манифест фронта, той же схемы 2.0
+artifacts/doc-tree.web.run.json   сидкар прогона
+artifacts/web-link.json           связь вызовов фронта с эндпоинтами .NET
+```
 
 ## Шаг 2: материализация документов
 

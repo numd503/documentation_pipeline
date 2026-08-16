@@ -19,7 +19,7 @@ from docpipe.model import Manifest
 from docpipe.web.tree import run as run_web
 
 runner = CliRunner()
-RULES = Path("rules/web.yaml")
+RULES = Path("rules/rules.yaml")
 WEB_TEMPLATES = ("page", "component", "api-service", "state")
 
 
@@ -32,7 +32,7 @@ def workspace(web_workspace: Path, tmp_path: Path) -> Path:
 
 
 def _manifest(root: Path) -> Manifest:
-    return run_web(root, DocpipeConfig(), load_ruleset(RULES)).manifest
+    return run_web(root, DocpipeConfig(), load_ruleset(RULES, "web")).manifest
 
 
 def _node(manifest: Manifest, title: str) -> object:

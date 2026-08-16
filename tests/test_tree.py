@@ -5,12 +5,11 @@ from collections import defaultdict
 from pathlib import Path
 
 import pytest
-import yaml
 
 from docpipe.config import DocpipeConfig
 from docpipe.model import Dependency, DocNode
 from docpipe.tree import doc_path_for, parameter_types
-from tests.conftest import build_tree
+from tests.conftest import build_tree, sectioned
 
 
 def _nodes(root: Path, **kwargs: object) -> dict[str, DocNode]:
@@ -167,7 +166,7 @@ def _rules_for_interfaces(tmp_path: Path) -> Path:
     """Набор, классифицирующий интерфейсы: штатный их не берёт вовсе."""
     path = tmp_path / "rules.yaml"
     path.write_text(
-        yaml.safe_dump(
+        sectioned(
             {
                 "ruleset_version": "test",
                 "exclude": {},

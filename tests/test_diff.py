@@ -11,6 +11,7 @@ from docpipe.cli import app
 from docpipe.diff import NodeChange, diff_manifests, format_changes
 from docpipe.emit import scan, write_manifest
 from docpipe.model import Manifest
+from tests.conftest import sectioned
 
 runner = CliRunner()
 
@@ -98,14 +99,16 @@ def test_changed_rules_give_reclassification(sample_solution: Path, tmp_path: Pa
     """
     rules = tmp_path / "rules.yaml"
     rules.write_text(
-        "ruleset_version: t\nexclude: {}\nrules:\n"
-        "  - {id: r, kind: repository, template: repository, priority: 1,"
-        " when: {name_suffix: ['Service']}}\n",
+        sectioned(
+            "ruleset_version: t\nexclude: {}\nrules:\n"
+            "  - {id: r, kind: repository, template: repository, priority: 1,"
+            " when: {name_suffix: ['Service']}}\n"
+        ),
         encoding="utf-8",
     )
 
     before, _ = scan(sample_solution)
-    after, _ = scan(sample_solution, ruleset=load_ruleset(rules))
+    after, _ = scan(sample_solution, ruleset=load_ruleset(rules, "dotnet"))
 
     reclassified = [c for c in diff_manifests(before, after) if c.change == "reclassified"]
     assert reclassified

@@ -21,9 +21,10 @@ from docpipe.stats import (
     stats_from_manifest,
     validate_manifest,
 )
+from tests.conftest import sectioned
 
 runner = CliRunner()
-RULES = Path("rules/dotnet.yaml")
+RULES = Path("rules/rules.yaml")
 VERSIONS = ParserVersions(tree_sitter="1", grammar_c_sharp="1")
 
 
@@ -79,13 +80,16 @@ def test_skipped_is_ordered_by_count_then_id(tmp_path: Path, sample_solution: Pa
     """Порядок задан явно: таблица идёт в журнал, и он не должен зависеть от YAML."""
     rules = tmp_path / "rules.yaml"
     rules.write_text(
-        "ruleset_version: t\nexclude:\n  rules:\n"
-        "    - {id: zzz.classes, reason: r1, priority: 5, when: {type_kind: ['class']}}\n"
-        "    - {id: aaa.interfaces, reason: r2, priority: 5, when: {type_kind: ['interface']}}\n"
-        "rules: []\n",
+        sectioned(
+            "ruleset_version: t\nexclude:\n  rules:\n"
+            "    - {id: zzz.classes, reason: r1, priority: 5, when: {type_kind: ['class']}}\n"
+            "    - {id: aaa.interfaces, reason: r2, priority: 5,"
+            " when: {type_kind: ['interface']}}\n"
+            "rules: []\n"
+        ),
         encoding="utf-8",
     )
-    stats = run(sample_solution, ruleset=load_ruleset(rules)).stats
+    stats = run(sample_solution, ruleset=load_ruleset(rules, "dotnet")).stats
 
     ids = [rule_id for rule_id, _, _ in stats.skipped]
     counts = [count for _, _, count in stats.skipped]
@@ -131,12 +135,14 @@ def test_breakdown_is_empty_when_everything_is_covered(
 ) -> None:
     rules = tmp_path / "rules.yaml"
     rules.write_text(
-        "ruleset_version: t\nexclude: {}\nrules:\n"
-        "  - {id: all, kind: service, template: service, priority: 1,"
-        " when: {type_kind: ['class', 'record', 'interface', 'enum', 'struct']}}\n",
+        sectioned(
+            "ruleset_version: t\nexclude: {}\nrules:\n"
+            "  - {id: all, kind: service, template: service, priority: 1,"
+            " when: {type_kind: ['class', 'record', 'interface', 'enum', 'struct']}}\n"
+        ),
         encoding="utf-8",
     )
-    stats = run(sample_solution, ruleset=load_ruleset(rules)).stats
+    stats = run(sample_solution, ruleset=load_ruleset(rules, "dotnet")).stats
 
     assert stats.breakdown == {}
     assert "undecided" not in stats.counts
@@ -167,12 +173,14 @@ def test_decisions_block_reports_completion_when_nothing_is_left(
     """
     rules = tmp_path / "rules.yaml"
     rules.write_text(
-        "ruleset_version: t\nexclude: {}\nrules:\n"
-        "  - {id: all, kind: service, template: service, priority: 1,"
-        " when: {type_kind: ['class', 'record', 'interface', 'enum', 'struct']}}\n",
+        sectioned(
+            "ruleset_version: t\nexclude: {}\nrules:\n"
+            "  - {id: all, kind: service, template: service, priority: 1,"
+            " when: {type_kind: ['class', 'record', 'interface', 'enum', 'struct']}}\n"
+        ),
         encoding="utf-8",
     )
-    block = format_decisions(run(sample_solution, ruleset=load_ruleset(rules)).stats)
+    block = format_decisions(run(sample_solution, ruleset=load_ruleset(rules, "dotnet")).stats)
 
     assert "решены все символы" in block
     assert "РЕШЕНИЕ НЕ ПРИНЯТО" not in block
@@ -235,7 +243,7 @@ def test_stats_from_manifest_has_no_decisions(sample_solution: Path) -> None:
 
 
 def test_empty_blocks_format_to_nothing() -> None:
-    empty = collect_stats({}, [], load_ruleset(RULES))
+    empty = collect_stats({}, [], load_ruleset(RULES, "dotnet"))
 
     assert format_breakdown(empty) == ""
     assert format_skipped(empty) == ""
@@ -416,10 +424,12 @@ def test_fail_on_undecided_passes_when_everything_is_decided(
 ) -> None:
     rules = tmp_path / "rules.yaml"
     rules.write_text(
-        "ruleset_version: t\nexclude:\n  rules:\n"
-        "    - {id: all, reason: «фикстура целиком», when:"
-        " {type_kind: ['class', 'record', 'interface', 'enum', 'struct']}}\n"
-        "rules: []\n",
+        sectioned(
+            "ruleset_version: t\nexclude:\n  rules:\n"
+            "    - {id: all, reason: «фикстура целиком», when:"
+            " {type_kind: ['class', 'record', 'interface', 'enum', 'struct']}}\n"
+            "rules: []\n"
+        ),
         encoding="utf-8",
     )
     result = runner.invoke(

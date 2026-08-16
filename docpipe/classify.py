@@ -314,11 +314,48 @@ def _load_exclusion(raw: Any, path: Path) -> Exclusion:
     return Exclusion(require_public=bool(raw.get("require_public", False)), rules=rules)
 
 
-def load_ruleset(path: Path) -> Ruleset:
-    """Загрузить набор правил с полной проверкой структуры."""
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raise ValueError(f"{path}: набор правил должен быть словарём")
+def _section(raw: dict[str, Any], section: str, path: Path) -> dict[str, Any]:
+    """Достать секцию языка из файла правил.
+
+    Файл правил секционный: один файл, по секции на шаг (`dotnet`, `web`).
+    Так набор живёт одним файлом на проект, как и остальная настройка, —
+    но именно поэтому секцию **обязан** называть вызывающий, а не угадывать
+    загрузчик. Плоский файл, прочитанный шагом `web`, дал бы .NET-правила
+    на TypeScript: `require_public: true` отсеял бы весь фронт разом,
+    и отчёт показал бы пустое дерево без единой ошибки.
+    """
+    value = raw.get(section)
+    if isinstance(value, dict):
+        return value
+
+    known = sorted(key for key in raw if isinstance(raw[key], dict) and "rules" in raw[key])
+    if "ruleset_version" in raw or "rules" in raw:
+        raise ValueError(
+            f"{path}: файл в старом плоском формате, а нужна секция `{section}:`."
+            " Перенесите его: `uv run python tools/migrate_rules.py"
+            f" --{section} {path} --out {path}` (комментарии сохраняются)"
+        )
+    raise ValueError(
+        f"{path}: нет секции `{section}:`; в файле есть: {', '.join(known) or '(ни одной)'}"
+    )
+
+
+def load_ruleset(path: Path, section: str) -> Ruleset:
+    """Загрузить набор правил с полной проверкой структуры.
+
+    `section` — `dotnet` или `web`; обязателен и умолчания не имеет
+    по причине, изложенной в `_section`.
+    """
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise ValueError(f"{path}: файл правил должен быть словарём секций")
+
+    raw = _section(document, section, path)
+    # `version` — свойство формата файла, а не набора, поэтому читается
+    # снаружи секции: два разных значения в одном файле означали бы, что
+    # половину файла разбирают одними правилами, половину другими.
+    raw = {"version": document.get("version", "1")} | raw
+    path = Path(f"{path}:{section}")
 
     exclusion = _load_exclusion(raw.get("exclude"), path)
 
@@ -336,6 +373,12 @@ def load_ruleset(path: Path) -> Ruleset:
                 when=item["when"],
             )
         )
+
+    if "ruleset_version" not in raw:
+        # Версия набора уходит в манифест и в `business_hash`, поэтому её
+        # отсутствие — отказ, а не умолчание: с умолчанием два разных набора
+        # дали бы в отчётах одну и ту же версию.
+        raise ValueError(f"{path}: в секции нет `ruleset_version`")
 
     return Ruleset(
         version=str(raw.get("version", "1")),

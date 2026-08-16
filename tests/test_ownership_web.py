@@ -16,12 +16,12 @@ from docpipe.materialize.ownership import Ownership, lint, load_ownership, owner
 from docpipe.model import DocNode, Manifest
 from docpipe.web.tree import run as run_web
 
-RULES = Path("rules/web.yaml")
+RULES = Path("rules/rules.yaml")
 
 
 @pytest.fixture
 def manifest(web_workspace: Path) -> Manifest:
-    return run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES)).manifest
+    return run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES, "web")).manifest
 
 
 def _ownership(tmp_path: Path, rules: list[dict[str, object]]) -> Ownership:

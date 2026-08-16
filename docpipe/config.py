@@ -87,7 +87,7 @@ class WebConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     roots: list[str] = Field(default_factory=lambda: ["."])
-    rules: str = "rules/web.yaml"
+    rules: str = "rules/rules.yaml"
     out: str = "artifacts/doc-tree.web.json"
     link_out: str = "artifacts/web-link.json"
 
@@ -129,7 +129,7 @@ class DocpipeConfig(BaseModel):
     enrolled: list[str] = Field(default_factory=lambda: ["**"])
     exclude: list[str] = Field(default_factory=list)
     domains: dict[str, str] = Field(default_factory=dict)
-    rules: str = "rules/dotnet.yaml"
+    rules: str = "rules/rules.yaml"
     out: str = "artifacts/doc-tree.json"
     cache_dir: str = ".docpipe/cache"
 

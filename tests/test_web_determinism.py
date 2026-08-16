@@ -25,7 +25,7 @@ from docpipe.web.link import build_report
 from docpipe.web.tree import run as run_web
 
 runner = CliRunner()
-RULES = Path("rules/web.yaml")
+RULES = Path("rules/rules.yaml")
 
 COMPONENT = """import {{ Component }} from '@angular/core';
 import {{ HttpClient }} from '@angular/common/http';
@@ -111,7 +111,7 @@ def shuffled_walk(generated: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
 
 
 def _scan(root: Path) -> Manifest:
-    return run_web(root, DocpipeConfig(), load_ruleset(RULES)).manifest
+    return run_web(root, DocpipeConfig(), load_ruleset(RULES, "web")).manifest
 
 
 # --------------------------------------------------------------------------------------
@@ -150,8 +150,12 @@ def test_two_links_give_byte_identical_reports(generated: Path, tmp_path: Path) 
 
 def test_cached_run_equals_a_cold_one(generated: Path, tmp_path: Path) -> None:
     """Кэш обязан отдавать ровно то же, что и разбор: иначе он меняет вывод."""
-    cold = run_web(generated, DocpipeConfig(), load_ruleset(RULES), cache_dir=tmp_path).manifest
-    warm = run_web(generated, DocpipeConfig(), load_ruleset(RULES), cache_dir=tmp_path).manifest
+    cold = run_web(
+        generated, DocpipeConfig(), load_ruleset(RULES, "web"), cache_dir=tmp_path
+    ).manifest
+    warm = run_web(
+        generated, DocpipeConfig(), load_ruleset(RULES, "web"), cache_dir=tmp_path
+    ).manifest
 
     assert cold == warm
     assert warm == _scan(generated)

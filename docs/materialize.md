@@ -372,7 +372,7 @@ docpipe docs owners MANIFEST --config docs/ml/docspipe/cashflow-docspipe/docpipe
 ```
 
 Правила раздают команду по **узлу**, а не по модулю: шэренный `.csproj` иначе
-не разделить. Синтаксис условий тот же, что у `rules/dotnet.yaml`. Пример
+не разделить. Синтаксис условий тот же, что у правил классификации. Пример
 со всеми слоями приоритета и пояснениями —
 [`ownership.example.yaml`](../ownership.example.yaml).
 
@@ -452,7 +452,7 @@ find docs -type d -empty -delete
 
 ## Шаблоны
 
-Семь скелетов в `templates/`, по одному на значение `template` из `rules/dotnet.yaml`;
+Семь скелетов в `templates/`, по одному на значение `template` из секции `dotnet`;
 их имена сверяются с набором правил тестом. Четыре заполненных образца
 в `templates/examples/` показывают агенту глубину и стиль. Подробности и правила
 правки — в [`templates/README.md`](../../templates/README.md).
