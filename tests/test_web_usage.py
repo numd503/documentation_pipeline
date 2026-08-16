@@ -91,7 +91,7 @@ def test_counters_name_all_three_outcomes(scanned: WebScanResult) -> None:
     """
     stats = scanned.meta.stats
 
-    assert stats["usages"] == 9
+    assert stats["usages"] == 10
     assert stats["usages_external"] > 0
     assert stats["usages_unresolved"] > 0
 

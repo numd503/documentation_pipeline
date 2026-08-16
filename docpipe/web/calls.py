@@ -396,7 +396,6 @@ def build_calls(
     *,
     rewrite: RewriteRule | None = None,
     registry: list[RegistryCall] | None = None,
-    via_action: dict[int, str] | None = None,
 ) -> CallScan:
     """Превратить факты в ключи связи с учётом конфигурации."""
     registry_by_route = {normalize_route(item.route): item for item in (registry or ())}
@@ -424,7 +423,6 @@ def build_calls(
             line=item.line,
             key=route_key(item.http_method, item.url, rewrite=rewrite, discriminator=discriminator),
             confidence=item.confidence,
-            via_action=(via_action or {}).get(item.line),
         )
         calls.append(call)
         if rule is not None and not discriminator:

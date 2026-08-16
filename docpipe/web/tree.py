@@ -62,6 +62,13 @@ from docpipe.web.resolve import (
     resolve_name,
 )
 from docpipe.web.routes import RouteScan, build_routes
+from docpipe.web.store import (
+    RawDispatch,
+    RawSelect,
+    action_types,
+    extract_dispatches,
+    extract_selects,
+)
 from docpipe.web.usage import (
     RawUsage,
     constructor_bindings,
@@ -107,6 +114,9 @@ class _Parsed:
     calls: list[RawCall]
     usages: list[RawUsage]
     injected: list[tuple[int, str, str]]
+    dispatches: list[RawDispatch]
+    selects: list[RawSelect]
+    action_types: dict[str, str]
 
 
 def _parse_files(root: Path, relatives: list[str], cache: ParseCache | None) -> list[_Parsed]:
@@ -130,6 +140,9 @@ def _parse_files(root: Path, relatives: list[str], cache: ParseCache | None) -> 
                 calls=extract_calls(tree.root_node, relative),
                 usages=extract_usages(tree.root_node, relative),
                 injected=injected_fields(tree.root_node),
+                dispatches=extract_dispatches(tree.root_node, relative),
+                selects=extract_selects(tree.root_node, relative),
+                action_types=action_types(tree.root_node),
             )
         )
 
@@ -169,6 +182,7 @@ def _calls_by_file(
     modules: list[WebModule],
     config: DocpipeConfig,
     ranges: MemberRanges,
+    action_of_member: dict[tuple[str, str], str],
 ) -> tuple[CallScan, dict[str, list[WebCall]]]:
     """Вызовы, разобранные по правилам своего модуля.
 
@@ -177,7 +191,8 @@ def _calls_by_file(
 
     Здесь же вызову проставляется член, в котором он записан: дальше по этому
     полю страница отличит «зову метод, который ходит вот сюда» от «внедрил
-    сервис, у которого есть такой метод».
+    сервис, у которого есть такой метод». Вызов из члена, помеченного `@Action`,
+    получает и тип экшена: страница до него дошла диспатчем, а не вызовом.
     """
     by_module: dict[str, list[RawCall]] = {}
     module_of_file = map_files_to_modules([item.result.path for item in parsed], modules)
@@ -199,7 +214,13 @@ def _calls_by_file(
         )
 
         def with_member(call: WebCall) -> WebCall:
-            return call.model_copy(update={"member": ranges.of(call.file, call.line)})
+            member = ranges.of(call.file, call.line)
+            return call.model_copy(
+                update={
+                    "member": member,
+                    "via_action": action_of_member.get((call.file, member)),
+                }
+            )
 
         calls.extend(with_member(call) for call in scan.calls)
         unresolved.extend(scan.unresolved)
@@ -394,24 +415,159 @@ def _dependencies(symbol: Symbol, by_name: dict[str, str]) -> list[Dependency]:
     return [seen[key] for key in sorted(seen)]
 
 
+def _resolved_type(name: str, file: str, ctx: ResolveContext) -> str:
+    """Имя типа -> FQN по таблице импортов файла. Не разрешилось — пустая строка.
+
+    Именно по таблице импортов, а не по глобальному индексу простых имён:
+    одноимённые классы в разных каталогах — норма там, где единица изоляции файл.
+    """
+    declared = resolve_name(name, file, ctx)
+    return f"{module_fqn(declared)}.{name}" if declared else ""
+
+
+@dataclass(frozen=True)
+class _Handlers:
+    """Кто обрабатывает экшен и каким типом он объявлен.
+
+    `by_action` — список, а не одно значение: в NGXS один экшен законно
+    обрабатывают несколько стейтов (сохранение пишет данные в одном и журнал
+    в другом), и реализация «первый попавшийся» потеряла бы половину состояния
+    страницы молча.
+    """
+
+    by_action: dict[str, list[tuple[str, str]]]
+    type_by_member: dict[tuple[str, str], str]
+    literal_by_action: dict[str, str]
+
+
+def _handlers(
+    by_fqn: dict[str, Symbol], parsed_by_file: dict[str, _Parsed], ctx: ResolveContext
+) -> _Handlers:
+    """Индекс обработчиков: `@Action(LoadInnerDebts) load(…)` в стейтах."""
+    by_action: dict[str, list[tuple[str, str]]] = {}
+    type_by_member: dict[tuple[str, str], str] = {}
+    literal_by_action: dict[str, str] = {}
+
+    for fqn in sorted(by_fqn):
+        symbol = by_fqn[fqn]
+        if not symbol.sources:
+            continue
+        file = symbol.sources[0].path
+        for member in symbol.members:
+            for attribute in member.attributes:
+                if attribute.name != "Action" or not attribute.args:
+                    continue
+                name = attribute.args[0]
+                declared_in = resolve_name(name, file, ctx)
+                if declared_in is None:
+                    continue
+                action = f"{module_fqn(declared_in)}.{name}"
+                by_action.setdefault(action, []).append((fqn, member.name))
+
+                # Строка типа переживает переименование класса, поэтому
+                # в `via_action` идёт она; имя класса — запасной вариант
+                # для экшена, объявленного без поля `type`. Файл берётся
+                # от резолва, а не собирается из FQN обратно: у обратной
+                # сборки своё представление о расширении файла.
+                declared = parsed_by_file.get(declared_in)
+                literal = declared.action_types.get(name) if declared else None
+                type_by_member[(file, member.name)] = literal or name
+                literal_by_action[action] = literal or name
+
+    return _Handlers(
+        by_action={key: sorted(set(items)) for key, items in by_action.items()},
+        type_by_member=type_by_member,
+        literal_by_action=literal_by_action,
+    )
+
+
+def _store_usages_of(
+    symbol: Symbol,
+    parsed_by_file: dict[str, _Parsed],
+    ranges: MemberRanges,
+    ctx: ResolveContext,
+    by_fqn: dict[str, Symbol],
+    handlers: _Handlers,
+) -> tuple[list[Usage], Counter[str]]:
+    """Рёбра через стор: диспатч экшена и выборка из стейта.
+
+    Оба вида дают ребро «страница обращается к члену стейта» — то же ребро,
+    что и у прямого вызова сервиса. Отдельный вид связи потребовал бы второго
+    обхода в каждой задаче, которая ходит по графу.
+    """
+    if not symbol.sources:
+        return [], Counter()
+    file = symbol.sources[0].path
+    parsed = parsed_by_file.get(file)
+    if parsed is None:
+        return [], Counter()
+
+    span = symbol.sources[0]
+    found: dict[tuple[str, str, str], Usage] = {}
+    counters: Counter[str] = Counter()
+
+    for dispatch in parsed.dispatches:
+        if not span.start <= dispatch.line <= span.end:
+            continue
+        action = _resolved_type(dispatch.action, file, ctx)
+        targets = handlers.by_action.get(action, [])
+        if not targets:
+            # Экшен без обработчика: он может обрабатываться подпиской
+            # или эффектом вне стейта. Состояние работы, а не ошибка разбора.
+            counters["actions_without_handler"] += 1
+            continue
+        counters["dispatches"] += 1
+        for state_fqn, member in targets:
+            key = (state_fqn, member, ranges.of(file, dispatch.line))
+            found.setdefault(
+                key,
+                Usage(
+                    target=key[0],
+                    member=key[1],
+                    via=key[2],
+                    action=handlers.literal_by_action.get(action, ""),
+                ),
+            )
+
+    for select in parsed.selects:
+        if not span.start <= select.line <= span.end:
+            continue
+        state_fqn = _resolved_type(select.owner, file, ctx)
+        if not state_fqn or state_fqn not in by_fqn:
+            counters["selects_unresolved"] += 1
+            continue
+        counters["selects"] += 1
+        key = (state_fqn, select.member, ranges.of(file, select.line))
+        found.setdefault(key, Usage(target=key[0], member=key[1], via=key[2]))
+
+    return [found[key] for key in sorted(found)], counters
+
+
 def _usages(
     index: dict[str, Symbol],
     parsed: list[_Parsed],
     ranges: MemberRanges,
     ctx: ResolveContext,
-) -> tuple[dict[str, list[Usage]], Counter[str]]:
-    """Граф вызовов: FQN источника -> рёбра, плюс счётчики неудач."""
+) -> tuple[dict[str, list[Usage]], Counter[str], dict[tuple[str, str], str]]:
+    """Граф вызовов: FQN источника -> рёбра, счётчики неудач и типы экшенов."""
     parsed_by_file = {item.result.path: item for item in parsed}
     by_fqn = {symbol.fqn: symbol for symbol in sorted(index.values(), key=lambda s: s.fqn)}
+    handlers = _handlers(by_fqn, parsed_by_file, ctx)
 
     edges: dict[str, list[Usage]] = {}
     counters: Counter[str] = Counter()
     for fqn in sorted(by_fqn):
-        found, counted = _usages_of(by_fqn[fqn], parsed_by_file, ranges, ctx, by_fqn)
+        direct, counted = _usages_of(by_fqn[fqn], parsed_by_file, ranges, ctx, by_fqn)
         counters.update(counted)
-        if found:
-            edges[fqn] = found
-    return edges, counters
+        through_store, counted = _store_usages_of(
+            by_fqn[fqn], parsed_by_file, ranges, ctx, by_fqn, handlers
+        )
+        counters.update(counted)
+
+        merged = {(item.target, item.member, item.via): item for item in direct + through_store}
+        if merged:
+            edges[fqn] = [merged[key] for key in sorted(merged)]
+    return edges, counters, handlers.type_by_member
 
 
 def build_nodes(
@@ -524,11 +680,10 @@ def run(
     )
 
     ranges = member_ranges(index.values())
-    calls, calls_by_file = _calls_by_file(parsed, modules, config, ranges)
+    uses, usage_counts, action_of_member = _usages(index, parsed, ranges, context)
+    calls, calls_by_file = _calls_by_file(parsed, modules, config, ranges, action_of_member)
     sources = {relative: (root / relative).read_bytes() for relative in found.ts_files}
     routes = build_routes(sources, context)
-
-    uses, usage_counts = _usages(index, parsed, ranges, context)
 
     configured, nodes = build_nodes(
         index, modules, ruleset, config, calls_by_file, _routes_by_component(routes), uses
@@ -566,6 +721,12 @@ def run(
             "usages": usage_counts["resolved"],
             "usages_external": usage_counts["external"],
             "usages_unresolved": usage_counts["unresolved"],
+            # Цепочка NGXS. Экшен без обработчика — состояние работы, а не
+            # ошибка разбора: обработчик может жить в подписке или в эффекте
+            # вне стейта. Поэтому число, а не отказ.
+            "dispatches": usage_counts["dispatches"],
+            "actions_without_handler": usage_counts["actions_without_handler"],
+            "selects": usage_counts["selects"],
         },
         parse_error_files=broken,
     )
