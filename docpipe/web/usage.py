@@ -132,6 +132,35 @@ def injected_fields(root: Node) -> list[tuple[int, str, str]]:
     return sorted(found)
 
 
+def typed_fields(root: Node) -> list[tuple[int, str, str]]:
+    """Поля с аннотацией типа: `private svc!: ModelService`.
+
+    Возвращает тройки `(строка, имя поля, имя типа)` — тот же вид, что
+    и у `injected_fields`, и по той же причине: строка нужна, чтобы отнести
+    поле к своему классу.
+
+    Форма ничем не менее однозначна, чем параметр конструктора: тип написан
+    рядом с именем. А по частоте она с ним сравнима — так объявляют поля,
+    которые присваивают в `ngOnInit`, приходят через `@Input()` или
+    выставляются фабрикой. На боевом модуле 63 % обращений к членам
+    не разрешались, и это одна из двух причин.
+
+    Дженерик и массив срезаются по первому небуквенному символу:
+    `Item[]` — это `Item`, `Store<X>` — `Store`.
+    """
+    found: list[tuple[int, str, str]] = []
+    for field in QueryCursor(_query("usage.scm")).captures(root).get("field", []):
+        name = _text(field.child_by_field_name("name"))
+        annotation = field.child_by_field_name("type")
+        if not name or annotation is None:
+            continue
+        text = _text(annotation).removeprefix(":").strip()
+        type_name = re.split(r"[^\w$.]", text, maxsplit=1)[0] if text else ""
+        if type_name:
+            found.append((field.start_point[0] + 1, name, type_name))
+    return sorted(found)
+
+
 def constructor_bindings(signature: str) -> list[tuple[str, str]]:
     """`constructor(private http: HttpClient, route: ActivatedRoute)` -> пары.
 

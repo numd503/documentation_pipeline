@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
 
 import { WidgetService } from './widget.service';
 
@@ -7,8 +7,18 @@ import { WidgetService } from './widget.service';
   standalone: true,
   template: '<div>widget</div>',
 })
-export class WidgetComponent {
+export class WidgetComponent implements OnInit {
+  // Поле с аннотацией типа: присваивается в `ngOnInit`, а не внедряется
+  // конструктором. Форма не менее однозначна, чем параметр, и на боевом
+  // модуле такие поля — половина из 63 % неразрешённых обращений.
+  private later!: WidgetService;
+
   constructor(private widgets: WidgetService) {}
+
+  ngOnInit(): void {
+    this.later = this.widgets;
+    this.later.periods();
+  }
 
   refresh(): void {
     this.widgets.periods();

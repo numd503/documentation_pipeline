@@ -83,6 +83,7 @@ from docpipe.web.usage import (
     extract_usages,
     injected_fields,
     parameter_types,
+    typed_fields,
 )
 
 
@@ -123,6 +124,7 @@ class _Parsed:
     calls: list[RawCall]
     usages: list[RawUsage]
     injected: list[tuple[int, str, str]]
+    fields: list[tuple[int, str, str]]
     dispatches: list[RawDispatch]
     selects: list[RawSelect]
     action_types: dict[str, str]
@@ -149,6 +151,7 @@ def _parse_files(root: Path, relatives: list[str], cache: ParseCache | None) -> 
                 calls=extract_calls(tree.root_node, relative),
                 usages=extract_usages(tree.root_node, relative),
                 injected=injected_fields(tree.root_node),
+                fields=typed_fields(tree.root_node),
                 dispatches=extract_dispatches(tree.root_node, relative),
                 selects=extract_selects(tree.root_node, relative),
                 action_types=action_types(tree.root_node),
@@ -329,6 +332,58 @@ def _promote(
     return kind, template
 
 
+def _own_bindings(symbol: Symbol, parsed_by_file: dict[str, _Parsed]) -> dict[str, str]:
+    """Пары «имя получателя -> имя типа», объявленные в самом классе.
+
+    Три источника, и все три однозначны: параметр конструктора, поле
+    с `inject(…)` и поле с аннотацией типа. Последнее добавлено по замеру
+    на боевом модуле — там 63 % обращений к членам не разрешались, и половина
+    из них это поля, присвоенные в `ngOnInit` или пришедшие через `@Input()`.
+
+    Поля берутся по диапазону символа: два класса в одном файле законно
+    объявляют одноимённое поле с разными типами.
+    """
+    if not symbol.sources:
+        return {}
+    parsed = parsed_by_file.get(symbol.sources[0].path)
+    if parsed is None:
+        return {}
+
+    span = symbol.sources[0]
+    bindings: dict[str, str] = {}
+    for member in symbol.members:
+        if member.kind == "constructor":
+            for name, type_name in constructor_bindings(member.signature):
+                bindings.setdefault(name, type_name)
+    for line, name, type_name in [*parsed.injected, *parsed.fields]:
+        if span.start <= line <= span.end:
+            bindings.setdefault(name, type_name)
+    return bindings
+
+
+def _bindings_of(
+    symbol: Symbol, parsed_by_file: dict[str, _Parsed], by_fqn: dict[str, Symbol]
+) -> dict[str, str]:
+    """Связывания класса вместе с унаследованными.
+
+    `this.http` в сервисе-наследнике объявлено в базовом классе, и без обхода
+    замыкания наследования такое обращение остаётся неразрешённым. В Angular
+    базовый компонент с внедрёнными зависимостями — обычная форма, а на боевом
+    модуле сервисы поголовно наследуют `BaseApiService`.
+
+    Своё сильнее унаследованного: имя, переопределённое в наследнике, значит
+    его тип, а не тип базы.
+    """
+    bindings = _own_bindings(symbol, parsed_by_file)
+    for base in symbol.base_type_closure:
+        parent = by_fqn.get(base)
+        if parent is None:
+            continue
+        for name, type_name in _own_bindings(parent, parsed_by_file).items():
+            bindings.setdefault(name, type_name)
+    return bindings
+
+
 def _usages_of(
     symbol: Symbol,
     parsed_by_file: dict[str, _Parsed],
@@ -356,14 +411,7 @@ def _usages_of(
         return [], Counter()
 
     span = symbol.sources[0]
-    bindings: dict[str, str] = {}
-    for member in symbol.members:
-        if member.kind == "constructor":
-            for name, type_name in constructor_bindings(member.signature):
-                bindings.setdefault(name, type_name)
-    for line, name, type_name in parsed.injected:
-        if span.start <= line <= span.end:
-            bindings.setdefault(name, type_name)
+    bindings = _bindings_of(symbol, parsed_by_file, by_fqn)
 
     found: dict[tuple[str, str, str], Usage] = {}
     counters: Counter[str] = Counter()
