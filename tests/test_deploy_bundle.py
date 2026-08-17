@@ -517,3 +517,19 @@ def test_bundle_config_points_at_its_pages_file(tmp_path: Path) -> None:
 
     assert config["web"]["pages"].endswith("cashflow-docspipe/pages.yaml")
     assert (bundle / "pages.yaml").is_file()
+
+
+def test_bundle_puts_the_front_documents_in_their_own_branch(tmp_path: Path) -> None:
+    """Ветки бэкенда и фронта в поставке разведены.
+
+    В одном каталоге они читаются как одно дерево, при том что единица
+    документации у них разная: класс против страницы.
+    """
+    import yaml
+
+    _install(tmp_path / "repo")
+    bundle = tmp_path / "repo" / "docs/ml/docspipe/cashflow-docspipe"
+    config = yaml.safe_load((bundle / "docpipe.yaml").read_text(encoding="utf-8"))
+
+    assert config["web"]["modules_dir"]
+    assert config["web"]["modules_dir"] != config.get("modules_dir", "modules")

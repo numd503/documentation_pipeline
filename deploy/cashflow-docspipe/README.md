@@ -128,6 +128,11 @@ docpipe materialize $BUNDLE/artifacts/doc-tree.web.json --root . --config $BUNDL
 docpipe docs status $BUNDLE/artifacts/doc-tree.web.json --root . --config $BUNDLE/docpipe.yaml
 ```
 
+Документы фронта лежат **отдельной веткой**: `web.modules_dir: "front-docs"`
+даёт `<docs_root>/front-docs/…` рядом с деревом бэкенда. Если в вашей
+сохранённой конфигурации этого ключа нет (она приезжает как `docpipe.yaml.new`),
+допишите его: без него фронт пишется в тот же каталог, что и бэкенд.
+
 ### Страницы
 
 Единица документации фронта — **страница**, а не класс: сервис, до которого

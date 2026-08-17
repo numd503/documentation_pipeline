@@ -169,6 +169,7 @@ class PlanOptions:
     # Префикс `doc_path`, ожидаемый по текущей конфигурации. Пустая строка —
     # «не проверять»: план строят и там, где конфигурации нет (тесты, adopt).
     modules_root: str = ""
+    web_modules_root: str = ""
     teams: tuple[str, ...] = ()
     force: bool = False
     # Шаблоны обхода документов — чтобы проверить, что они не накрывают само
@@ -608,8 +609,28 @@ def match_relocations(
 # --------------------------------------------------------------------------------------
 
 
-def layout_drift(manifest: Manifest, modules_root: str) -> str | None:
+def is_web(manifest: Manifest) -> bool:
+    """Манифест фронта? Ветка дерева и имя ключа в сообщениях зависят от этого."""
+    return any(module.lang == "ts" for module in manifest.modules)
+
+
+def expected_root(manifest: Manifest, modules_root: str, web_modules_root: str) -> str:
+    """Префикс, который должен быть у путей ЭТОГО манифеста.
+
+    Манифесты двух шагов лежат в разных файлах и не смешиваются: у фронта свой,
+    и в нём все модули с `lang: ts`. Поэтому выбор по манифесту, а не по узлу:
+    так проверка остаётся одной строкой и не начинает угадывать язык там,
+    где его не спросили.
+    """
+    return web_modules_root if web_modules_root and is_web(manifest) else modules_root
+
+
+def layout_drift(manifest: Manifest, modules_root: str, key: str = "modules_dir") -> str | None:
     """Разошлась ли раскладка манифеста с текущей конфигурацией.
+
+    Префикс приходит уже выбранным (`expected_root`): у манифеста фронта своя
+    ветка дерева, и сравнивать его пути с корнем бэкенда значило бы ронять
+    каждый прогон фронта на репозитории, где ветки разведены.
 
     `doc_path` собирается на шаге 1 из `docs_root`, `modules_dir` и `doc_layout`
     и замораживается в манифесте; шаг 2 читает те же ключи заново. Правка любого
@@ -632,10 +653,10 @@ def layout_drift(manifest: Manifest, modules_root: str) -> str | None:
     example = alien[0]
     return (
         f"раскладка манифеста разошлась с конфигурацией: ожидался префикс"
-        f" `{prefix}` (docs_root + modules_dir), а в манифесте {len(alien)} путей"
+        f" `{prefix}` (docs_root + {key}), а в манифесте {len(alien)} путей"
         f" вне него, например `{example}`."
         " Пересоберите манифест (`docpipe scan`) или верните прежние"
-        " `docs_root`/`modules_dir`/`doc_layout`"
+        f" `docs_root`/`{key}`/`doc_layout`"
     )
 
 
@@ -670,11 +691,21 @@ def _blocking_errors(
     existing: list[ExistingDoc],
     templates: dict[str, Template],
     modules_root: str = "",
+    web_modules_root: str = "",
     docs_scan_exclude: tuple[str, ...] = (),
 ) -> list[str]:
     errors: list[str] = []
 
-    drift = layout_drift(manifest, modules_root)
+    drift = layout_drift(
+        manifest,
+        expected_root(manifest, modules_root, web_modules_root),
+        # Имя ключа в сообщении — того, который человек и правил. Пустой
+        # `web.modules_dir` даёт ту же ветку, что у бэкенда, и называть его
+        # значило бы отправить чинить настройку, которой нет.
+        "web.modules_dir"
+        if is_web(manifest) and web_modules_root != modules_root
+        else "modules_dir",
+    )
     if drift:
         errors.append(drift)
 
@@ -757,7 +788,12 @@ def build_plan(
     """Построить план. Ничего не пишет."""
     options = options or PlanOptions()
     errors = _blocking_errors(
-        manifest, existing, templates, options.modules_root, options.docs_scan_exclude
+        manifest,
+        existing,
+        templates,
+        options.modules_root,
+        options.web_modules_root,
+        options.docs_scan_exclude,
     )
     if errors:
         return MaterializePlan(errors=errors)

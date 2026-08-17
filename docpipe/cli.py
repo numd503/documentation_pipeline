@@ -49,6 +49,7 @@ from docpipe.materialize.plan import (
     PlanOptions,
     build_plan,
     check_links,
+    expected_root,
     scan_docs,
     shadowed_docs,
     with_links,
@@ -1105,6 +1106,7 @@ def _prepare(
         PlanOptions(
             docs_root=settings.docs_root,
             modules_root=settings.modules_root,
+            web_modules_root=settings.web_modules_root,
             teams=teams,
             accept=accept,
             force=force,
@@ -1191,7 +1193,10 @@ def worklist(
         plan,
         selected,
         docs_root=settings.docs_root,
-        modules_root=settings.modules_root,
+        # Префикс очереди берётся по манифесту: у фронта своя ветка дерева,
+        # и корень бэкенда сообщил бы внешнему исполнителю путь, которого
+        # в очереди нет ни у одного документа.
+        modules_root=expected_root(manifest, settings.modules_root, settings.web_modules_root),
         ruleset_version=manifest.ruleset_version,
         manifest_sha256=content_hash(manifest_path.read_bytes()),
         truncated=truncated,

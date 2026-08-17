@@ -734,7 +734,7 @@ def build_nodes(
                     kind,
                     symbol.name,
                     config.doc_layout,
-                    config.modules_root,
+                    config.web_modules_root,
                 ),
                 parent=module.id,
                 module=module.name,
