@@ -325,7 +325,8 @@ def _page_sections(node: DocNode, context: BuildContext) -> list[str]:
     бизнес-слой ссылается на технический, а не пересказывает его.
     """
     by_fqn = index_by_fqn(context.manifest)
-    calls, participants = called(node, by_fqn, PAGE_DEPTH)
+    walk = called(node, by_fqn, PAGE_DEPTH)
+    calls, participants = walk.calls, walk.participants
 
     reached = [by_fqn[fqn] for fqn in sorted(participants) if fqn in by_fqn]
     absorbed = [item for item in reached if item.absorbed_by == node.id]

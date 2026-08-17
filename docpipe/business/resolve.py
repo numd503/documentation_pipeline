@@ -512,7 +512,8 @@ def _page_facts(node: DocNode, ctx: ResolveContext) -> dict[str, list[str]]:
       `DebtState` смысла не меняет, а `innerDebt` — контракт, по которому стейт
       селектят.
     """
-    calls, participants = called(node, ctx.web_nodes_by_fqn, PAGE_DEPTH)
+    walk = called(node, ctx.web_nodes_by_fqn, PAGE_DEPTH)
+    calls, participants = walk.calls, walk.participants
 
     lists = sorted({call.discriminator for call in calls if call.discriminator})
     endpoints = sorted({f"{call.http_method} {call.route}" for call in calls if call.route})
