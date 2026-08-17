@@ -25,6 +25,8 @@ from docpipe.web.pages import (
     NOTE_NO_FEATURES,
     NOTE_UNANCHORABLE,
     Page,
+    PageRoute,
+    _children_of,
     build_report,
     format_report,
     report_csv,
@@ -88,24 +90,44 @@ def test_rule_said_component_and_the_report_says_so(manifest: Manifest) -> None:
     assert "component" in format_report(build_report(manifest))
 
 
-def test_calls_are_found_through_dependencies_with_the_step_named(manifest: Manifest) -> None:
-    """Вызовы лежат на узле сервиса, а не страницы, — значит шаг обязан быть виден."""
+def test_calls_name_the_method_the_page_actually_calls(manifest: Manifest) -> None:
+    """Список эндпоинтов — вывод по графу вызовов, и путь обязан быть виден.
+
+    `ModelService` объявляет пять эндпоинтов, страница зовёт два его метода.
+    До графа вызовов в документ страницы приезжали все пять.
+    """
     detail = _page(manifest, "DetailComponent")
 
-    assert detail.calls, "вызовы страницы собираются обходом зависимостей"
-    assert all(call.through == "ModelService" for call in detail.calls)
-    assert all(call.depth == 1 for call in detail.calls)
-    assert ("GET", "api/ml/structure/{}") in {
-        (call.http_method, call.route) for call in detail.calls
+    assert {(call.route, call.through, call.depth) for call in detail.calls} == {
+        ("api/ml/structure/{}", "ModelService.byId", 1),
+        ("api/ml/structure/getforupdate/{}", "ModelService.forUpdate", 1),
+    }
+    assert detail.reachable_calls == 5
+
+
+def test_chain_through_the_store_is_walked_to_the_endpoint(manifest: Manifest) -> None:
+    """Компонент диспатчит, стейт обрабатывает, сервис зовёт — три звена.
+
+    Без прохода по цепочке у этой страницы не было бы ни одного эндпоинта,
+    и «вызовов ноль» читалось бы как «документировать нечего».
+    """
+    calls = {
+        (call.route, call.through, call.action) for call in _page(manifest, "ListComponent").calls
     }
 
+    assert (
+        "api/ml/innerdebts/state/byclient/{}",
+        "InnerDebtService.byClient",
+        "[Inner Debt] Load",
+    ) in calls
 
-def test_depth_zero_leaves_only_calls_of_the_component_itself(manifest: Manifest) -> None:
-    """Глубина — не украшение вывода: на нуле у страницы остаются свои вызовы.
 
-    В Angular компонент почти никогда не зовёт `http` сам, поэтому ноль здесь
-    и означает пустой список. Если он однажды перестанет означать это, тест
-    покажет, что вызовы поехали не на тот узел.
+def test_depth_zero_leaves_only_calls_of_the_page_itself(manifest: Manifest) -> None:
+    """Ноль шагов — только то, что записано в самом компоненте.
+
+    В Angular компонент почти никогда не зовёт `http` сам, поэтому на фикстуре
+    ноль и означает пустой список; шаг первый добавляет вызовы методов,
+    которые страница зовёт.
     """
     assert _page(manifest, "DetailComponent", depth=0).calls == []
     assert _page(manifest, "DetailComponent", depth=1).calls != []
@@ -140,26 +162,22 @@ def test_layout_is_marked_but_stays_a_page(manifest: Manifest) -> None:
     assert {node.kind for node in manifest.nodes if node.title == "ShellComponent"} == {"page"}
 
 
-def test_page_with_features_but_no_calls_names_the_ngxs_gap(manifest: Manifest) -> None:
-    """«Вызовов ноль» и «страница пустая» — разные утверждения.
+def test_page_with_features_but_no_calls_says_what_that_means(manifest: Manifest) -> None:
+    """После графа вызовов «ноль» означает другое, чем до него.
 
-    Экшен NGXS создаётся в теле метода, а не внедряется конструктором, поэтому
-    обход по зависимостям похода за данными не видит. Отчёт, оставивший ноль
-    без объяснения, приведёт к решению «документировать нечего».
-
-    Зависимости снимаются с готового узла: страница с членами и без единой
-    разрешённой зависимости — это и есть форма, в которой компонент ходит
-    за данными только через `dispatch`.
+    До — «обход не видит цепочку». После — «страница действительно не ходит
+    за данными сама»: данные приходят через `@Input` от родителя или из
+    платформенного грида. Заметка обязана была смениться вместе со смыслом.
     """
     node = next(item for item in manifest.nodes if item.title == "DetailComponent")
-    without_deps = node.model_copy(update={"dependencies": []})
+    without_edges = node.model_copy(update={"uses": [], "dependencies": []})
     trimmed = manifest.model_copy(
-        update={"nodes": [without_deps if item.id == node.id else item for item in manifest.nodes]}
+        update={"nodes": [without_edges if item.id == node.id else item for item in manifest.nodes]}
     )
 
     page = _page(trimmed, "DetailComponent")
 
-    assert page.members == 3
+    assert page.members == 4
     assert NOTE_NO_CALLS in page.notes
     assert NOTE_NO_FEATURES not in page.notes
 
@@ -273,3 +291,73 @@ def test_cli_explains_an_empty_list(tmp_path: Path, manifest: Manifest) -> None:
 
     assert result.exit_code == 0
     assert "RouterModule.forRoot" in result.output
+
+
+def test_both_numbers_are_printed_side_by_side(manifest: Manifest) -> None:
+    """Разница между «зовёт» и «достижимо» — мера, а не дефект.
+
+    На боевом модуле она была 51 против единиц, и без второй величины
+    невозможно понять, стало ли лучше.
+    """
+    text = format_report(build_report(manifest))
+
+    assert "эндпоинтов" in text
+    assert "достижимо по внедрению" in text
+
+
+def test_calls_of_another_method_of_the_same_service_do_not_leak(manifest: Manifest) -> None:
+    """Сервис на пять эндпоинтов зовут ради двух.
+
+    Именно это склеивание давало 43 эндпоинта «ровно на четырёх страницах»:
+    список собирался по внедрению, а не по вызову.
+    """
+    routes = {call.route for call in _page(manifest, "DetailComponent").calls}
+
+    assert "api/ml/debtsconsgroup/savealternative" not in routes
+
+
+# --------------------------------------------------------------------------------------
+# Дочерние страницы: факт, а не эвристика (P05)
+# --------------------------------------------------------------------------------------
+
+
+def test_container_is_recognised_by_its_children_not_by_its_size(manifest: Manifest) -> None:
+    """`ShellComponent` — корень дерева: под ним лежат все остальные страницы.
+
+    Именно число дочерних разводит контейнер и экран с детьми: на боевом
+    модуле `/forecast/{}` имеет семь дочерних при 45 членах и своих вызовах,
+    а `…/structuring` — три дочерние, два члена и ни одного вызова.
+    """
+    assert _page(manifest, "ShellComponent").children == 4
+    assert _page(manifest, "QuizComponent").children == 0
+
+
+def test_children_are_counted_by_segments_not_by_substring() -> None:
+    """Иначе `/forecast` оказался бы родителем `/forecaster`."""
+    parent = [PageRoute(path="forecast")]
+    other = [PageRoute(path="forecaster")]
+    child = [PageRoute(path="forecast/daily")]
+
+    assert _children_of(parent, [parent, other]) == 0
+    assert _children_of(parent, [parent, child]) == 1
+
+
+def test_dependency_names_the_members_it_is_called_for(manifest: Manifest) -> None:
+    """Ответ на вопрос «почему этот участник в списке».
+
+    На боевом прогоне так в списке шести страниц оказался `SetApiUrl`,
+    и по отчёту нельзя было понять, что именно от него зовут.
+    """
+    detail = _page(manifest, "DetailComponent")
+
+    assert [(item.title, item.members) for item in detail.dependencies] == [
+        ("ModelService", ["byId", "forUpdate"])
+    ]
+
+
+def test_csv_carries_the_path_of_every_call(manifest: Manifest) -> None:
+    """Разметку страниц ведут по этому файлу — «через кого» нужнее всего там."""
+    text = report_csv(build_report(manifest))
+
+    assert "дочерних" in text.splitlines()[0]
+    assert "<-ModelService.byId#1" in text

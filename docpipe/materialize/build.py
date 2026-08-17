@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from docpipe.materialize.template import Template, resolve_template
 from docpipe.model import DocNode, Manifest, SourceSpan
+from docpipe.web.pages import DEFAULT_DEPTH as PAGE_DEPTH
+from docpipe.web.pages import STATE_KIND, called, index_by_fqn, state_name
 
 SCHEMA: Final[str] = "materialize/1"
 
@@ -313,6 +315,133 @@ def _link_text(links: list[ResolvedLink], node: DocNode, target: str) -> str:
     return ", ".join(parts)
 
 
+def _page_sections(node: DocNode, context: BuildContext) -> list[str]:
+    """Разделы агрегата: состояние, что зовёт страница, состав документа.
+
+    Документ страницы — единица документации: сервис, до которого дотягивается
+    только она, описывается здесь же, а не отдельным файлом. Общий сервис
+    остаётся отдельным документом и попадает сюда **ссылкой**: копия текста
+    разошлась бы с оригиналом на первой правке — то же правило, по которому
+    бизнес-слой ссылается на технический, а не пересказывает его.
+    """
+    by_fqn = index_by_fqn(context.manifest)
+    calls, participants = called(node, by_fqn, PAGE_DEPTH)
+
+    reached = [by_fqn[fqn] for fqn in sorted(participants) if fqn in by_fqn]
+    absorbed = [item for item in reached if item.absorbed_by == node.id]
+    shared = [item for item in reached if item.absorbed_by != node.id]
+    states = [item for item in reached if item.kind == STATE_KIND]
+
+    lines = ["", "### Дочерние страницы", ""]
+    children = _children(node, context)
+    lines += [f"- [`/{path}`]({_relative(node.doc_path, doc)})" for path, doc in children] or [
+        "Нет."
+    ]
+
+    lines += ["", "### Состояние", ""]
+    lines += _table(
+        ["Стейт", "Имя", "Члены", "Где описан"],
+        [
+            [
+                _cell(item.title),
+                _cell(state_name(item)),
+                _cell(", ".join(_members_called(item, node, by_fqn))),
+                "в этом документе"
+                if item.absorbed_by == node.id
+                else _link_text(
+                    resolve_link(item.symbol.fqn if item.symbol else item.title, node, context),
+                    node,
+                    item.title,
+                ),
+            ]
+            for item in states
+        ],
+    )
+
+    lines += ["", "### Что зовёт страница", ""]
+    lines += _table(
+        ["Узел", "Вид", "Члены", "Где описан"],
+        [
+            [
+                _cell(item.title),
+                item.kind,
+                _cell(", ".join(_members_called(item, node, by_fqn))),
+                "в этом документе"
+                if item.absorbed_by == node.id
+                else _link_text(
+                    resolve_link(item.symbol.fqn if item.symbol else item.title, node, context),
+                    node,
+                    item.title,
+                ),
+            ]
+            for item in reached
+        ],
+    )
+
+    lines += ["", "### Данные", ""]
+    lines += _table(
+        ["Метод", "Маршрут", "Список", "Через", "Экшен"],
+        [
+            [
+                _cell(call.http_method),
+                _cell(call.route),
+                _cell(call.discriminator),
+                _cell(call.through),
+                _cell(call.action),
+            ]
+            for call in calls
+        ],
+    )
+
+    lines += ["", "### Состав документа", ""]
+    lines += [
+        f"- `{item.title}` ({item.kind}) — своего документа нет, описывается здесь"
+        for item in absorbed
+    ] or ["Нет."]
+    if shared:
+        lines += [
+            "",
+            "Общие узлы, у которых свой документ (их зовёт не только эта страница): "
+            + ", ".join(f"`{item.title}`" for item in shared)
+            + ".",
+        ]
+    return lines
+
+
+def _members_called(target: DocNode, page: DocNode, by_fqn: dict[str, DocNode]) -> list[str]:
+    """Члены цели, которые зовут на пути от страницы."""
+    found: set[str] = set()
+    fqn = target.symbol.fqn if target.symbol else ""
+    for item in [page, *by_fqn.values()]:
+        for usage in item.uses:
+            if usage.target == fqn:
+                found.add(usage.member)
+    return sorted(found)
+
+
+def _children(node: DocNode, context: BuildContext) -> list[tuple[str, str]]:
+    """Страницы, лежащие под маршрутом этой: пара «маршрут, документ»."""
+    parents = [
+        entry.path.split("/") if entry.path else []
+        for entry in node.routes
+        if not entry.route_unresolved
+    ]
+    found: list[tuple[str, str]] = []
+    for other in context.manifest.nodes:
+        if other.id == node.id or other.kind != "page":
+            continue
+        for entry in other.routes:
+            if entry.route_unresolved:
+                continue
+            child = entry.path.split("/") if entry.path else []
+            if any(
+                len(child) > len(parent) and child[: len(parent)] == parent for parent in parents
+            ):
+                found.append((entry.path, other.doc_path))
+                break
+    return sorted(found)
+
+
 def _web_sections(node: DocNode) -> list[str]:
     """Разделы, которые есть только у фронта: маршрут страницы и вызовы к бэкенду.
 
@@ -400,6 +529,8 @@ def build_generated_block(
 
     if node.module in context.web_modules:
         lines += _web_sections(node)
+        if node.kind == "page":
+            lines += _page_sections(node, context)
 
     lines += ["", "### Зависимости", ""]
     lines += _table(

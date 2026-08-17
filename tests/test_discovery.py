@@ -26,6 +26,7 @@ EXPECTED_TS = [
     "src/app/cf-api/resources/model.ts",
     "src/app/cf-api/services/url-decorator.service.ts",
     "src/app/inner-debt/services/inner-debt.service.ts",
+    "src/app/inner-debt/state/audit.state.ts",
     "src/app/inner-debt/state/debt.actions.ts",
     "src/app/inner-debt/state/debt.state.ts",
     "src/app/legacy/legacy.module.ts",
@@ -177,7 +178,7 @@ def test_discover_scope_does_not_match_prefix_of_sibling(sample_solution: Path) 
 def test_discover_ts_files(web_workspace: Path) -> None:
     result = discover(web_workspace, WEB_EXCLUDE)
     assert result.ts_files == EXPECTED_TS
-    assert len(result.ts_files) == 27
+    assert len(result.ts_files) == 28
 
 
 def test_discover_excludes_node_modules_by_traversal(web_workspace: Path) -> None:
@@ -199,7 +200,7 @@ def test_discover_without_excludes_sees_node_modules(web_workspace: Path) -> Non
     result = discover(web_workspace, [])
     assert "node_modules/junk/index.ts" in result.ts_files
     assert "node_modules/exceljs/dist/exceljs.bare.d.ts" in result.ts_files
-    assert len(result.ts_files) == 29
+    assert len(result.ts_files) == 30
 
 
 def test_discover_keeps_spec_and_declaration_files(web_workspace: Path) -> None:

@@ -9,8 +9,11 @@ from docpipe.classify import load_ruleset
 from docpipe.cli import app
 from docpipe.config import DocpipeConfig
 from docpipe.emit import run, scan, write_manifest, write_run_meta
-from docpipe.model import DocNode, Manifest, Module, ParserVersions
+from docpipe.model import DocNode, Manifest, Module, ParserVersions, Symbol
 from docpipe.stats import (
+    PAGE_COVERED,
+    UNDECIDED,
+    absorbed_pages,
     collect_stats,
     format_breakdown,
     format_decisions,
@@ -527,3 +530,73 @@ def test_breakdown_ignores_not_enrolled(sample_solution: Path) -> None:
     """Срезы подсказывают правила, поэтому неenrolled в них не место."""
     stats = run(sample_solution, DocpipeConfig(enrolled=["src/Sample.Common/**"])).stats
     assert all("Pricing" not in name for rows in stats.breakdown.values() for name, _ in rows)
+
+
+# --------------------------------------------------------------------------------------
+# `page_covered`: узел документируется внутри страницы (P08)
+# --------------------------------------------------------------------------------------
+
+
+def test_absorbed_symbol_is_a_decision_not_a_gap() -> None:
+    """Поглощённый узел не растит ни `undecided`, ни «не документируем».
+
+    Тот же приём, что у `interface_covered`: решение инструмента, названное
+    отдельно, чтобы не портить единственное число, которое обязано идти к нулю.
+    """
+    from docpipe.classify import load_ruleset
+    from docpipe.config import DocpipeConfig
+    from docpipe.web.tree import run as run_web
+
+    result = run_web(
+        Path("tests/fixtures/WebWorkspace"),
+        DocpipeConfig(),
+        load_ruleset(Path("rules/rules.yaml"), "web"),
+    )
+    stats = collect_stats(
+        result.index,
+        result.manifest.nodes,
+        load_ruleset(Path("rules/rules.yaml"), "web"),
+        {module.id.removeprefix("module:") for module in result.manifest.modules},
+    )
+
+    assert stats.counts[PAGE_COVERED] == 5
+    assert stats.counts.get(UNDECIDED, 0) == 0
+    # Сумма по состояниям и видам по-прежнему равна числу символов: поглощённые
+    # переехали из «документируем» в свою строку, а не появились из ниоткуда.
+    assert sum(stats.counts.values()) == stats.total
+
+
+def test_absorbed_symbol_names_its_page() -> None:
+    """Без имени страницы состояние неотличимо от «документируем где-то там»."""
+    nodes = [
+        DocNode(
+            id="type:src#page",
+            kind="page",
+            template="page",
+            title="DetailComponent",
+            doc_path="docs/p.md",
+            module="src",
+            domain="src",
+            signature_hash="sha256:0",
+        ),
+        DocNode(
+            id="type:src#svc",
+            kind="api-service",
+            template="service",
+            title="ModelService",
+            doc_path="docs/s.md",
+            module="src",
+            domain="src",
+            signature_hash="sha256:0",
+            absorbed_by="type:src#page",
+            symbol=Symbol(
+                fqn="src.ModelService",
+                name="ModelService",
+                namespace="src",
+                module="src",
+                type_kind="class",
+            ),
+        ),
+    ]
+
+    assert absorbed_pages(nodes) == {"src.ModelService": "DetailComponent"}

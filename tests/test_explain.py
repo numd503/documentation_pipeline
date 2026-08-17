@@ -221,3 +221,35 @@ def test_command_json_format(sample_solution: Path) -> None:
 
     assert payload["total"] == 1
     assert payload["symbols"][0]["state"] == UNDECIDED
+
+
+def test_symbols_of_the_web_step_show_their_page(web_workspace: Path) -> None:
+    """`--lang ts` читает секцию `web` и индекс фронта.
+
+    Без него состояние `page_covered` не увидеть вовсе: поглощение бывает
+    только на фронте, а `symbols` до сих пор умел один язык.
+    """
+    result = runner.invoke(
+        app,
+        [
+            "symbols",
+            "--root",
+            str(web_workspace),
+            "--lang",
+            "ts",
+            "--state",
+            "page_covered",
+            "--rules",
+            "rules/rules.yaml",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "5 символов" in result.output
+    assert "документируется внутри страницы: DetailComponent" in result.output
+
+
+def test_unknown_lang_is_refused(web_workspace: Path) -> None:
+    result = runner.invoke(app, ["symbols", "--root", str(web_workspace), "--lang", "kotlin"])
+
+    assert result.exit_code == 2

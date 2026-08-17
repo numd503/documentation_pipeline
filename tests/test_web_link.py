@@ -63,7 +63,7 @@ def test_link_by_a_template(report: LinkReport) -> None:
 
 
 def test_link_by_a_resolved_constant(report: LinkReport) -> None:
-    """Через `auditUrl` идут три вызова; без разрешения константы связи не было бы.
+    """Через `auditUrl` идут шесть вызовов; без разрешения константы связи не было бы.
 
     Эндпоинта у них нет — это внешняя интеграция, — но вызовы обязаны быть
     видны с файлом и строкой, а не пропасть.
@@ -71,7 +71,7 @@ def test_link_by_a_resolved_constant(report: LinkReport) -> None:
     orphans = [
         item for item in report.calls_without_endpoint if item.route == "integration/log/auditj"
     ]
-    assert len(orphans) == 3
+    assert len(orphans) == 6
     assert all(item.file.endswith("audit.service.ts") and item.line > 0 for item in orphans)
 
 
@@ -201,7 +201,7 @@ def test_no_run_metadata_in_the_artifact(report: LinkReport) -> None:
 
 def test_text_report_names_both_numbers(report: LinkReport) -> None:
     text = format_report(report)
-    assert "Вызовов фронта: 15" in text
+    assert "Вызовов фронта: 18" in text
     assert "эндпоинтов бэкенда: 10" in text
 
 

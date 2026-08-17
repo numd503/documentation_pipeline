@@ -12,10 +12,10 @@
 """
 
 import posixpath
-import re
 import socket
 import time
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -38,16 +38,26 @@ from docpipe.model import (
     RunMeta,
     SourceSpan,
     Symbol,
+    Usage,
     WebCall,
 )
 from docpipe.route import RewriteRule
 from docpipe.tree import doc_path_for, signature_hash
+from docpipe.web.absorb import absorb
 from docpipe.web.calls import CallScan, RawCall, RegistryCall, build_calls, extract_calls
+from docpipe.web.members import MemberRanges, member_ranges
 from docpipe.web.modules import (
     WebModule,
     discover_modules,
     load_aliases,
     map_files_to_modules,
+)
+from docpipe.web.overrides import (
+    MANUAL_SOURCE,
+    MANUAL_TABLE,
+    OverrideReport,
+    Overrides,
+    StaleRule,
 )
 from docpipe.web.parser import parse_source, parse_tree
 from docpipe.web.resolve import (
@@ -56,8 +66,24 @@ from docpipe.web.resolve import (
     build_context,
     build_symbol_index,
     compute_closures,
+    module_fqn,
+    resolve_name,
 )
 from docpipe.web.routes import RouteScan, build_routes
+from docpipe.web.store import (
+    RawDispatch,
+    RawSelect,
+    action_types,
+    extract_dispatches,
+    extract_selects,
+)
+from docpipe.web.usage import (
+    RawUsage,
+    constructor_bindings,
+    extract_usages,
+    injected_fields,
+    parameter_types,
+)
 
 
 def parser_versions() -> ParserVersions:
@@ -82,14 +108,24 @@ class WebScanResult:
     index: dict[str, Symbol]
     calls: CallScan
     routes: RouteScan
+    overrides: OverrideReport = field(default_factory=OverrideReport)
 
 
 @dataclass(frozen=True)
 class _Parsed:
-    """Разбор одного файла: символы и факты о вызовах из одного дерева."""
+    """Разбор одного файла: символы и факты из одного дерева.
+
+    Всё, что здесь перечислено, берётся за один проход по дереву: второй
+    разбор того же файла ради соседнего факта стоит столько же, сколько первый.
+    """
 
     result: FileParseResult
     calls: list[RawCall]
+    usages: list[RawUsage]
+    injected: list[tuple[int, str, str]]
+    dispatches: list[RawDispatch]
+    selects: list[RawSelect]
+    action_types: dict[str, str]
 
 
 def _parse_files(root: Path, relatives: list[str], cache: ParseCache | None) -> list[_Parsed]:
@@ -107,7 +143,17 @@ def _parse_files(root: Path, relatives: list[str], cache: ParseCache | None) -> 
         result = cached if cached is not None else parse_source(source, relative, tree=tree)
         if cache is not None and cached is None:
             cache.put(result)
-        parsed.append(_Parsed(result=result, calls=extract_calls(tree.root_node, relative)))
+        parsed.append(
+            _Parsed(
+                result=result,
+                calls=extract_calls(tree.root_node, relative),
+                usages=extract_usages(tree.root_node, relative),
+                injected=injected_fields(tree.root_node),
+                dispatches=extract_dispatches(tree.root_node, relative),
+                selects=extract_selects(tree.root_node, relative),
+                action_types=action_types(tree.root_node),
+            )
+        )
 
     parsed.sort(key=lambda item: item.result.path)
     return parsed
@@ -141,12 +187,21 @@ def _rewrite_for(module: WebModule, config: DocpipeConfig) -> RewriteRule | None
 
 
 def _calls_by_file(
-    parsed: list[_Parsed], modules: list[WebModule], config: DocpipeConfig
+    parsed: list[_Parsed],
+    modules: list[WebModule],
+    config: DocpipeConfig,
+    ranges: MemberRanges,
+    action_of_member: dict[tuple[str, str], str],
 ) -> tuple[CallScan, dict[str, list[WebCall]]]:
     """Вызовы, разобранные по правилам своего модуля.
 
     Правило берётся по модулю файла, а не одно на прогон: у семи фронтов
     репозитория семь разных `pathRewrite`, и общий ключ склеил бы их маршруты.
+
+    Здесь же вызову проставляется член, в котором он записан: дальше по этому
+    полю страница отличит «зову метод, который ходит вот сюда» от «внедрил
+    сервис, у которого есть такой метод». Вызов из члена, помеченного `@Action`,
+    получает и тип экшена: страница до него дошла диспатчем, а не вызовом.
     """
     by_module: dict[str, list[RawCall]] = {}
     module_of_file = map_files_to_modules([item.result.path for item in parsed], modules)
@@ -166,9 +221,22 @@ def _calls_by_file(
             rewrite=_rewrite_for(module, config),
             registry=registry,
         )
-        calls.extend(scan.calls)
+
+        def with_member(call: WebCall) -> WebCall:
+            member = ranges.of(call.file, call.line)
+            return call.model_copy(
+                update={
+                    "member": member,
+                    "via_action": action_of_member.get((call.file, member)),
+                }
+            )
+
+        calls.extend(with_member(call) for call in scan.calls)
         unresolved.extend(scan.unresolved)
-        registry_unresolved.extend(scan.registry_unresolved)
+        # Тот же список проходит ту же обработку: `registry_unresolved` —
+        # подмножество `calls`, и разное наполнение полей у одного вызова
+        # в двух списках читалось бы как два разных вызова.
+        registry_unresolved.extend(with_member(call) for call in scan.registry_unresolved)
 
     grouped: dict[str, list[WebCall]] = {}
     for call in calls:
@@ -261,42 +329,68 @@ def _promote(
     return kind, template
 
 
-def _parameter_types(signature: str) -> list[str]:
-    """Типы параметров конструктора TypeScript: `constructor(private http: HttpClient)`.
+def _usages_of(
+    symbol: Symbol,
+    parsed_by_file: dict[str, _Parsed],
+    ranges: MemberRanges,
+    ctx: ResolveContext,
+    by_fqn: dict[str, Symbol],
+) -> tuple[list[Usage], Counter[str]]:
+    """Рёбра графа вызовов, исходящие из символа, и счётчики того, что не вышло.
 
-    Порядок в TS обратный C#: там `Тип имя`, здесь `имя: Тип`. Общую функцию
-    из `tree.parameter_types` переиспользовать нельзя — она разберёт `private`
-    как тип и выдаст зависимость от модификатора.
+    Тип получателя берётся из **своего** класса: пары «имя -> тип» собираются
+    из конструктора и из полей `inject(…)`, попавших в диапазон символа. Таблица
+    на файл подставила бы чужой тип там, где два класса в одном файле объявляют
+    одноимённое поле, — молча и правдоподобно.
 
-    Дженерик и объединение типов срезаются по первому небуквенному символу:
-    `Store<AppState>` — зависимость от `Store`, а не от его параметра.
+    Имя типа разрешается таблицей импортов файла, а не глобальным индексом
+    простых имён: одноимённые классы в разных каталогах — норма для TypeScript,
+    где единица изоляции файл.
     """
-    inner = signature.partition("(")[2].rpartition(")")[0]
-    if not inner.strip():
-        return []
+    if not symbol.sources:
+        return [], Counter()
 
-    found: list[str] = []
-    depth = 0
-    current: list[str] = []
-    for char in inner:
-        if char in "<([{":
-            depth += 1
-        elif char in ">)]}":
-            depth -= 1
-        if char == "," and depth == 0:
-            found.append("".join(current))
-            current = []
+    file = symbol.sources[0].path
+    parsed = parsed_by_file.get(file)
+    if parsed is None:
+        return [], Counter()
+
+    span = symbol.sources[0]
+    bindings: dict[str, str] = {}
+    for member in symbol.members:
+        if member.kind == "constructor":
+            for name, type_name in constructor_bindings(member.signature):
+                bindings.setdefault(name, type_name)
+    for line, name, type_name in parsed.injected:
+        if span.start <= line <= span.end:
+            bindings.setdefault(name, type_name)
+
+    found: dict[tuple[str, str, str], Usage] = {}
+    counters: Counter[str] = Counter()
+    for usage in parsed.usages:
+        if not span.start <= usage.line <= span.end:
             continue
-        current.append(char)
-    found.append("".join(current))
 
-    types: list[str] = []
-    for part in found:
-        annotation = part.partition(":")[2].strip()
-        name = re.split(r"[^\w$.]", annotation, maxsplit=1)[0] if annotation else ""
-        if name:
-            types.append(name)
-    return types
+        bound = bindings.get(usage.receiver)
+        if bound is None:
+            # Локальная переменная, поле без типа, чужая цепочка. Ложное ребро
+            # втянуло бы в страницу посторонний сервис, поэтому только счётчик.
+            counters["unresolved"] += 1
+            continue
+
+        declared = resolve_name(bound, file, ctx)
+        target = f"{module_fqn(declared)}.{bound}" if declared else ""
+        if not target or target not in by_fqn:
+            # `HttpClient`, `Router`, `Store` — внешние типы. Это не пробел
+            # разбора: у них нет узла документации, и ребро вести некуда.
+            counters["external"] += 1
+            continue
+
+        counters["resolved"] += 1
+        key = (target, usage.method, ranges.of(file, usage.line))
+        found.setdefault(key, Usage(target=key[0], member=key[1], via=key[2]))
+
+    return [found[key] for key in sorted(found)], counters
 
 
 def _dependencies(symbol: Symbol, by_name: dict[str, str]) -> list[Dependency]:
@@ -305,12 +399,16 @@ def _dependencies(symbol: Symbol, by_name: dict[str, str]) -> list[Dependency]:
     В Angular внедрение конструкторное — `inject(…)` встречается на боевом
     модуле девять раз против сотен конструкторов, — поэтому другого источника
     зависимостей на фронте практически нет.
+
+    Разбор сигнатуры живёт в `web/usage.py` и общий с графом вызовов: две копии
+    разошлись бы на первой же форме параметра, и зависимости узла перестали бы
+    сходиться с его рёбрами.
     """
     found: list[Dependency] = []
     for member in symbol.members:
         if member.kind != "constructor":
             continue
-        for name in _parameter_types(member.signature):
+        for name in parameter_types(member.signature):
             target = by_name.get(name)
             found.append(
                 Dependency(
@@ -326,6 +424,254 @@ def _dependencies(symbol: Symbol, by_name: dict[str, str]) -> list[Dependency]:
     return [seen[key] for key in sorted(seen)]
 
 
+def _resolved_type(name: str, file: str, ctx: ResolveContext) -> str:
+    """Имя типа -> FQN по таблице импортов файла. Не разрешилось — пустая строка.
+
+    Именно по таблице импортов, а не по глобальному индексу простых имён:
+    одноимённые классы в разных каталогах — норма там, где единица изоляции файл.
+    """
+    declared = resolve_name(name, file, ctx)
+    return f"{module_fqn(declared)}.{name}" if declared else ""
+
+
+@dataclass(frozen=True)
+class _Handlers:
+    """Кто обрабатывает экшен и каким типом он объявлен.
+
+    `by_action` — список, а не одно значение: в NGXS один экшен законно
+    обрабатывают несколько стейтов (сохранение пишет данные в одном и журнал
+    в другом), и реализация «первый попавшийся» потеряла бы половину состояния
+    страницы молча.
+    """
+
+    by_action: dict[str, list[tuple[str, str]]]
+    type_by_member: dict[tuple[str, str], str]
+    literal_by_action: dict[str, str]
+
+
+def _handlers(
+    by_fqn: dict[str, Symbol], parsed_by_file: dict[str, _Parsed], ctx: ResolveContext
+) -> _Handlers:
+    """Индекс обработчиков: `@Action(LoadInnerDebts) load(…)` в стейтах."""
+    by_action: dict[str, list[tuple[str, str]]] = {}
+    type_by_member: dict[tuple[str, str], str] = {}
+    literal_by_action: dict[str, str] = {}
+
+    for fqn in sorted(by_fqn):
+        symbol = by_fqn[fqn]
+        if not symbol.sources:
+            continue
+        file = symbol.sources[0].path
+        for member in symbol.members:
+            for attribute in member.attributes:
+                if attribute.name != "Action" or not attribute.args:
+                    continue
+                name = attribute.args[0]
+                declared_in = resolve_name(name, file, ctx)
+                if declared_in is None:
+                    continue
+                action = f"{module_fqn(declared_in)}.{name}"
+                by_action.setdefault(action, []).append((fqn, member.name))
+
+                # Строка типа переживает переименование класса, поэтому
+                # в `via_action` идёт она; имя класса — запасной вариант
+                # для экшена, объявленного без поля `type`. Файл берётся
+                # от резолва, а не собирается из FQN обратно: у обратной
+                # сборки своё представление о расширении файла.
+                declared = parsed_by_file.get(declared_in)
+                literal = declared.action_types.get(name) if declared else None
+                type_by_member[(file, member.name)] = literal or name
+                literal_by_action[action] = literal or name
+
+    return _Handlers(
+        by_action={key: sorted(set(items)) for key, items in by_action.items()},
+        type_by_member=type_by_member,
+        literal_by_action=literal_by_action,
+    )
+
+
+def _store_usages_of(
+    symbol: Symbol,
+    parsed_by_file: dict[str, _Parsed],
+    ranges: MemberRanges,
+    ctx: ResolveContext,
+    by_fqn: dict[str, Symbol],
+    handlers: _Handlers,
+) -> tuple[list[Usage], Counter[str]]:
+    """Рёбра через стор: диспатч экшена и выборка из стейта.
+
+    Оба вида дают ребро «страница обращается к члену стейта» — то же ребро,
+    что и у прямого вызова сервиса. Отдельный вид связи потребовал бы второго
+    обхода в каждой задаче, которая ходит по графу.
+    """
+    if not symbol.sources:
+        return [], Counter()
+    file = symbol.sources[0].path
+    parsed = parsed_by_file.get(file)
+    if parsed is None:
+        return [], Counter()
+
+    span = symbol.sources[0]
+    found: dict[tuple[str, str, str], Usage] = {}
+    counters: Counter[str] = Counter()
+
+    for dispatch in parsed.dispatches:
+        if not span.start <= dispatch.line <= span.end:
+            continue
+        action = _resolved_type(dispatch.action, file, ctx)
+        targets = handlers.by_action.get(action, [])
+        if not targets:
+            # Экшен без обработчика: он может обрабатываться подпиской
+            # или эффектом вне стейта. Состояние работы, а не ошибка разбора.
+            counters["actions_without_handler"] += 1
+            continue
+        counters["dispatches"] += 1
+        for state_fqn, member in targets:
+            key = (state_fqn, member, ranges.of(file, dispatch.line))
+            found.setdefault(
+                key,
+                Usage(
+                    target=key[0],
+                    member=key[1],
+                    via=key[2],
+                    action=handlers.literal_by_action.get(action, ""),
+                ),
+            )
+
+    for select in parsed.selects:
+        if not span.start <= select.line <= span.end:
+            continue
+        state_fqn = _resolved_type(select.owner, file, ctx)
+        if not state_fqn or state_fqn not in by_fqn:
+            counters["selects_unresolved"] += 1
+            continue
+        counters["selects"] += 1
+        key = (state_fqn, select.member, ranges.of(file, select.line))
+        found.setdefault(key, Usage(target=key[0], member=key[1], via=key[2]))
+
+    return [found[key] for key in sorted(found)], counters
+
+
+def _usages(
+    index: dict[str, Symbol],
+    parsed: list[_Parsed],
+    ranges: MemberRanges,
+    ctx: ResolveContext,
+) -> tuple[dict[str, list[Usage]], Counter[str], dict[tuple[str, str], str]]:
+    """Граф вызовов: FQN источника -> рёбра, счётчики неудач и типы экшенов."""
+    parsed_by_file = {item.result.path: item for item in parsed}
+    by_fqn = {symbol.fqn: symbol for symbol in sorted(index.values(), key=lambda s: s.fqn)}
+    handlers = _handlers(by_fqn, parsed_by_file, ctx)
+
+    edges: dict[str, list[Usage]] = {}
+    counters: Counter[str] = Counter()
+    for fqn in sorted(by_fqn):
+        direct, counted = _usages_of(by_fqn[fqn], parsed_by_file, ranges, ctx, by_fqn)
+        counters.update(counted)
+        through_store, counted = _store_usages_of(
+            by_fqn[fqn], parsed_by_file, ranges, ctx, by_fqn, handlers
+        )
+        counters.update(counted)
+
+        merged = {(item.target, item.member, item.via): item for item in direct + through_store}
+        if merged:
+            edges[fqn] = [merged[key] for key in sorted(merged)]
+    return edges, counters, handlers.type_by_member
+
+
+def apply_overrides(
+    routes: dict[str, list[RouteEntry]],
+    overrides: Overrides,
+    by_fqn: dict[str, Symbol],
+) -> tuple[dict[str, list[RouteEntry]], set[str], OverrideReport]:
+    """Наложить ручные правила на таблицу маршрутов.
+
+    Порядок фиксирован: автоматика -> добавления -> снятия. Снятие сильнее
+    добавления, потому что это последнее слово человека.
+
+    Возвращает маршруты, множество снятых компонентов и отчёт. Отчёт нужен
+    даже когда всё сработало: правило, которое перестало на что-то ложиться,
+    иначе исчезает вместе со страницей и не оставляет следа.
+    """
+    updated = {fqn: list(items) for fqn, items in routes.items()}
+    stale: list[StaleRule] = []
+    added: list[str] = []
+
+    for rule in overrides.add:
+        if rule.component not in by_fqn:
+            stale.append(StaleRule(kind="add-missed", key=rule.component, reason=rule.reason))
+            continue
+        # Лишним правило считается, только когда обход нашёл **этот же**
+        # маршрут. Вторая точка входа у той же страницы — законный случай:
+        # экран открывается и по своему пути, и из окна печати.
+        if any(
+            entry.path == rule.normalized and not entry.route_unresolved
+            for entry in updated.get(rule.component, [])
+        ):
+            stale.append(StaleRule(kind="add-redundant", key=rule.component, reason=rule.reason))
+            continue
+        updated.setdefault(rule.component, []).append(
+            RouteEntry(
+                path=rule.normalized,
+                component=rule.component,
+                source=MANUAL_SOURCE,
+                table=MANUAL_TABLE,
+            )
+        )
+        added.append(rule.component)
+
+    demoted: set[str] = set()
+    for removal in overrides.remove:
+        matched = _removal_targets(removal.component, removal.normalized, updated)
+        if not matched:
+            key = removal.component or f"/{removal.normalized}"
+            stale.append(StaleRule(kind="remove-missed", key=key, reason=removal.reason))
+            continue
+        demoted.update(matched)
+
+    return (
+        {fqn: sorted(items, key=_route_key) for fqn, items in updated.items()},
+        demoted,
+        OverrideReport(added=sorted(added), removed=sorted(demoted), stale=stale),
+    )
+
+
+def _route_key(entry: RouteEntry) -> tuple[str, str, str, str]:
+    return (entry.path, entry.component, entry.source, entry.table)
+
+
+def _removal_targets(component: str, route: str, routes: dict[str, list[RouteEntry]]) -> set[str]:
+    """Кого снимает правило. Неоднозначное снятие — отказ, а не выбор наугад.
+
+    Компонент, стоящий на двух маршрутах (`create` и `edit` — один класс),
+    снимается целиком: вид у него один. Поэтому правило по маршруту, которое
+    задело бы и второй маршрут, обязано отказать и назвать, что нашлось.
+    """
+    if component:
+        return {component} if component in routes else set()
+
+    matched = {
+        fqn
+        for fqn, items in routes.items()
+        if any(entry.path == route and not entry.route_unresolved for entry in items)
+    }
+    for fqn in sorted(matched):
+        others = sorted(
+            {
+                entry.path
+                for entry in routes[fqn]
+                if not entry.route_unresolved and entry.path != route
+            }
+        )
+        if others:
+            raise ValueError(
+                f"снятие по маршруту /{route} неоднозначно: {fqn} стои́т ещё на "
+                + ", ".join(f"/{path}" for path in others)
+                + ". Снимайте по `component`, если хотите убрать страницу целиком."
+            )
+    return matched
+
+
 def build_nodes(
     index: dict[str, Symbol],
     modules: list[WebModule],
@@ -333,12 +679,14 @@ def build_nodes(
     config: DocpipeConfig,
     calls: dict[str, list[WebCall]],
     routes: dict[str, list[RouteEntry]],
+    uses: dict[str, list[Usage]] | None = None,
+    demoted: set[str] | None = None,
 ) -> tuple[list[Module], list[DocNode]]:
     """Собрать модули и узлы документации фронта.
 
     Вызовы попадают на узел **того файла, где записаны**: связь строит сервис,
     а не страница, и приписать их странице значило бы соврать о том, кто зовёт.
-    Путь «страница → эндпоинт» собирает F13 по цепочке, а не подменой автора.
+    Путь «страница → эндпоинт» собирается по рёбрам `uses`, а не подменой автора.
     """
     configured = [module.module for module in modules]
     by_key = {module.key: module.module for module in modules}
@@ -369,8 +717,10 @@ def build_nodes(
             routes.get(symbol.fqn, []),
             key=lambda entry: (entry.path, entry.component, entry.source, entry.table),
         )
-        kind, template = _promote(
-            classification.kind, classification.template, node_calls, node_routes
+        kind, template = (
+            (classification.kind, classification.template)
+            if symbol.fqn in (demoted or set())
+            else _promote(classification.kind, classification.template, node_calls, node_routes)
         )
 
         nodes.append(
@@ -384,7 +734,7 @@ def build_nodes(
                     kind,
                     symbol.name,
                     config.doc_layout,
-                    config.modules_root,
+                    config.web_modules_root,
                 ),
                 parent=module.id,
                 module=module.name,
@@ -396,10 +746,14 @@ def build_nodes(
                 impl_hash=symbol.impl_hash,
                 web_calls=node_calls,
                 routes=node_routes,
+                uses=(uses or {}).get(symbol.fqn, []),
             )
         )
 
-    return configured, sorted(nodes, key=lambda node: node.id)
+    # Поглощение считается на готовом списке: правило про то, сколько СТРАНИЦ
+    # дотягивается до узла, а страницы известны только после классификации
+    # и повышения.
+    return configured, absorb(sorted(nodes, key=lambda node: node.id))
 
 
 def run(
@@ -407,6 +761,7 @@ def run(
     config: DocpipeConfig | None = None,
     ruleset: Ruleset | None = None,
     cache_dir: Path | None = None,
+    overrides: Overrides | None = None,
 ) -> WebScanResult:
     """Прогон шага `web`: исходники -> манифест, метаданные и срезы."""
     started = time.perf_counter()
@@ -433,12 +788,17 @@ def run(
         root, compute_closures(build_symbol_index(results, file_to_module, context))
     )
 
-    calls, calls_by_file = _calls_by_file(parsed, modules, config)
+    ranges = member_ranges(index.values())
+    uses, usage_counts, action_of_member = _usages(index, parsed, ranges, context)
+    calls, calls_by_file = _calls_by_file(parsed, modules, config, ranges, action_of_member)
     sources = {relative: (root / relative).read_bytes() for relative in found.ts_files}
     routes = build_routes(sources, context)
 
+    by_component, demoted, override_report = apply_overrides(
+        _routes_by_component(routes), overrides or Overrides(), {s.fqn: s for s in index.values()}
+    )
     configured, nodes = build_nodes(
-        index, modules, ruleset, config, calls_by_file, _routes_by_component(routes)
+        index, modules, ruleset, config, calls_by_file, by_component, uses, demoted
     )
 
     manifest = Manifest(
@@ -466,10 +826,34 @@ def run(
             "registry_unresolved": len(calls.registry_unresolved),
             "routes": len(routes.entries),
             "routes_unresolved": routes.unresolved,
+            # Три числа вместо одного: ребро найдено, получатель внешний
+            # (`HttpClient`, `Router`, `Store` — узла документации у них нет),
+            # получатель не разрешён вовсе. Одно число «рёбер 128» не сказало бы,
+            # сколько графа потеряно.
+            "usages": usage_counts["resolved"],
+            "usages_external": usage_counts["external"],
+            "usages_unresolved": usage_counts["unresolved"],
+            # Цепочка NGXS. Экшен без обработчика — состояние работы, а не
+            # ошибка разбора: обработчик может жить в подписке или в эффекте
+            # вне стейта. Поэтому число, а не отказ.
+            "dispatches": usage_counts["dispatches"],
+            "actions_without_handler": usage_counts["actions_without_handler"],
+            "selects": usage_counts["selects"],
+            "pages_added": len(override_report.added),
+            "pages_removed": len(override_report.removed),
+            "overrides_stale": len(override_report.stale),
+            "absorbed": sum(1 for node in nodes if node.absorbed_by),
         },
         parse_error_files=broken,
     )
-    return WebScanResult(manifest=manifest, meta=meta, index=index, calls=calls, routes=routes)
+    return WebScanResult(
+        manifest=manifest,
+        meta=meta,
+        index=index,
+        calls=calls,
+        routes=routes,
+        overrides=override_report,
+    )
 
 
 def _context(

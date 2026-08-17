@@ -118,7 +118,7 @@ def test_form_3_base_in_a_field(raw: list[RawCall]) -> None:
 def test_form_4_module_constant(raw: list[RawCall]) -> None:
     """Через `auditUrl` в боевом модуле идут десять вызовов одного сервиса."""
     calls = [call for call in _of(raw, "audit.service") if call.expression == "auditUrl"]
-    assert len(calls) == 3
+    assert len(calls) == 6
     assert {call.url for call in calls} == {"/integration/log/AuditJ"}
 
 
@@ -237,7 +237,7 @@ def test_route_outside_the_registry_list_keeps_an_empty_discriminator(scan: Call
 def test_resolved_plus_unresolved_equals_all_calls(raw: list[RawCall], scan: CallScan) -> None:
     """Именно это делает число честным: иначе «восстановлено 58» не значит ничего."""
     assert len(scan.calls) + len(scan.unresolved) == len(raw)
-    assert len(raw) == 16
+    assert len(raw) == 19
 
 
 def test_registry_unresolved_is_a_subset_of_resolved(scan: CallScan) -> None:

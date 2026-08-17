@@ -34,6 +34,7 @@
   ],
   "nodes": [
     {
+      "absorbed_by": "",
       "dependencies": [],
       "doc_path": "docs/modules/controllers/Sample.Common/base-api-controller.md",
       "domain": "Sample.Common",
@@ -103,9 +104,11 @@
       },
       "template": "controller",
       "title": "BaseApiController",
+      "uses": [],
       "web_calls": []
     },
     {
+      "absorbed_by": "",
       "dependencies": [
         {
           "confidence": "high",
@@ -249,9 +252,11 @@
       },
       "template": "controller",
       "title": "PricingController",
+      "uses": [],
       "web_calls": []
     },
     {
+      "absorbed_by": "",
       "dependencies": [],
       "doc_path": "docs/modules/ignite_services/Sample.Pricing.Api/risk-compute-service.md",
       "domain": "Sample.Pricing.Api",
@@ -340,9 +345,11 @@
       },
       "template": "ignite-service",
       "title": "RiskComputeService",
+      "uses": [],
       "web_calls": []
     },
     {
+      "absorbed_by": "",
       "dependencies": [
         {
           "confidence": "high",
@@ -417,9 +424,11 @@
       },
       "template": "provider",
       "title": "CurveProvider",
+      "uses": [],
       "web_calls": []
     },
     {
+      "absorbed_by": "",
       "dependencies": [
         {
           "confidence": "high",
@@ -543,9 +552,11 @@
       },
       "template": "service",
       "title": "PricingService",
+      "uses": [],
       "web_calls": []
     },
     {
+      "absorbed_by": "",
       "dependencies": [],
       "doc_path": "docs/modules/workflows/Sample.Pricing.Api/valuation-workflow.md",
       "domain": "Sample.Pricing.Api",
@@ -603,6 +614,7 @@
       },
       "template": "workflow",
       "title": "ValuationWorkflow",
+      "uses": [],
       "web_calls": []
     }
   ],

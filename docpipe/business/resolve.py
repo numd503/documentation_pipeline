@@ -32,6 +32,8 @@ from docpipe.model import DocNode, Manifest
 from docpipe.registry.anchors import AnchorTarget, ResolvedAnchor
 from docpipe.registry.parse import parse_schedule
 from docpipe.route import normalize_route
+from docpipe.web.pages import DEFAULT_DEPTH as PAGE_DEPTH
+from docpipe.web.pages import STATE_KIND, called, state_name
 
 Confidence = Literal["registry", "literal", "symbol", "unresolved"]
 
@@ -163,6 +165,11 @@ def build_context(
 
     pages: dict[str, list[DocNode]] = {}
     for node in web.nodes if web else []:
+        if node.kind != "page":
+            # Маршрут в таблице есть, а вид страницы снят руками (`pages.yaml`).
+            # Считать такой узел страницей значило бы вернуть в покрытие экран,
+            # который человек из документации убрал.
+            continue
         for entry in node.routes:
             if entry.route_unresolved:
                 # Маршрут собрать не удалось: якорь на него поставить нельзя,
@@ -489,32 +496,44 @@ def _symbol_rung(anchor: Anchor, ctx: ResolveContext) -> Resolution | None:
     )
 
 
-def _page_lists(node: DocNode, ctx: ResolveContext) -> list[str]:
-    """Списки реестра, к которым обращается страница.
+def _page_facts(node: DocNode, ctx: ResolveContext) -> dict[str, list[str]]:
+    """Факты страницы: списки реестра, эндпоинты и состояние.
 
-    Один шаг по зависимостям, а не транзитивный обход: компонент внедряет
-    сервис, сервис зовёт `api/items` с именем списка. Транзитивное замыкание
-    притянуло бы сюда всё, до чего дотягивается любой сервис приложения,
-    и хэш страницы менялся бы от правок, к ней отношения не имеющих.
+    Считаются по **графу вызовов** (`web/pages.called`) — тому же, по которому
+    собирается документ страницы. Вторая реализация обхода разошлась бы с ним,
+    и бизнес-хэш менялся бы от того, чего в документе не видно.
 
-    Имена списков — слова платформы (`listInnerName`), и они же ключ реестра.
-    Имён компонентов и сервисов здесь нет: переименование класса бизнес-смысла
-    не меняет.
+    Ни одного имени класса здесь нет, и это проверяемая формулировка требования
+    «рефакторинг без смены смысла не создаёт работы»:
+
+    - списки — слова платформы (`listInnerName`), они же ключи реестра;
+    - эндпоинты — HTTP-контракт, переживающий переименование чего угодно;
+    - состояние — `name` из декоратора `@State`, а не имя класса: переименование
+      `DebtState` смысла не меняет, а `innerDebt` — контракт, по которому стейт
+      селектят.
     """
-    reachable = [node]
-    reachable += [
-        ctx.web_nodes_by_fqn[dependency.target]
-        for dependency in node.dependencies
-        if dependency.target in ctx.web_nodes_by_fqn
-    ]
-    return sorted(
+    calls, participants = called(node, ctx.web_nodes_by_fqn, PAGE_DEPTH)
+
+    lists = sorted({call.discriminator for call in calls if call.discriminator})
+    endpoints = sorted({f"{call.http_method} {call.route}" for call in calls if call.route})
+    states = sorted(
         {
-            call.key.discriminator
-            for item in reachable
-            for call in item.web_calls
-            if call.key.discriminator
+            name
+            for fqn in participants
+            if (item := ctx.web_nodes_by_fqn.get(fqn)) is not None
+            and item.kind == STATE_KIND
+            and (name := state_name(item))
         }
     )
+
+    facts: dict[str, list[str]] = {}
+    if lists:
+        facts["lists"] = lists
+    if endpoints:
+        facts["endpoints"] = endpoints
+    if states:
+        facts["states"] = states
+    return facts
 
 
 def _page_rung(anchor: Anchor, ctx: ResolveContext) -> Resolution | None:
@@ -540,11 +559,17 @@ def _page_rung(anchor: Anchor, ctx: ResolveContext) -> Resolution | None:
     # который перестал разрешаться, фактов нет вовсе, и хэш меняется. Иначе
     # исчезнувшая страница выглядела бы как «ничего не произошло» — то самое
     # событие, ради которого хэш и заводится.
-    lists = sorted({name for node in nodes for name in _page_lists(node, ctx)})
+    # Факты сливаются по всем узлам маршрута: один путь может обслуживаться
+    # несколькими компонентами, и брать первый значило бы описать половину экрана.
+    merged: dict[str, list[str]] = {}
+    for node in nodes:
+        for key, values in _page_facts(node, ctx).items():
+            merged[key] = sorted(set(merged.get(key, [])) | set(values))
+
     return Resolution(
         anchor=anchor,
         confidence="symbol",
-        facts={"route": route, "lists": lists} if lists else {"route": route},
+        facts={"route": route, **merged},
         sources=sorted(
             {span.path for node in nodes if node.symbol for span in node.symbol.sources}
         ),

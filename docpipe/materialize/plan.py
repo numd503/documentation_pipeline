@@ -169,6 +169,7 @@ class PlanOptions:
     # Префикс `doc_path`, ожидаемый по текущей конфигурации. Пустая строка —
     # «не проверять»: план строят и там, где конфигурации нет (тесты, adopt).
     modules_root: str = ""
+    web_modules_root: str = ""
     teams: tuple[str, ...] = ()
     force: bool = False
     # Шаблоны обхода документов — чтобы проверить, что они не накрывают само
@@ -608,8 +609,28 @@ def match_relocations(
 # --------------------------------------------------------------------------------------
 
 
-def layout_drift(manifest: Manifest, modules_root: str) -> str | None:
+def is_web(manifest: Manifest) -> bool:
+    """Манифест фронта? Ветка дерева и имя ключа в сообщениях зависят от этого."""
+    return any(module.lang == "ts" for module in manifest.modules)
+
+
+def expected_root(manifest: Manifest, modules_root: str, web_modules_root: str) -> str:
+    """Префикс, который должен быть у путей ЭТОГО манифеста.
+
+    Манифесты двух шагов лежат в разных файлах и не смешиваются: у фронта свой,
+    и в нём все модули с `lang: ts`. Поэтому выбор по манифесту, а не по узлу:
+    так проверка остаётся одной строкой и не начинает угадывать язык там,
+    где его не спросили.
+    """
+    return web_modules_root if web_modules_root and is_web(manifest) else modules_root
+
+
+def layout_drift(manifest: Manifest, modules_root: str, key: str = "modules_dir") -> str | None:
     """Разошлась ли раскладка манифеста с текущей конфигурацией.
+
+    Префикс приходит уже выбранным (`expected_root`): у манифеста фронта своя
+    ветка дерева, и сравнивать его пути с корнем бэкенда значило бы ронять
+    каждый прогон фронта на репозитории, где ветки разведены.
 
     `doc_path` собирается на шаге 1 из `docs_root`, `modules_dir` и `doc_layout`
     и замораживается в манифесте; шаг 2 читает те же ключи заново. Правка любого
@@ -632,10 +653,10 @@ def layout_drift(manifest: Manifest, modules_root: str) -> str | None:
     example = alien[0]
     return (
         f"раскладка манифеста разошлась с конфигурацией: ожидался префикс"
-        f" `{prefix}` (docs_root + modules_dir), а в манифесте {len(alien)} путей"
+        f" `{prefix}` (docs_root + {key}), а в манифесте {len(alien)} путей"
         f" вне него, например `{example}`."
         " Пересоберите манифест (`docpipe scan`) или верните прежние"
-        " `docs_root`/`modules_dir`/`doc_layout`"
+        f" `docs_root`/`{key}`/`doc_layout`"
     )
 
 
@@ -670,11 +691,21 @@ def _blocking_errors(
     existing: list[ExistingDoc],
     templates: dict[str, Template],
     modules_root: str = "",
+    web_modules_root: str = "",
     docs_scan_exclude: tuple[str, ...] = (),
 ) -> list[str]:
     errors: list[str] = []
 
-    drift = layout_drift(manifest, modules_root)
+    drift = layout_drift(
+        manifest,
+        expected_root(manifest, modules_root, web_modules_root),
+        # Имя ключа в сообщении — того, который человек и правил. Пустой
+        # `web.modules_dir` даёт ту же ветку, что у бэкенда, и называть его
+        # значило бы отправить чинить настройку, которой нет.
+        "web.modules_dir"
+        if is_web(manifest) and web_modules_root != modules_root
+        else "modules_dir",
+    )
     if drift:
         errors.append(drift)
 
@@ -732,6 +763,20 @@ def _blocking_errors(
     return errors
 
 
+def _orphan_reason(node_id: str | None, absorbed: dict[str, str], titles: dict[str, str]) -> str:
+    """Почему файл осиротел. Две причины, и путать их нельзя.
+
+    «Узла нет» означает, что класс исчез или перестал документироваться.
+    «Поглощён страницей» — что текст переехал в её документ, и человеку надо
+    решить, перенести его туда или отложить. Одна формулировка на оба случая
+    отправила бы половину сирот в неправильную работу.
+    """
+    page = absorbed.get(node_id or "")
+    if page:
+        return f"описывается внутри страницы {titles.get(page, page)}"
+    return "узла с таким id в манифесте нет"
+
+
 def build_plan(
     manifest: Manifest,
     existing: list[ExistingDoc],
@@ -743,7 +788,12 @@ def build_plan(
     """Построить план. Ничего не пишет."""
     options = options or PlanOptions()
     errors = _blocking_errors(
-        manifest, existing, templates, options.modules_root, options.docs_scan_exclude
+        manifest,
+        existing,
+        templates,
+        options.modules_root,
+        options.web_modules_root,
+        options.docs_scan_exclude,
     )
     if errors:
         return MaterializePlan(errors=errors)
@@ -752,10 +802,18 @@ def build_plan(
         node.id: (owner_of(node, ownership).team if ownership else None) for node in manifest.nodes
     }
     by_path = {doc.path: doc for doc in existing if doc.error is None}
-    node_ids = {node.id for node in manifest.nodes}
+
+    # Узлы, у которых есть СВОЙ документ. Поглощённый странице своего файла
+    # не получает: он описывается разделом её документа, и второй файл про то же
+    # разошёлся бы с ним на первой правке. Файлы, оставшиеся от таких узлов,
+    # становятся сиротами и называются в отчёте — молча удалять их нельзя.
+    documented = [node for node in manifest.nodes if not node.absorbed_by]
+    absorbed_by_id = {node.id: node.absorbed_by for node in manifest.nodes if node.absorbed_by}
+    page_titles = {node.id: node.title for node in manifest.nodes}
+    node_ids = {node.id for node in documented}
 
     broken = {doc.path: doc for doc in existing if doc.error is not None}
-    node_paths = {node.doc_path for node in manifest.nodes}
+    node_paths = {node.doc_path for node in documented}
 
     documents: list[PlannedDoc] = []
     for path, doc in sorted(broken.items()):
@@ -782,14 +840,14 @@ def build_plan(
     # Множество строится по ПОЛНОМУ набору узлов, даже при `--team`: фильтр
     # сужает то, что пишется, множество сравнения — никогда.
     unplaced = [doc for doc in existing if doc.error is None and doc.path not in node_paths]
-    homeless = [node for node in manifest.nodes if node.doc_path not in by_path]
+    homeless = [node for node in documented if node.doc_path not in by_path]
     relocations, notes = match_relocations(homeless, unplaced)
     relocated_paths = {doc.path for doc, _ in relocations.values()}
     orphan_docs = [doc for doc in unplaced if doc.node_id not in node_ids]
     shadowed = set(options.shadowed)
     substituted: Counter[str] = Counter()
 
-    for node in sorted(manifest.nodes, key=lambda item: item.doc_path):
+    for node in sorted(documented, key=lambda item: item.doc_path):
         team = teams[node.id]
         if options.teams and team not in options.teams:
             continue
@@ -912,7 +970,7 @@ def build_plan(
                 file_action="unchanged",
                 status="orphan",
                 agent_action="review",
-                reason="узла с таким id в манифесте нет",
+                reason=_orphan_reason(doc.node_id, absorbed_by_id, page_titles),
                 # У сироты узла нет, поэтому команда берётся из её собственного
                 # front matter; иначе она была бы молча приписана текущей.
                 team=doc.docpipe.get("team"),

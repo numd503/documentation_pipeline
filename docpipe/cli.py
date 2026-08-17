@@ -49,6 +49,7 @@ from docpipe.materialize.plan import (
     PlanOptions,
     build_plan,
     check_links,
+    expected_root,
     scan_docs,
     shadowed_docs,
     with_links,
@@ -68,7 +69,7 @@ from docpipe.materialize.worklist import (
     build_worklist,
     select_documents,
 )
-from docpipe.model import Manifest, RunMeta
+from docpipe.model import DocNode, Manifest, RunMeta
 from docpipe.registry import load_registries, read_registry
 from docpipe.registry.anchors import (
     ResolvedAnchor,
@@ -96,6 +97,7 @@ from docpipe.stats import (
 from docpipe.web.link import CATEGORIES as LINK_CATEGORIES
 from docpipe.web.link import build_report as build_link_report
 from docpipe.web.link import format_report as format_link_report
+from docpipe.web.overrides import Overrides, load_overrides
 from docpipe.web.pages import DEFAULT_DEPTH
 from docpipe.web.pages import FORMATS as PAGE_FORMATS
 from docpipe.web.pages import build_report as build_pages_report
@@ -287,6 +289,24 @@ def scan(
     _check_undecided(result.stats, fail_on_undecided)
 
 
+def _load_page_overrides(
+    pages: Path | None, settings: DocpipeConfig, config: Path | None
+) -> Overrides:
+    """Ручной состав страниц. Файла нет — пустые правила, а не отказ.
+
+    Репозиторий, где обход находит страницы сам, ничего не дописывает руками,
+    и требовать от него файл значило бы делать настройку обязательной там,
+    где она не нужна. Но **названный** файл обязан существовать: молча
+    проигнорировать `--pages` значит потерять решения человека.
+    """
+    if pages is not None:
+        return load_overrides(pages)
+    if not settings.web.pages:
+        return Overrides()
+    path = resolve_input(settings.web.pages, config)
+    return load_overrides(path) if path.is_file() else Overrides()
+
+
 def _check_undecided(stats: Stats, fail: bool) -> None:
     """Отказ, если про какой-то символ решение не принято.
 
@@ -387,7 +407,10 @@ def symbols(
         str,
         typer.Option(
             "--state",
-            help="undecided, not_documented, documented, not_enrolled, interface_covered или any.",
+            help=(
+                "undecided, not_documented, documented, not_enrolled, "
+                "interface_covered, page_covered или any."
+            ),
         ),
     ] = UNDECIDED,
     module: Annotated[
@@ -403,6 +426,10 @@ def symbols(
     no_cache: Annotated[
         bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
     ] = False,
+    lang: Annotated[
+        str,
+        typer.Option("--lang", help="cs (шаг 1) либо ts (шаг `web`). По умолчанию cs."),
+    ] = "cs",
     output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
 ) -> None:
     """Показать сами символы, а не счётчики: что именно осталось без решения.
@@ -424,21 +451,38 @@ def symbols(
             param_hint="--state",
         )
 
+    if lang not in ("cs", "ts"):
+        raise typer.BadParameter("известны cs и ts", param_hint="--lang")
+
+    # Секция правил и есть язык: набор .NET, прочитанный шагом `web`, отсеял бы
+    # весь фронт целиком (`require_public` на TypeScript), и это молчаливая
+    # ловушка, а не ошибка загрузки.
+    section = "dotnet" if lang == "cs" else "web"
     try:
         settings = load_config(config)
-        ruleset = load_ruleset(rules or resolve_input(settings.rules, config), "dotnet")
+        settings_rules = settings.rules if lang == "cs" else settings.web.rules
+        ruleset = load_ruleset(rules or resolve_input(settings_rules, config), section)
     except (OSError, ValueError) as exc:
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    result = run_scan(
-        root, settings, ruleset, None if no_cache else root / settings.cache_dir, jobs
-    )
+    cache_dir = None if no_cache else root / settings.cache_dir
+    if lang == "cs":
+        scanned = run_scan(root, settings, ruleset, cache_dir, jobs)
+        index, manifest = scanned.index, scanned.manifest
+        configured = {module.project_file for module in manifest.modules if module.enrolled}
+    else:
+        web = run_web_scan(root, settings, ruleset, cache_dir)
+        index, manifest = web.index, web.manifest
+        configured = {
+            module.id.removeprefix("module:") for module in manifest.modules if module.enrolled
+        }
+
     selection = select(
-        result.index,
-        result.manifest.nodes,
+        index,
+        manifest.nodes,
         ruleset,
-        {module.project_file for module in result.manifest.modules if module.enrolled},
+        configured,
         state=state,
         module=module,
         namespace=namespace,
@@ -536,6 +580,10 @@ def web_scan(
     rules: Annotated[
         Path | None, typer.Option("--rules", help="Набор правил классификации фронта.")
     ] = None,
+    pages: Annotated[
+        Path | None,
+        typer.Option("--pages", help="Ручной состав страниц. Без флага — `web.pages`."),
+    ] = None,
     out: Annotated[
         Path | None,
         typer.Option(
@@ -556,6 +604,13 @@ def web_scan(
             help="Код 1, если про какой-то символ фронта решение не принято. Для CI.",
         ),
     ] = False,
+    fail_on_stale_overrides: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-stale-overrides",
+            help="Код 1, если правило из `pages.yaml` ни на что не легло. Для CI.",
+        ),
+    ] = False,
     top: Annotated[
         int,
         typer.Option("--top", help="Сколько строк показывать в каждом срезе --stats."),
@@ -573,6 +628,7 @@ def web_scan(
     try:
         settings = load_config(config)
         ruleset = load_ruleset(rules or resolve_input(settings.web.rules, config), "web")
+        overrides = _load_page_overrides(pages, settings, config)
     except (OSError, ValueError) as exc:
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -580,7 +636,13 @@ def web_scan(
     cache_dir = None if no_cache else root / settings.cache_dir
     destination = out or Path(settings.web.out)
 
-    result = run_web_scan(root, settings, ruleset, cache_dir)
+    try:
+        result = run_web_scan(root, settings, ruleset, cache_dir, overrides)
+    except ValueError as exc:
+        # Неоднозначное правило снятия. Выбор наугад здесь означал бы, что
+        # инструмент сам решает, какую страницу убрать из документации.
+        typer.echo(f"Ошибка в ручном составе страниц: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
 
     # Счётчик «решение не принято» считается по СВОЕМУ набору и своим флагом.
     # Общий флаг с шагом 1 означал бы, что настройка фронта роняет CI бэкенда:
@@ -617,12 +679,28 @@ def web_scan(
     typer.echo(
         f"Страниц: {stats['routes']}, из них маршрут не собран у {stats['routes_unresolved']}."
     )
+    if result.overrides.added or result.overrides.removed:
+        typer.echo(
+            f"Ручной состав: добавлено {len(result.overrides.added)}, "
+            f"снято {len(result.overrides.removed)}."
+        )
+    for rule in result.overrides.stale:
+        # Печатается всегда: правило, переставшее совпадать, иначе исчезает
+        # вместе со страницей и не оставляет следа ни в одном отчёте.
+        typer.echo(f"Внимание: {rule.describe()}", err=True)
     if result.meta.parse_error_files:
         typer.echo(
             f"Внимание: {len(result.meta.parse_error_files)} файлов разобраны с ошибками "
             "и не дали ни одного объявления — см. parse_error_files в сидкаре."
         )
     _check_undecided(statistics, fail_on_undecided)
+    if fail_on_stale_overrides and result.overrides.stale:
+        typer.echo(
+            f"Отказ: правил в ручном составе страниц, не легших ни на что: "
+            f"{len(result.overrides.stale)}.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
 
 @web_app.command("link")
@@ -1028,6 +1106,7 @@ def _prepare(
         PlanOptions(
             docs_root=settings.docs_root,
             modules_root=settings.modules_root,
+            web_modules_root=settings.web_modules_root,
             teams=teams,
             accept=accept,
             force=force,
@@ -1114,7 +1193,10 @@ def worklist(
         plan,
         selected,
         docs_root=settings.docs_root,
-        modules_root=settings.modules_root,
+        # Префикс очереди берётся по манифесту: у фронта своя ветка дерева,
+        # и корень бэкенда сообщил бы внешнему исполнителю путь, которого
+        # в очереди нет ни у одного документа.
+        modules_root=expected_root(manifest, settings.modules_root, settings.web_modules_root),
         ruleset_version=manifest.ruleset_version,
         manifest_sha256=content_hash(manifest_path.read_bytes()),
         truncated=truncated,
@@ -1243,8 +1325,22 @@ def docs_adopt(
         problems.append(f"{from_path}: файла нет")
     if target.exists():
         problems.append(f"{to_path}: цель занята")
-    if to_path not in {node.doc_path for node in manifest.nodes}:
+
+    claiming = {node.doc_path: node for node in manifest.nodes}
+    if to_path not in claiming:
         problems.append(f"{to_path}: ни один узел манифеста не претендует на этот путь")
+
+    # Узел, поглощённый страницей, своего документа не получает вовсе, поэтому
+    # переносить на его путь бессмысленно: файл тут же снова стал бы сиротой.
+    # Слить текст в раздел страницы автоматически нельзя — это авторский текст,
+    # и место ему выбирает человек, а не совпадение имён.
+    absorbed = _absorbing_page(manifest, from_path, existing)
+    if absorbed:
+        problems.append(
+            f"{from_path}: узел описывается внутри страницы {absorbed.title} "
+            f"({absorbed.doc_path}). Перенесите текст в её разделы «Состояние» "
+            "и «Логика» руками, затем удалите файл."
+        )
 
     moving = next((doc for doc in existing if doc.path == from_path), None)
     if moving is not None and moving.node_id:
@@ -1276,6 +1372,17 @@ def docs_adopt(
     rebuilt = _prepare(manifest_path, root, config, templates_dir, ownership_file).plan
     apply_plan(rebuilt, root)
     typer.echo(f"Перенесено: {from_path} → {to_path}")
+
+
+def _absorbing_page(manifest: Manifest, path: str, existing: list[ExistingDoc]) -> DocNode | None:
+    """Страница, внутри которой описан узел этого документа. Иначе `None`."""
+    doc = next((item for item in existing if item.path == path), None)
+    node = next(
+        (item for item in manifest.nodes if item.id == (doc.node_id if doc else None)), None
+    )
+    if node is None or not node.absorbed_by:
+        return None
+    return next((item for item in manifest.nodes if item.id == node.absorbed_by), None)
 
 
 @docs_app.command("owners")

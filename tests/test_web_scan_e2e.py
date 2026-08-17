@@ -48,7 +48,7 @@ def test_nodes_carry_calls_and_routes(manifest: Manifest) -> None:
 
     assert [call.key.route for call in by_title["AuditService"].web_calls] == [
         "integration/log/auditj"
-    ] * 3
+    ] * 6  # три метода, локальная стрелка, поле-стрелка и фабрика уровня модуля
     assert [entry.path for entry in by_title["QuizComponent"].routes] == ["models/loader/quiz"]
     assert by_title["ModelService"].routes == []
 
@@ -76,7 +76,7 @@ def test_report_names_every_number(web_workspace: Path, tmp_path: Path) -> None:
         app,
         ["web", "scan", "--root", str(web_workspace), "--out", str(tmp_path / "w.json")],
     )
-    assert "восстановлено 15" in result.output
+    assert "восстановлено 18" in result.output
     assert "не восстановлено 1" in result.output
     assert "Страниц: 6" in result.output
     assert "маршрут не собран у 1" in result.output
@@ -116,7 +116,7 @@ def test_sidecar_carries_the_named_numbers(web_workspace: Path, tmp_path: Path) 
     runner.invoke(app, ["web", "scan", "--root", str(web_workspace), "--out", str(out)])
     stats = json.loads((tmp_path / "w.run.json").read_text(encoding="utf-8"))["stats"]
 
-    assert stats["calls_resolved"] + stats["calls_unresolved"] == 16
+    assert stats["calls_resolved"] + stats["calls_unresolved"] == 19
     assert stats["routes"] == 6
     assert stats["routes_unresolved"] == 1
 

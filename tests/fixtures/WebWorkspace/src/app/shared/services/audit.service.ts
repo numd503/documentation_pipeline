@@ -22,4 +22,21 @@ export class AuditService {
   purge(): Observable<void> {
     return this.http.delete<void>(auditUrl);
   }
+
+  // Вызов внутри локальной функции внутри метода. Диапазон метода накрывает
+  // стрелку целиком, поэтому владельцем обязан стать САМЫЙ УЗКИЙ накрывающий
+  // член — сам `retry`. Перебор членов в порядке объявления вернул бы первый
+  // попавшийся накрывающий, и вызовы уехали бы в чужой метод.
+  retry(payload: unknown): Observable<void> {
+    const send = () => this.http.post<void>(auditUrl, payload);
+    return send();
+  }
+
+  // Стрелка в поле класса — тоже член, и однострочный: сравнение границ
+  // обязано быть нестрогим с обеих сторон, иначе такой вызов останется ничьим.
+  readonly ping = (): Observable<unknown> => this.http.get(auditUrl);
 }
+
+// Вызов вне какого-либо члена: фабрика уровня модуля. `member` здесь пустой,
+// и это состояние «записан вне члена», а не «член неизвестен».
+export const pingAudit = (http: HttpClient): Observable<unknown> => http.get(auditUrl);

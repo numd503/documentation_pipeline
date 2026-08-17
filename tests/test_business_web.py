@@ -102,9 +102,9 @@ def test_repository_without_a_front_end_has_no_pages() -> None:
 def test_page_facts_carry_the_registry_lists(web_workspace: Path) -> None:
     """Обращение к реестру связывает бизнес-документ со списком напрямую.
 
-    Компонент внедряет сервис, сервис зовёт `api/items` с именем списка —
-    один шаг по зависимостям. Транзитивный обход притянул бы сюда всё,
-    до чего дотягивается любой сервис приложения.
+    Считается по графу вызовов — тому же, по которому собирается документ
+    страницы: вторая реализация обхода разошлась бы с ним, и хэш менялся бы
+    от того, чего в документе не видно.
     """
     from docpipe.config import WebConfig
 
@@ -125,7 +125,12 @@ def test_page_facts_carry_the_registry_lists(web_workspace: Path) -> None:
     empty = Manifest(ruleset_version="x", parser=manifest.parser)
     resolution = resolve(_page("/models/loader/quiz"), build_context([], empty, web=manifest))
 
-    assert resolution.facts == {"route": "models/loader/quiz", "lists": ["dictionaries"]}
+    assert resolution.facts == {
+        "route": "models/loader/quiz",
+        "lists": ["dictionaries"],
+        # Эндпоинты — HTTP-контракт, переживающий переименование чего угодно.
+        "endpoints": ["GET api/items", "POST integration/log/auditj"],
+    }
 
 
 def test_page_without_registry_calls_carries_only_its_route(ctx: ResolveContext) -> None:
@@ -206,3 +211,66 @@ def test_uncovered_pages_are_counted_and_do_not_fail_the_run(ctx: ResolveContext
 
     assert len(uncovered) == len(ctx.pages_by_route)
     assert "pages-uncovered" in INFORMATIONAL
+
+
+def test_page_facts_carry_the_state_by_its_declared_name(web_workspace: Path) -> None:
+    """`innerDebt`, а не `DebtState`: имя класса в бизнес-факты не попадает.
+
+    Состояние — часть смысла экрана, и без него документ страницы описывал бы
+    только походы за данными. Но берётся `name` из декоратора: переименование
+    класса смысла не меняет, а имя стейта — контракт, по которому его селектят.
+    """
+    manifest = run_web(web_workspace, DocpipeConfig(), load_ruleset(RULES, "web")).manifest
+    empty = Manifest(ruleset_version="x", parser=manifest.parser)
+    facts = resolve(_page("/models"), build_context([], empty, web=manifest)).facts
+
+    assert facts["states"] == ["innerDebt", "innerDebtAudit"]
+    assert not any("DebtState" in str(value) for value in facts.values())
+
+
+def test_renaming_a_state_class_does_not_change_the_hash(
+    web_workspace: Path, tmp_path: Path
+) -> None:
+    """Тот же довод, что и у компонента: рефакторинг работы не создаёт."""
+    first = _facts_of(web_workspace, "/models")
+
+    copied = _copy_workspace(web_workspace, tmp_path)
+    path = copied / "src/app/inner-debt/state/debt.state.ts"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("DebtState", "InnerDebtsState"),
+        encoding="utf-8",
+    )
+    for neighbour in ("routes/models/list/list.component.ts",):
+        target = copied / "src/app" / neighbour
+        target.write_text(
+            target.read_text(encoding="utf-8").replace("DebtState", "InnerDebtsState"),
+            encoding="utf-8",
+        )
+
+    assert _facts_of(copied, "/models") == first
+
+
+def test_renaming_the_state_itself_changes_the_hash(web_workspace: Path, tmp_path: Path) -> None:
+    """А вот `name: 'innerDebt'` — контракт, и его смена работу создаёт."""
+    copied = _copy_workspace(web_workspace, tmp_path)
+    path = copied / "src/app/inner-debt/state/debt.state.ts"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("name: 'innerDebt'", "name: 'debts'"),
+        encoding="utf-8",
+    )
+
+    assert _facts_of(copied, "/models") != _facts_of(web_workspace, "/models")
+
+
+def _facts_of(workspace: Path, route: str) -> dict:
+    manifest = run_web(workspace, DocpipeConfig(), load_ruleset(RULES, "web")).manifest
+    empty = Manifest(ruleset_version="x", parser=manifest.parser)
+    return resolve(_page(route), build_context([], empty, web=manifest)).facts
+
+
+def _copy_workspace(source: Path, tmp_path: Path) -> Path:
+    import shutil
+
+    target = tmp_path / "copy"
+    shutil.copytree(source, target)
+    return target

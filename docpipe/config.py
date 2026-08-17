@@ -91,6 +91,22 @@ class WebConfig(BaseModel):
     out: str = "artifacts/doc-tree.web.json"
     link_out: str = "artifacts/web-link.json"
 
+    # Ручной состав страниц. Пустая строка — файла нет, и это законно:
+    # репозиторий, где обход находит всё сам, ничего не дописывает руками.
+    pages: str = ""
+
+    # Каталог документации фронта ВНУТРИ `docs_root` — вторая ветка дерева
+    # рядом с `modules_dir`, а не под ним. Пустая строка значит «та же ветка,
+    # что у бэкенда»: конфигурации, написанные до появления ключа, обязаны
+    # продолжать работать без правок.
+    #
+    # Смысл разделения в том, что дерево фронта живёт по своим правилам:
+    # единица документации там страница, а не класс, и половина узлов
+    # вообще не получает файла (их описывает документ страницы). Смешанные
+    # в одном каталоге, две ветки читаются как одна и та же — при том, что
+    # искать в них надо разное.
+    modules_dir: str = ""
+
     # Пустой список — законное значение: значит, проверено и ничего
     # не преобразуется. Читается сверху вниз, первое совпадение выигрывает.
     url_rewrite: list[UrlRewrite] = Field(default_factory=list)
@@ -100,6 +116,11 @@ class WebConfig(BaseModel):
     @classmethod
     def _check_roots(cls, value: list[str]) -> list[str]:
         return [_repo_relative(item, "web.roots") for item in value]
+
+    @field_validator("modules_dir")
+    @classmethod
+    def _check_modules_dir(cls, value: str) -> str:
+        return _repo_relative(value, "web.modules_dir") if value else value
 
     def rewrite_for(self, module: str) -> UrlRewrite | None:
         """Правило модуля. `None` — модуль в таблице не назван вовсе."""
@@ -209,6 +230,20 @@ class DocpipeConfig(BaseModel):
         жить в одном месте, иначе шаг 1 и шаг 2 однажды соберут её по-разному.
         """
         return posixpath.join(self.docs_root, self.modules_dir).strip("/")
+
+    @property
+    def web_modules_root(self) -> str:
+        """Префикс `doc_path` документов фронта.
+
+        Пустой `web.modules_dir` значит «там же, где бэкенд», и это умолчание:
+        ключ появился позже, а конфигурации без него обязаны давать те же пути.
+
+        Ветка внутри `docs_root`, а не путь целиком, — по той же причине, что
+        и у `modules_dir`: инвариант «`materialize` пишет туда, где ищет
+        `docs status`» держится структурно, потому что обход документов идёт
+        от `docs_root` и накрывает обе ветки разом.
+        """
+        return posixpath.join(self.docs_root, self.web.modules_dir or self.modules_dir).strip("/")
 
 
 def candidate_inputs(value: str | Path, config: Path | None) -> list[Path]:

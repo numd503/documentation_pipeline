@@ -129,12 +129,19 @@ def test_page_document_carries_its_route(materialized: tuple[Path, Path]) -> Non
     assert "/models/loader/quiz" in text
 
 
-def test_api_service_document_carries_its_calls(materialized: tuple[Path, Path]) -> None:
+def test_shared_service_keeps_its_own_document(materialized: tuple[Path, Path]) -> None:
+    """Свой документ остаётся у сервиса, которого зовут ДВЕ страницы.
+
+    `AuditService` зовут `ListComponent` и `QuizComponent`; вложить его в одну
+    значило бы завести две копии одного текста. А `ItemsService`, который зовёт
+    одна страница, своего файла больше не получает — он описан внутри неё.
+    """
     _, docs = materialized
-    text = (docs / "docs/modules/api-services/tr-p/items-service.md").read_text(encoding="utf-8")
+    text = (docs / "docs/modules/api-services/tr-p/audit-service.md").read_text(encoding="utf-8")
 
     assert "### Вызовы к бэкенду" in text
-    assert "api/items/query" in text
+    assert "integration/log/auditj" in text
+    assert not (docs / "docs/modules/api-services/tr-p/items-service.md").exists()
 
 
 def test_unresolved_route_is_printed_in_words(materialized: tuple[Path, Path]) -> None:
