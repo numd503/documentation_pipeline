@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from docpipe.materialize.template import Template, resolve_template
 from docpipe.model import DocNode, Manifest, SourceSpan
+from docpipe.web.absorb import reachable_from
 from docpipe.web.pages import DEFAULT_DEPTH as PAGE_DEPTH
 from docpipe.web.pages import STATE_KIND, called, index_by_fqn, state_name
 
@@ -329,15 +330,45 @@ def _page_sections(node: DocNode, context: BuildContext) -> list[str]:
     calls, participants = walk.calls, walk.participants
 
     reached = [by_fqn[fqn] for fqn in sorted(participants) if fqn in by_fqn]
-    absorbed = [item for item in reached if item.absorbed_by == node.id]
-    shared = [item for item in reached if item.absorbed_by != node.id]
-    states = [item for item in reached if item.kind == STATE_KIND]
 
-    lines = ["", "### Дочерние страницы", ""]
-    children = _children(node, context)
-    lines += [f"- [`/{path}`]({_relative(node.doc_path, doc)})" for path, doc in children] or [
-        "Нет."
-    ]
+    # Состав берётся по `absorbed_by`, а не по обходу: внутри агрегата живут
+    # и те узлы, которых никто не зовёт по графу — экшены, модели, DTO. Список
+    # «что описано в этом документе» обязан называть их все, иначе документ
+    # молча не упомянет половину того, что в него уехало.
+    absorbed = sorted(
+        (item for item in context.manifest.nodes if item.absorbed_by == node.id),
+        key=lambda item: (item.kind, item.title),
+    )
+    shared = [item for item in reached if item.absorbed_by != node.id]
+
+    inside_ids = {item.id for item in absorbed}
+    states = sorted(
+        {
+            item.id: item
+            for item in [*reached, *absorbed]
+            if item.kind == STATE_KIND and (item.id in inside_ids or item in reached)
+        }.values(),
+        key=lambda item: item.title,
+    )
+
+    lines = ["", "### Дочерние страницы", ""] if node.kind == "page" else []
+    if node.kind == "page":
+        children = _children(node, context)
+        lines += [f"- [`/{path}`]({_relative(node.doc_path, doc)})" for path, doc in children] or [
+            "Нет."
+        ]
+    else:
+        # У раздела маршрута нет вовсе — его открывают с нескольких экранов,
+        # и первое, что нужно знать читателю, это откуда именно.
+        lines += ["", "### Откуда открывается", ""]
+        opened = _opened_from(node, context)
+        lines += [
+            f"- [{page.title}]({_relative(node.doc_path, page.doc_path)})"
+            f" — `/{page.routes[0].path}`"
+            if page.routes
+            else f"- [{page.title}]({_relative(node.doc_path, page.doc_path)})"
+            for page in opened
+        ] or ["Не найдено: ни одна страница не зовёт членов раздела."]
 
     lines += ["", "### Состояние", ""]
     lines += _table(
@@ -359,7 +390,11 @@ def _page_sections(node: DocNode, context: BuildContext) -> list[str]:
         ],
     )
 
-    lines += ["", "### Что зовёт страница", ""]
+    lines += [
+        "",
+        "### Что зовёт раздел" if node.kind == "feature" else "### Что зовёт страница",
+        "",
+    ]
     lines += _table(
         ["Узел", "Вид", "Члены", "Где описан"],
         [
@@ -402,11 +437,38 @@ def _page_sections(node: DocNode, context: BuildContext) -> list[str]:
     if shared:
         lines += [
             "",
-            "Общие узлы, у которых свой документ (их зовёт не только эта страница): "
+            "Общие узлы, у которых свой документ (их зовёт не только "
+            + ("этот раздел" if node.kind == "feature" else "эта страница")
+            + "): "
             + ", ".join(f"`{item.title}`" for item in shared)
             + ".",
         ]
     return lines
+
+
+def _opened_from(feature: DocNode, context: BuildContext) -> list[DocNode]:
+    """Страницы, которые дотягиваются до членов раздела.
+
+    Считается по тому же графу вызовов: раздел не поглощается страницей именно
+    потому, что до него дотягиваются несколько, — и вот их список. Это и есть
+    ответ на «откуда сюда попадают», который нельзя получить из маршрутов:
+    маршрута у раздела нет.
+    """
+    inside = {
+        item.symbol.fqn
+        for item in context.manifest.nodes
+        if item.absorbed_by == feature.id and item.symbol
+    }
+    if not inside:
+        return []
+
+    by_fqn = index_by_fqn(context.manifest)
+    found = [
+        page
+        for page in context.manifest.nodes
+        if page.kind == "page" and reachable_from(page, by_fqn) & inside
+    ]
+    return sorted(found, key=lambda item: (item.doc_path, item.id))
 
 
 def _members_called(target: DocNode, page: DocNode, by_fqn: dict[str, DocNode]) -> list[str]:
@@ -529,8 +591,11 @@ def build_generated_block(
     )
 
     if node.module in context.web_modules:
-        lines += _web_sections(node)
-        if node.kind == "page":
+        # У раздела нет ни маршрута, ни собственного символа: разделы «Маршрут
+        # страницы» и «Вызовы к бэкенду» были бы у него пустыми ради формы.
+        if node.kind != "feature":
+            lines += _web_sections(node)
+        if node.kind in ("page", "feature"):
             lines += _page_sections(node, context)
 
     lines += ["", "### Зависимости", ""]

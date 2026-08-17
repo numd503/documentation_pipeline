@@ -33,3 +33,24 @@ pages:
   #   - route: "/"
   #     reason: "Layout с router-outlet, собственного экрана нет"
   remove: []
+
+# Разделы: единицы документации без маршрута. Разведаны три каталога, каждый
+# со своим `state/` и `api/`, и все три открываются из меню с нескольких
+# экранов — то есть страницей ни один быть не может, а общим по графу
+# оказывается каждый. Раскомментируйте, сверив пути с реальной раскладкой.
+#
+# `name` — ключ якоря бизнес-слоя (`feature: inner-debt`), он стабилен;
+# `title` — заголовок документа.
+features: []
+  # - name: "inner-debt"
+  #   path: "sbt.cms.cashflow.subrepo/Sbt.CMS.Cashflow.ML/src/app/inner-debt"
+  #   title: "Внутренний долг"
+  #   reason: "Открывается из меню с любого экрана, собственного URL нет"
+  # - name: "leasing"
+  #   path: "sbt.cms.cashflow.subrepo/Sbt.CMS.Cashflow.ML/src/app/leasing"
+  #   title: "Лизинг"
+  #   reason: "Раздел без своего маршрута: доступен с loader и structuring"
+  # - name: "invest-portfolio"
+  #   path: "sbt.cms.cashflow.subrepo/Sbt.CMS.Cashflow.ML/src/app/invest-portfolio"
+  #   title: "Инвестиционный портфель"
+  #   reason: "Раздел без своего маршрута: доступен с loader и structuring"

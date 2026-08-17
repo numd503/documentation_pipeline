@@ -47,12 +47,13 @@ CHECKS: Final[tuple[str, ...]] = (
     "registry-unlinked",
     "uncovered",
     "pages-uncovered",
+    "features-uncovered",
 )
 
 # Проверки, которые сами по себе код возврата не меняют: это состояние
 # репозитория, а не дефект каталога.
 INFORMATIONAL: Final[frozenset[str]] = frozenset(
-    {"registry-unlinked", "uncovered", "pages-uncovered"}
+    {"registry-unlinked", "uncovered", "pages-uncovered", "features-uncovered"}
 )
 
 TOP: Final[int] = 15
@@ -341,6 +342,26 @@ def lint(
                 check="pages-uncovered",
                 where=f"/{route}" if route else "/",
                 message="страница без бизнес-документа",
+            )
+        )
+
+    # 11. Разделы фронта без бизнес-документа. Та же природа, что у страниц:
+    #     состояние работы, а не дефект каталога. Считается по объявленным
+    #     разделам — их список человек написал сам, и покрытие меряется по нему.
+    anchored_features = {
+        anchor.ref.strip()
+        for doc in catalog.docs
+        for anchor in doc.anchors
+        if anchor.kind == "feature"
+    }
+    for name in sorted(ctx.features_by_name):
+        if name in anchored_features:
+            continue
+        findings.append(
+            Finding(
+                check="features-uncovered",
+                where=name,
+                message="раздел без бизнес-документа",
             )
         )
 

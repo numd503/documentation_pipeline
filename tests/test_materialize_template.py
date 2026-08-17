@@ -19,6 +19,7 @@ from docpipe.materialize.template import (
     resolve_template,
     substitute,
 )
+from docpipe.web.absorb import FEATURE_KIND
 from docpipe.web.tree import PROMOTIONS
 
 TEMPLATES = Path("templates")
@@ -54,16 +55,20 @@ def test_skeletons_match_rule_templates(templates: dict[str, object]) -> None:
     `api-service`): их выдаёт не правило, а факт — маршрут в таблице роутов
     и наличие HTTP-вызовов. Без них тест перестал бы ловить забытый скелет
     ровно у тех двух видов, которые в наборе правил не объявишь.
+
+    Туда же `feature`: раздел объявляет человек в `pages.yaml`, правилом
+    он не выражается вовсе — у него нет ни маршрута, ни своего класса.
     """
     document = yaml.safe_load(RULES.read_text("utf-8"))
     declared = {
         rule["template"] for section in ("dotnet", "web") for rule in document[section]["rules"]
     }
     declared |= {template for _, template in PROMOTIONS.values()}
+    declared |= {FEATURE_KIND}
 
     assert set(templates) - {DEFAULT_TEMPLATE} == declared
     assert DEFAULT_TEMPLATE in templates
-    assert len(templates) == 13
+    assert len(templates) == 14
 
 
 @pytest.mark.parametrize(

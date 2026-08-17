@@ -29,6 +29,7 @@ from docpipe.model import DocNode, Manifest
 PAGE_KIND: Final = "page"
 COMPONENT_KIND: Final = "component"
 STATE_KIND: Final = "state"
+FEATURE_KIND: Final = "feature"
 
 # Глубина обхода по умолчанию. Три шага — это полная цепочка боевого фронта:
 # «страница -> стейт (обработчик экшена) -> сервис -> сервис». Замер на АС CF:
@@ -191,10 +192,15 @@ class NotAPage(_Base):
 class PagesReport(_Base):
     """Артефакт `web pages`. Времени в нём нет — иначе его нельзя сравнить."""
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.1"] = "1.1"
     depth: int = DEFAULT_DEPTH
     filters: str = ""
     pages: list[Page] = Field(default_factory=list)
+
+    # Разделы — вторая единица документации: их объявляет человек, у них нет
+    # маршрута, и в списке страниц им места нет. Но и молчать о них нельзя:
+    # это документы, которые прогон создаст.
+    features: list[Page] = Field(default_factory=list)
     not_pages: list[NotAPage] = Field(default_factory=list)
     counts: dict[str, int] = Field(default_factory=dict)
 
@@ -532,6 +538,11 @@ def build_report(
     pages = [
         page.model_copy(update={"children": _children_of(page.routes, every)}) for page in pages
     ]
+    features = [
+        _page_of(node, by_fqn, by_id, depth)
+        for node in sorted(manifest.nodes, key=lambda item: item.id)
+        if node.kind == FEATURE_KIND
+    ]
     not_pages = sorted(
         (
             NotAPage(
@@ -564,6 +575,7 @@ def build_report(
         "chain_stops": sum(page.chain_stops for page in pages),
         "without_features": sum(1 for page in pages if NOTE_NO_FEATURES in page.notes),
         "components_without_route": len(not_pages),
+        "features": len(features),
         "containers": sum(1 for page in pages if page.children and not page.calls),
         "nodes_total": len(manifest.nodes),
     }
@@ -581,6 +593,7 @@ def build_report(
         depth=depth,
         filters=_describe(depth, route, module),
         pages=shown,
+        features=[item for item in features if not module or module in item.module],
         not_pages=filtered_not_pages,
         counts=counts,
     )
@@ -666,6 +679,7 @@ _SUMMARY: Final[tuple[tuple[str, str], ...]] = (
     ("chain_stops", "обрывов цепочки: узла нет, решение о символе не принято"),
     ("without_features", "без признаков функционала: ни членов, ни шаблона, ни вызовов"),
     ("containers", "похожи на контейнер: под ними есть страницы, своих вызовов нет"),
+    ("features", "разделов: объявлены человеком, маршрута у них нет"),
     ("components_without_route", "компонентов без маршрута — страницами не стали"),
 )
 
@@ -681,6 +695,19 @@ def format_report(report: PagesReport, show_not_pages: bool = False) -> str:
 
     for page in report.pages:
         lines += ["", *_block(page)]
+
+    for feature in report.features:
+        lines += ["", f"РАЗДЕЛ {feature.title}   [{feature.module}]"]
+        lines.append(_line("документ", feature.doc_path))
+        lines.append(
+            _line(
+                "эндпоинтов",
+                f"{len(feature.calls)} зовёт"
+                + (f"; обрывов цепочки {feature.chain_stops}" if feature.chain_stops else ""),
+            )
+        )
+        for call in feature.calls:
+            lines.append(_line("", _call_line(call)))
 
     if show_not_pages:
         lines += ["", f"Компоненты, страницами не ставшие ({len(report.not_pages)}):"]
