@@ -18,8 +18,10 @@ from typer.testing import CliRunner
 from docpipe.classify import load_ruleset
 from docpipe.cli import app
 from docpipe.config import DocpipeConfig
-from docpipe.model import Manifest
+from docpipe.model import Manifest, Usage
 from docpipe.web.pages import (
+    DEFAULT_DEPTH,
+    NOTE_CHAIN_STOPS,
     NOTE_EMPTY_ROUTE,
     NOTE_NO_CALLS,
     NOTE_NO_FEATURES,
@@ -361,3 +363,45 @@ def test_csv_carries_the_path_of_every_call(manifest: Manifest) -> None:
 
     assert "дочерних" in text.splitlines()[0]
     assert "<-ModelService.byId#1" in text
+
+
+# --------------------------------------------------------------------------------------
+# Обрыв цепочки: узла нет, решение о символе не принято
+# --------------------------------------------------------------------------------------
+
+
+def test_chain_stop_is_counted_and_named(manifest: Manifest) -> None:
+    """Ребро есть, узла на его конце нет — путь дальше не идёт.
+
+    Это след ненастроенных правил, а не дефект обхода: на боевом модуле
+    1249 символов из 2152 без решения, и список эндпоинтов страницы выглядел
+    бы полным, будучи обрезанным на них.
+    """
+    node = next(item for item in manifest.nodes if item.title == "DetailComponent")
+    lost = node.model_copy(
+        update={"uses": [Usage(target="src.Vanished", member="load", via="reload")]}
+    )
+    trimmed = manifest.model_copy(
+        update={"nodes": [lost if item.id == node.id else item for item in manifest.nodes]}
+    )
+
+    page = _page(trimmed, "DetailComponent")
+
+    assert page.chain_stops == 1
+    assert NOTE_CHAIN_STOPS in page.notes
+    assert "обрывов цепочки" in format_report(build_report(trimmed))
+
+
+def test_no_stops_no_note(manifest: Manifest) -> None:
+    """На фикстуре все рёбра ведут в узлы, и заметки быть не должно."""
+    assert build_report(manifest).counts["chain_stops"] == 0
+    assert all(NOTE_CHAIN_STOPS not in page.notes for page in build_report(manifest).pages)
+
+
+def test_default_depth_covers_the_full_chain() -> None:
+    """Полная цепочка боевого фронта — три шага: страница -> стейт -> сервис -> сервис.
+
+    Замер на АС CF: глубина 2 даёт 42 эндпоинта, глубина 4 — 49, и почти вся
+    разница набирается третьим шагом.
+    """
+    assert DEFAULT_DEPTH == 3

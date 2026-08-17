@@ -91,7 +91,7 @@ def test_counters_name_all_three_outcomes(scanned: WebScanResult) -> None:
     """
     stats = scanned.meta.stats
 
-    assert stats["usages"] == 10
+    assert stats["usages"] == 12
     assert stats["usages_external"] > 0
     assert stats["usages_unresolved"] > 0
 
@@ -177,3 +177,39 @@ def test_colon_inside_an_object_argument_does_not_become_a_type() -> None:
     assert constructor_bindings("constructor(@SetApiUrl({ url: 'api/ml' }) private http: Api)") == [
         ("http", "Api")
     ]
+
+
+# --------------------------------------------------------------------------------------
+# Ещё два источника типа получателя
+# --------------------------------------------------------------------------------------
+
+
+def test_field_with_a_type_annotation_gives_an_edge(manifest: Manifest) -> None:
+    """`private later!: WidgetService` — тип написан рядом с именем.
+
+    Форма не менее однозначна, чем параметр конструктора, а по частоте с ним
+    сравнима: так объявляют поля, которые присваивают в `ngOnInit` или
+    получают через `@Input()`. На боевом модуле 63 % обращений к членам
+    не разрешались, и это одна из двух причин.
+    """
+    assert ("WidgetService", "periods", "ngOnInit") in _edges(manifest, "WidgetComponent")
+
+
+def test_inherited_binding_gives_an_edge(manifest: Manifest) -> None:
+    """Получатель объявлен в базовом классе, а зовут его в наследнике.
+
+    В Angular базовый класс с внедрёнными зависимостями — обычная форма,
+    а на боевом модуле сервисы поголовно наследуют общий базовый.
+    """
+    assert ("AuditService", "log", "insert") in _edges(manifest, "InnerDebtService")
+
+
+def test_own_binding_wins_over_the_inherited_one() -> None:
+    """Имя, переопределённое в наследнике, значит его тип, а не тип базы."""
+    from docpipe.web.usage import typed_fields
+
+    tree = parse_tree(
+        b"class A { private svc!: First; }\nclass B extends A { private svc!: Second; }"
+    )
+
+    assert typed_fields(tree.root_node) == [(1, "svc", "First"), (2, "svc", "Second")]

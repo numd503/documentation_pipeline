@@ -19,8 +19,10 @@
 
 from docpipe.hashing import stable_hash
 from docpipe.model import DocNode
+from docpipe.web.overrides import Feature
 
 PAGE_KIND = "page"
+FEATURE_KIND = "feature"
 
 
 def _by_fqn(nodes: list[DocNode]) -> dict[str, DocNode]:
@@ -52,13 +54,19 @@ def reachable_from(node: DocNode, by_fqn: dict[str, DocNode]) -> set[str]:
     return seen
 
 
-def absorb(nodes: list[DocNode]) -> list[DocNode]:
-    """Проставить `absorbed_by` тем узлам, до кого дотягивается одна страница.
+def absorb(nodes: list[DocNode], features: list[Feature] | None = None) -> list[DocNode]:
+    """Проставить `absorbed_by`: сначала объявленные разделы, потом страницы.
 
-    Страница страницей не поглощается никогда: у неё свой документ и свой
-    маршрут, и вложить экран в экран значило бы потерять его якорь.
+    Порядок фиксирован, и он же порядок доверия. Раздел объявил человек, и его
+    границей служит каталог; поглощение страницей выводится из графа. Там, где
+    они спорят, побеждает объявленное: инструмент не переигрывает решение,
+    которое человек записал явно.
+
+    Страница ни разделом, ни страницей не поглощается: у неё свой документ
+    и свой маршрут, и вложить экран в экран значило бы потерять его якорь.
     """
     by_fqn = _by_fqn(nodes)
+    declared = _declared(nodes, features or [])
 
     owners: dict[str, list[str]] = {}
     for page in sorted(
@@ -67,10 +75,12 @@ def absorb(nodes: list[DocNode]) -> list[DocNode]:
         for fqn in sorted(reachable_from(page, by_fqn)):
             owners.setdefault(fqn, []).append(page.id)
 
-    absorbed: dict[str, str] = {}
+    absorbed: dict[str, str] = dict(declared)
     for fqn, pages in owners.items():
         reached = by_fqn.get(fqn)
-        if reached is None or reached.kind == PAGE_KIND or len(set(pages)) != 1:
+        if reached is None or reached.kind == PAGE_KIND or reached.id in absorbed:
+            continue
+        if len(set(pages)) != 1:
             continue
         absorbed[reached.id] = pages[0]
 
@@ -85,6 +95,29 @@ def absorb(nodes: list[DocNode]) -> list[DocNode]:
         else _with_aggregate_hashes(node, inside.get(node.id, []))
         for node in nodes
     ]
+
+
+def _declared(nodes: list[DocNode], features: list[Feature]) -> dict[str, str]:
+    """Узлы, лежащие под каталогом объявленного раздела.
+
+    Граница — каталог, а не достижимость: раздел `inner-debt` зовут и `loader`,
+    и `structuring`, поэтому по графу он «общий» и не поглотился бы никогда.
+    Человек знает, что это одна вещь, и говорит это каталогом.
+
+    Сравнение по префиксу с завершающим слэшем: `…/leasing` иначе накрыл бы
+    `…/leasing-report`, и чужие узлы уехали бы в чужой документ.
+    """
+    by_name = {feature.name: f"feature:{feature.name}" for feature in features}
+    found: dict[str, str] = {}
+    for node in sorted(nodes, key=lambda item: item.id):
+        if node.kind in (PAGE_KIND, FEATURE_KIND) or node.symbol is None or not node.symbol.sources:
+            continue
+        path = node.symbol.sources[0].path
+        for feature in features:
+            if path.startswith(feature.prefix):
+                found[node.id] = by_name[feature.name]
+                break
+    return found
 
 
 def _with_aggregate_hashes(page: DocNode, inside: list[DocNode]) -> DocNode:

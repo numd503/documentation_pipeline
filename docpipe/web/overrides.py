@@ -33,12 +33,13 @@ from docpipe.route import normalize_route
 MANUAL_SOURCE = "pages.yaml"
 MANUAL_TABLE = "manual"
 
-StaleKind = Literal["add-missed", "add-redundant", "remove-missed"]
+StaleKind = Literal["add-missed", "add-redundant", "remove-missed", "feature-empty"]
 
 STALE_TITLES: dict[str, str] = {
     "add-missed": "правило `add` ни на что не легло: компонент не найден",
     "add-redundant": "правило `add` больше не нужно: маршрут находится сам",
     "remove-missed": "правило `remove` ни на что не легло",
+    "feature-empty": "раздел пуст: под его каталогом нет ни одного узла",
 }
 
 
@@ -92,16 +93,65 @@ class RemovePage(_Base):
         return normalize_route(self.route) if self.route else ""
 
 
+class Feature(_Base):
+    """Раздел: единица документации без маршрута.
+
+    `inner-debt`, `leasing`, `invest-portfolio` в АС CF — законченные
+    функциональные единицы со своим состоянием и сервисами, которые
+    открываются из меню с нескольких экранов. Страницей такой раздел быть
+    не может: якорь страницы — маршрут, который знает пользователь, а URL
+    здесь не меняется. Поглотиться страницей он тоже не может: его зовут
+    и `loader`, и `structuring`, то есть по правилу «ровно одна страница»
+    он общий.
+
+    Поэтому раздел **объявляется человеком**, а не выводится: граф про него
+    честно говорит «общий», и спорить с этим инструменту нечем.
+
+    `name` — ключ якоря бизнес-слоя и часть пути документа; он стабилен
+    и переживает переформулировку заголовка. `title` — заголовок документа,
+    то есть слова, которыми раздел называют люди.
+    """
+
+    name: str
+    path: str
+    title: str = ""
+    reason: str
+
+    @model_validator(mode="after")
+    def _check(self) -> "Feature":
+        if not self.reason.strip():
+            raise ValueError("раздел без `reason` запрещён")
+        if not self.name.strip() or not self.path.strip():
+            raise ValueError("раздел требует и `name`, и `path`")
+        if self.path.startswith("/") or ".." in self.path.split("/"):
+            raise ValueError(f"{self.path}: путь обязан быть репо-относительным")
+        return self
+
+    @property
+    def heading(self) -> str:
+        return self.title or self.name
+
+    @property
+    def prefix(self) -> str:
+        """Каталог с завершающим слэшем: `src/app/inner-debt/`.
+
+        Сравнение по границе каталога, а не по подстроке: иначе `…/leasing`
+        накрыл бы `…/leasing-report`, и чужие узлы уехали бы в чужой документ.
+        """
+        return self.path.rstrip("/") + "/"
+
+
 class Overrides(_Base):
     """Содержимое `pages.yaml`."""
 
     version: str = "1"
     add: list[AddPage] = Field(default_factory=list)
     remove: list[RemovePage] = Field(default_factory=list)
+    features: list[Feature] = Field(default_factory=list)
 
     @property
     def empty(self) -> bool:
-        return not self.add and not self.remove
+        return not self.add and not self.remove and not self.features
 
 
 class StaleRule(_Base):
@@ -138,8 +188,10 @@ def load_overrides(path: Path) -> Overrides:
     if not isinstance(body, dict):
         raise ValueError(f"{path}: секция `pages` должна быть словарём")
 
+    features = raw.get("features") or body.get("features") or []
     return Overrides(
         version=str(raw.get("version", "1")),
         add=[AddPage.model_validate(item) for item in body.get("add", [])],
         remove=[RemovePage.model_validate(item) for item in body.get("remove", [])],
+        features=[Feature.model_validate(item) for item in features],
     )

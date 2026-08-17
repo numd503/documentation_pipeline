@@ -29,12 +29,16 @@ from docpipe.model import DocNode, Manifest
 PAGE_KIND: Final = "page"
 COMPONENT_KIND: Final = "component"
 STATE_KIND: Final = "state"
+FEATURE_KIND: Final = "feature"
 
-# Глубина обхода зависимостей по умолчанию. Два шага — это «страница ->
-# сервис» и «страница -> сервис -> сервис»: столько и нужно, чтобы увидеть
-# API экрана. Больше — и в список приезжает половина приложения, а вопрос
-# «что зовёт эта страница» снова остаётся без ответа.
-DEFAULT_DEPTH: Final = 2
+# Глубина обхода по умолчанию. Три шага — это полная цепочка боевого фронта:
+# «страница -> стейт (обработчик экшена) -> сервис -> сервис». Замер на АС CF:
+# на глубине 2 страницы зовут 42 эндпоинта, на глубине 4 — 49, и почти вся
+# разница набирается третьим шагом; четвёртый добавляет единицы.
+#
+# Больше не значит лучше: обход идёт по парам «узел, член» и через настоящие
+# вызовы, но каждый лишний шаг уводит документ страницы в чужую ответственность.
+DEFAULT_DEPTH: Final = 3
 
 FORMATS: Final[tuple[str, ...]] = ("text", "json", "csv")
 
@@ -55,6 +59,11 @@ NOTE_NO_CALLS: Final = (
     "страница не ходит за данными сама: ни прямого вызова сервиса, ни диспатча. "
     "Обычно так выглядит экран, которому данные приходят через @Input от родителя "
     "либо из платформенного грида"
+)
+NOTE_CHAIN_STOPS: Final = (
+    "цепочка вызовов обрывается на символах без решения: список эндпоинтов "
+    "короче правды. Настройте правила (`web scan --stats`, `symbols --lang ts "
+    "--state undecided`) — узлом станет то, про что решение принято"
 )
 REASON_NO_ROUTE: Final = "маршрута нет: в таблицах роутов этот компонент не встретился"
 
@@ -116,6 +125,21 @@ class PageCall(_Base):
     depth: int  # 1 — вызов метода, который страница зовёт сама
 
 
+class Walk(_Base):
+    """Итог обхода графа вызовов от одной страницы.
+
+    `stops` — обрывы: ребро есть, а узла на его конце в манифесте нет. Это
+    **не** дефект обхода, а след настройки правил: символ, про который решение
+    не принято, узлом не становится, и цепочка через него не проходит.
+    На АС CF таких символов 1249 из 2152, и без этого числа список эндпоинтов
+    страницы выглядит полным, будучи обрезанным.
+    """
+
+    calls: list[PageCall] = Field(default_factory=list)
+    participants: dict[str, tuple[int, list[str]]] = Field(default_factory=dict)
+    stops: list[str] = Field(default_factory=list)
+
+
 class Page(_Base):
     """Страница и всё, из чего следует, что она страница."""
 
@@ -141,6 +165,11 @@ class Page(_Base):
     # Оставлена рядом намеренно: разница между ней и длиной `calls` и есть
     # мера того, сколько чужого приезжало в документ страницы.
     reachable_calls: int = 0
+
+    # Символы, на которых обход остановился: узла нет, значит решение про них
+    # не принято. Прямое следствие ненастроенных правил, и без этого числа
+    # список эндпоинтов выглядит полным, будучи обрезанным.
+    chain_stops: int = 0
     notes: list[str] = Field(default_factory=list)
 
 
@@ -163,10 +192,15 @@ class NotAPage(_Base):
 class PagesReport(_Base):
     """Артефакт `web pages`. Времени в нём нет — иначе его нельзя сравнить."""
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.1"] = "1.1"
     depth: int = DEFAULT_DEPTH
     filters: str = ""
     pages: list[Page] = Field(default_factory=list)
+
+    # Разделы — вторая единица документации: их объявляет человек, у них нет
+    # маршрута, и в списке страниц им места нет. Но и молчать о них нельзя:
+    # это документы, которые прогон создаст.
+    features: list[Page] = Field(default_factory=list)
     not_pages: list[NotAPage] = Field(default_factory=list)
     counts: dict[str, int] = Field(default_factory=dict)
 
@@ -255,9 +289,7 @@ def _reachable(node: DocNode, by_fqn: dict[str, DocNode], depth: int) -> dict[st
     return seen
 
 
-def called(
-    node: DocNode, by_fqn: dict[str, DocNode], depth: int
-) -> tuple[list[PageCall], dict[str, tuple[int, list[str]]]]:
+def called(node: DocNode, by_fqn: dict[str, DocNode], depth: int) -> Walk:
     """Вызовы, до которых страница доходит **по вызовам**, и кто в этом участвовал.
 
     Обход идёт по парам «узел, член», а не по узлам: ребро `uses` говорит
@@ -270,6 +302,7 @@ def called(
     """
     calls: dict[tuple[str, str, str, str, str], PageCall] = {}
     participants: dict[str, tuple[int, list[str]]] = {}
+    stops: set[str] = set()
 
     # Собственные вызовы страницы — шаг ноль. Компонент, который зовёт `http`
     # сам, в Angular редкость, но он есть, и потерять его нельзя: до этого
@@ -308,6 +341,11 @@ def called(
 
             reached = by_fqn.get(fqn)
             if reached is None:
+                # Ребро ведёт в символ, который узлом не стал: решение о нём
+                # не принято либо он отсеян. Цепочка обрывается здесь, и молчать
+                # об этом нельзя — список эндпоинтов страницы окажется короче
+                # правды ровно на то, что лежит за обрывом.
+                stops.add(fqn)
                 continue
             seen_level, called_members = participants.setdefault(fqn, (level, []))
             if member and member not in called_members:
@@ -343,7 +381,11 @@ def called(
                     following.append((usage.target, usage.member, action or usage.action))
         frontier = following
 
-    return [calls[key] for key in sorted(calls)], participants
+    return Walk(
+        calls=[calls[key] for key in sorted(calls)],
+        participants=participants,
+        stops=sorted(stops),
+    )
 
 
 def _reachable_calls(node: DocNode, by_fqn: dict[str, DocNode], depth: int) -> int:
@@ -381,7 +423,9 @@ def _has_template(node: DocNode) -> bool:
     return any(source.path.endswith(".html") for source in node.symbol.sources)
 
 
-def _notes(page_routes: list[PageRoute], members: int, template: bool, calls: int) -> list[str]:
+def _notes(
+    page_routes: list[PageRoute], members: int, template: bool, calls: int, stops: int = 0
+) -> list[str]:
     notes: list[str] = []
     if page_routes and all(route.unresolved for route in page_routes):
         notes.append(NOTE_UNANCHORABLE)
@@ -396,13 +440,16 @@ def _notes(page_routes: list[PageRoute], members: int, template: bool, calls: in
         notes.append(NOTE_NO_FEATURES)
     elif not calls:
         notes.append(NOTE_NO_CALLS)
+    if stops:
+        notes.append(NOTE_CHAIN_STOPS)
     return notes
 
 
 def _page_of(
     node: DocNode, by_fqn: dict[str, DocNode], by_id: dict[str, DocNode], depth: int
 ) -> Page:
-    calls, participants = called(node, by_fqn, depth)
+    walk = called(node, by_fqn, depth)
+    calls, participants = walk.calls, walk.participants
 
     # Участники — те, до чьих членов страница дошла **по вызовам**. Список
     # внедрённого сюда не входит: сервис, который внедрили и не зовут,
@@ -450,7 +497,8 @@ def _page_of(
         dependencies=dependencies,
         calls=calls,
         reachable_calls=_reachable_calls(node, by_fqn, depth),
-        notes=_notes(routes, members, template, len(calls)),
+        chain_stops=len(walk.stops),
+        notes=_notes(routes, members, template, len(calls), len(walk.stops)),
     )
 
 
@@ -490,6 +538,11 @@ def build_report(
     pages = [
         page.model_copy(update={"children": _children_of(page.routes, every)}) for page in pages
     ]
+    features = [
+        _page_of(node, by_fqn, by_id, depth)
+        for node in sorted(manifest.nodes, key=lambda item: item.id)
+        if node.kind == FEATURE_KIND
+    ]
     not_pages = sorted(
         (
             NotAPage(
@@ -519,8 +572,10 @@ def build_report(
         # чужого приезжало в документ до графа вызовов.
         "endpoints_called": sum(len(page.calls) for page in pages),
         "endpoints_reachable": sum(page.reachable_calls for page in pages),
+        "chain_stops": sum(page.chain_stops for page in pages),
         "without_features": sum(1 for page in pages if NOTE_NO_FEATURES in page.notes),
         "components_without_route": len(not_pages),
+        "features": len(features),
         "containers": sum(1 for page in pages if page.children and not page.calls),
         "nodes_total": len(manifest.nodes),
     }
@@ -538,6 +593,7 @@ def build_report(
         depth=depth,
         filters=_describe(depth, route, module),
         pages=shown,
+        features=[item for item in features if not module or module in item.module],
         not_pages=filtered_not_pages,
         counts=counts,
     )
@@ -603,7 +659,8 @@ def _block(page: Page) -> list[str]:
         _line(
             "эндпоинтов",
             f"{len(page.calls)} зовёт, {page.reachable_calls} достижимо по внедрению "
-            "(вторая величина — инвентарь, а не состав страницы)",
+            "(вторая величина — инвентарь, а не состав страницы)"
+            + (f"; обрывов цепочки {page.chain_stops}" if page.chain_stops else ""),
         )
     )
     for call in page.calls:
@@ -619,8 +676,10 @@ _SUMMARY: Final[tuple[tuple[str, str], ...]] = (
     ("without_calls", "без единого вызова: за данными не ходят сами"),
     ("endpoints_called", "эндпоинтов зовут страницы"),
     ("endpoints_reachable", "эндпоинтов было бы, считай мы по внедрению"),
+    ("chain_stops", "обрывов цепочки: узла нет, решение о символе не принято"),
     ("without_features", "без признаков функционала: ни членов, ни шаблона, ни вызовов"),
     ("containers", "похожи на контейнер: под ними есть страницы, своих вызовов нет"),
+    ("features", "разделов: объявлены человеком, маршрута у них нет"),
     ("components_without_route", "компонентов без маршрута — страницами не стали"),
 )
 
@@ -637,6 +696,19 @@ def format_report(report: PagesReport, show_not_pages: bool = False) -> str:
     for page in report.pages:
         lines += ["", *_block(page)]
 
+    for feature in report.features:
+        lines += ["", f"РАЗДЕЛ {feature.title}   [{feature.module}]"]
+        lines.append(_line("документ", feature.doc_path))
+        lines.append(
+            _line(
+                "эндпоинтов",
+                f"{len(feature.calls)} зовёт"
+                + (f"; обрывов цепочки {feature.chain_stops}" if feature.chain_stops else ""),
+            )
+        )
+        for call in feature.calls:
+            lines.append(_line("", _call_line(call)))
+
     if show_not_pages:
         lines += ["", f"Компоненты, страницами не ставшие ({len(report.not_pages)}):"]
         lines += [
@@ -648,6 +720,15 @@ def format_report(report: PagesReport, show_not_pages: bool = False) -> str:
 
     lines += ["", "Итого:"]
     lines += [f"  {report.counts[key]:>5}  {title}" for key, title in _SUMMARY]
+
+    if report.counts.get("chain_stops"):
+        lines += [
+            "",
+            "Обрыв цепочки — это ненастроенные правила, а не дефект обхода: "
+            "символ, про который решение не принято, узлом не становится, и путь "
+            "через него не проходит. Пока обрывы есть, список эндпоинтов у страниц "
+            "короче правды.",
+        ]
 
     if report.counts["without_calls"]:
         lines += [
@@ -676,6 +757,7 @@ _CSV_HEADER: Final[tuple[str, ...]] = (
     "зовёт",
     "эндпоинтов",
     "достижимо",
+    "обрывов",
     "вызовы",
     "заметки",
 )
@@ -706,6 +788,7 @@ def report_csv(report: PagesReport) -> str:
                 " ".join(f"{item.title}:{item.depth}" for item in page.dependencies),
                 len(page.calls),
                 page.reachable_calls,
+                page.chain_stops,
                 # Путь идёт в ту же ячейку, что и ключ: разметку страниц ведут
                 # по этому файлу, и «через кого» нужнее всего именно там.
                 " ".join(

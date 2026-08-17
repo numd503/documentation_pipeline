@@ -226,7 +226,7 @@ def test_constructor_signature_carries_its_parameters(parsed: dict[str, FilePars
         for member in _declaration(parsed, "InnerDebtService").members
         if member.kind == "constructor"
     )
-    assert signature == "constructor(http: HttpClient)"
+    assert signature == "constructor(http: HttpClient, audit: AuditService)"
 
 
 def test_field_initializer_is_not_part_of_the_signature(parsed: dict[str, FileParseResult]) -> None:

@@ -43,7 +43,7 @@ from docpipe.model import (
 )
 from docpipe.route import RewriteRule
 from docpipe.tree import doc_path_for, signature_hash
-from docpipe.web.absorb import absorb
+from docpipe.web.absorb import FEATURE_KIND, PAGE_KIND, absorb
 from docpipe.web.calls import CallScan, RawCall, RegistryCall, build_calls, extract_calls
 from docpipe.web.members import MemberRanges, member_ranges
 from docpipe.web.modules import (
@@ -55,6 +55,7 @@ from docpipe.web.modules import (
 from docpipe.web.overrides import (
     MANUAL_SOURCE,
     MANUAL_TABLE,
+    Feature,
     OverrideReport,
     Overrides,
     StaleRule,
@@ -83,6 +84,7 @@ from docpipe.web.usage import (
     extract_usages,
     injected_fields,
     parameter_types,
+    typed_fields,
 )
 
 
@@ -123,6 +125,7 @@ class _Parsed:
     calls: list[RawCall]
     usages: list[RawUsage]
     injected: list[tuple[int, str, str]]
+    fields: list[tuple[int, str, str]]
     dispatches: list[RawDispatch]
     selects: list[RawSelect]
     action_types: dict[str, str]
@@ -149,6 +152,7 @@ def _parse_files(root: Path, relatives: list[str], cache: ParseCache | None) -> 
                 calls=extract_calls(tree.root_node, relative),
                 usages=extract_usages(tree.root_node, relative),
                 injected=injected_fields(tree.root_node),
+                fields=typed_fields(tree.root_node),
                 dispatches=extract_dispatches(tree.root_node, relative),
                 selects=extract_selects(tree.root_node, relative),
                 action_types=action_types(tree.root_node),
@@ -329,6 +333,58 @@ def _promote(
     return kind, template
 
 
+def _own_bindings(symbol: Symbol, parsed_by_file: dict[str, _Parsed]) -> dict[str, str]:
+    """Пары «имя получателя -> имя типа», объявленные в самом классе.
+
+    Три источника, и все три однозначны: параметр конструктора, поле
+    с `inject(…)` и поле с аннотацией типа. Последнее добавлено по замеру
+    на боевом модуле — там 63 % обращений к членам не разрешались, и половина
+    из них это поля, присвоенные в `ngOnInit` или пришедшие через `@Input()`.
+
+    Поля берутся по диапазону символа: два класса в одном файле законно
+    объявляют одноимённое поле с разными типами.
+    """
+    if not symbol.sources:
+        return {}
+    parsed = parsed_by_file.get(symbol.sources[0].path)
+    if parsed is None:
+        return {}
+
+    span = symbol.sources[0]
+    bindings: dict[str, str] = {}
+    for member in symbol.members:
+        if member.kind == "constructor":
+            for name, type_name in constructor_bindings(member.signature):
+                bindings.setdefault(name, type_name)
+    for line, name, type_name in [*parsed.injected, *parsed.fields]:
+        if span.start <= line <= span.end:
+            bindings.setdefault(name, type_name)
+    return bindings
+
+
+def _bindings_of(
+    symbol: Symbol, parsed_by_file: dict[str, _Parsed], by_fqn: dict[str, Symbol]
+) -> dict[str, str]:
+    """Связывания класса вместе с унаследованными.
+
+    `this.http` в сервисе-наследнике объявлено в базовом классе, и без обхода
+    замыкания наследования такое обращение остаётся неразрешённым. В Angular
+    базовый компонент с внедрёнными зависимостями — обычная форма, а на боевом
+    модуле сервисы поголовно наследуют `BaseApiService`.
+
+    Своё сильнее унаследованного: имя, переопределённое в наследнике, значит
+    его тип, а не тип базы.
+    """
+    bindings = _own_bindings(symbol, parsed_by_file)
+    for base in symbol.base_type_closure:
+        parent = by_fqn.get(base)
+        if parent is None:
+            continue
+        for name, type_name in _own_bindings(parent, parsed_by_file).items():
+            bindings.setdefault(name, type_name)
+    return bindings
+
+
 def _usages_of(
     symbol: Symbol,
     parsed_by_file: dict[str, _Parsed],
@@ -356,14 +412,7 @@ def _usages_of(
         return [], Counter()
 
     span = symbol.sources[0]
-    bindings: dict[str, str] = {}
-    for member in symbol.members:
-        if member.kind == "constructor":
-            for name, type_name in constructor_bindings(member.signature):
-                bindings.setdefault(name, type_name)
-    for line, name, type_name in parsed.injected:
-        if span.start <= line <= span.end:
-            bindings.setdefault(name, type_name)
+    bindings = _bindings_of(symbol, parsed_by_file, by_fqn)
 
     found: dict[tuple[str, str, str], Usage] = {}
     counters: Counter[str] = Counter()
@@ -750,10 +799,82 @@ def build_nodes(
             )
         )
 
-    # Поглощение считается на готовом списке: правило про то, сколько СТРАНИЦ
-    # дотягивается до узла, а страницы известны только после классификации
-    # и повышения.
-    return configured, absorb(sorted(nodes, key=lambda node: node.id))
+    return configured, sorted(nodes, key=lambda node: node.id)
+
+
+def _feature_nodes(
+    nodes: list[DocNode],
+    features: list[Feature],
+    config: DocpipeConfig,
+) -> tuple[list[DocNode], list[StaleRule]]:
+    """Синтетические узлы разделов и находки по пустым объявлениям.
+
+    У раздела нет символа: он не класс, а решение человека о том, что вот эта
+    кучка классов — одна вещь. Поэтому `symbol` пустой, а состав собирается
+    по каталогу; хэши досчитает `absorb` вместе с составом.
+
+    `uses` и `web_calls` объединяются со всех узлов раздела: дальше документ
+    и отчёт ходят по разделу тем же обходом, что и по странице, и второй
+    реализации обхода не заводится.
+    """
+    found: list[DocNode] = []
+    stale: list[StaleRule] = []
+
+    for feature in features:
+        inside = [
+            node
+            for node in nodes
+            if node.symbol
+            and node.symbol.sources
+            and node.symbol.sources[0].path.startswith(feature.prefix)
+            and node.kind != PAGE_KIND
+        ]
+        if not inside:
+            # Каталог переименовали или раздел ещё не написан. Молчать нельзя:
+            # документ раздела просто не появится, и в отчёте будет на строку
+            # меньше — ровно то, ради чего заведены находки о протухших правилах.
+            stale.append(StaleRule(kind="feature-empty", key=feature.path, reason=feature.reason))
+            continue
+
+        module = min(node.module for node in inside)
+        domain = min(node.domain for node in inside)
+        uses = {
+            (item.target, item.member, item.via, item.action): item
+            for node in inside
+            for item in node.uses
+        }
+        # Раздел «зовёт своих»: синтетическое ребро на каждый член своего узла,
+        # в котором записан вызов. Без него вызовы сервиса, к которому внутри
+        # раздела никто не обращается (его зовут снаружи), пропали бы из раздела
+        # «Данные» — при том, что своего документа у сервиса больше нет.
+        #
+        # Копировать сами вызовы на узел раздела нельзя: тот же вызов пришёл бы
+        # в отчёт дважды — своим и через ребро, — и таблица «Данные» удвоилась бы.
+        for node in inside:
+            if node.symbol is None:
+                continue
+            for call in node.web_calls:
+                if call.member:
+                    key = (node.symbol.fqn, call.member, "", "")
+                    uses.setdefault(key, Usage(target=key[0], member=key[1], via="", action=""))
+
+        found.append(
+            DocNode(
+                id=f"feature:{feature.name}",
+                kind=FEATURE_KIND,
+                template=FEATURE_KIND,
+                title=feature.heading,
+                doc_path=doc_path_for(
+                    module, FEATURE_KIND, feature.name, config.doc_layout, config.web_modules_root
+                ),
+                module=module,
+                domain=domain,
+                signature_hash=stable_hash(["feature", feature.name, feature.path]),
+                uses=[uses[key] for key in sorted(uses)],
+            )
+        )
+
+    return found, stale
 
 
 def run(
@@ -801,6 +922,15 @@ def run(
         index, modules, ruleset, config, calls_by_file, by_component, uses, demoted
     )
 
+    # Разделы собираются на готовых узлах: их состав — каталог, а узлы
+    # появляются только после классификации.
+    features = (overrides or Overrides()).features
+    feature_nodes, feature_stale = _feature_nodes(nodes, features, config)
+    nodes = absorb(sorted([*nodes, *feature_nodes], key=lambda node: node.id), features)
+    override_report = override_report.model_copy(
+        update={"stale": [*override_report.stale, *feature_stale]}
+    )
+
     manifest = Manifest(
         ruleset_version=ruleset.ruleset_version,
         parser=versions,
@@ -843,6 +973,7 @@ def run(
             "pages_removed": len(override_report.removed),
             "overrides_stale": len(override_report.stale),
             "absorbed": sum(1 for node in nodes if node.absorbed_by),
+            "features": len(feature_nodes),
         },
         parse_error_files=broken,
     )

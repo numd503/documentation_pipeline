@@ -123,6 +123,10 @@ class ResolveContext(_Base):
     # манифеста: шаг `web` пишет свой файл, и бизнес-слой читает оба.
     # Пустой словарь — законное состояние: репозиторий без фронта.
     pages_by_route: dict[str, list[DocNode]] = Field(default_factory=dict)
+
+    # Разделы фронта по объявленному имени. Маршрута у них нет, поэтому
+    # и ключ другой: то, что человек написал в `pages.yaml`.
+    features_by_name: dict[str, DocNode] = Field(default_factory=dict)
     web_nodes_by_fqn: dict[str, DocNode] = Field(default_factory=dict)
     source_paths: list[str] = Field(default_factory=list)
     root: Path | None = None
@@ -178,6 +182,12 @@ def build_context(
                 continue
             pages.setdefault(entry.path, []).append(node)
 
+    features = {
+        node.id.removeprefix("feature:"): node
+        for node in sorted(web.nodes if web else [], key=lambda item: item.id)
+        if node.kind == "feature"
+    }
+
     return ResolveContext(
         by_key={
             key: sorted(items, key=lambda a: (a.version or "", a.source_path))
@@ -187,6 +197,7 @@ def build_context(
         pages_by_route={
             route: sorted(nodes, key=lambda node: node.id) for route, nodes in sorted(pages.items())
         },
+        features_by_name=features,
         web_nodes_by_fqn={
             node.symbol.fqn: node for node in (web.nodes if web else []) if node.symbol
         },
@@ -512,17 +523,21 @@ def _page_facts(node: DocNode, ctx: ResolveContext) -> dict[str, list[str]]:
       `DebtState` смысла не меняет, а `innerDebt` — контракт, по которому стейт
       селектят.
     """
-    calls, participants = called(node, ctx.web_nodes_by_fqn, PAGE_DEPTH)
+    walk = called(node, ctx.web_nodes_by_fqn, PAGE_DEPTH)
+    calls, participants = walk.calls, walk.participants
 
     lists = sorted({call.discriminator for call in calls if call.discriminator})
     endpoints = sorted({f"{call.http_method} {call.route}" for call in calls if call.route})
+    # Состояние берётся и по обходу, и по составу агрегата: стейт раздела
+    # лежит внутри него и никем снаружи не зовётся, а состоянием экрана
+    # он от этого быть не перестаёт.
+    reachable = [ctx.web_nodes_by_fqn[fqn] for fqn in participants if fqn in ctx.web_nodes_by_fqn]
+    inside = [item for item in ctx.web_nodes_by_fqn.values() if item.absorbed_by == node.id]
     states = sorted(
         {
             name
-            for fqn in participants
-            if (item := ctx.web_nodes_by_fqn.get(fqn)) is not None
-            and item.kind == STATE_KIND
-            and (name := state_name(item))
+            for item in [*reachable, *inside]
+            if item.kind == STATE_KIND and (name := state_name(item))
         }
     )
 
@@ -588,6 +603,47 @@ def _page_rung(anchor: Anchor, ctx: ResolveContext) -> Resolution | None:
     )
 
 
+def _feature_rung(anchor: Anchor, ctx: ResolveContext) -> Resolution | None:
+    """Ступень: раздел фронта объявлен в `pages.yaml` и собран шагом `web`.
+
+    Ключ — имя раздела, а не каталог и не имя класса. Каталог сменится при
+    первом переносе, класса у раздела нет вовсе, а имя человек объявил сам
+    и им же называет раздел в меню.
+    """
+    if anchor.kind != "feature":
+        return None
+
+    node = ctx.features_by_name.get(anchor.ref.strip().strip("/"))
+    if node is None:
+        return None
+
+    facts = _page_facts(node, ctx)
+    return Resolution(
+        anchor=anchor,
+        confidence="symbol",
+        facts={"feature": anchor.ref.strip(), **facts},
+        sources=sorted(
+            {
+                span.path
+                for item in ctx.web_nodes_by_fqn.values()
+                if item.absorbed_by == node.id and item.symbol
+                for span in item.symbol.sources
+            }
+        ),
+        targets=[
+            AnchorTarget(
+                field="ref",
+                fqn=node.id,
+                via="direct",
+                node_id=node.id,
+                doc_path=node.doc_path,
+                module=node.module,
+            )
+        ],
+        tried=["реестр", "раздел"],
+    )
+
+
 def resolve(anchor: Anchor, ctx: ResolveContext) -> Resolution:
     """Разрешить один якорь. Ступени по порядку, первая сработавшая выигрывает.
 
@@ -598,7 +654,7 @@ def resolve(anchor: Anchor, ctx: ResolveContext) -> Resolution:
     if not anchor.verify:
         return Resolution(anchor=anchor, confidence="unresolved", tried=[])
 
-    for rung in (_registry_rung, _page_rung, _literal_rung, _symbol_rung):
+    for rung in (_registry_rung, _page_rung, _feature_rung, _literal_rung, _symbol_rung):
         resolution = rung(anchor, ctx)
         if resolution is not None:
             return resolution
@@ -606,7 +662,9 @@ def resolve(anchor: Anchor, ctx: ResolveContext) -> Resolution:
     tried = ["реестр"]
     if anchor.kind == "page":
         tried.append("страница")
-    if anchor.kind not in DATA_DISPATCHED and anchor.kind != "page":
+    if anchor.kind == "feature":
+        tried.append("раздел")
+    if anchor.kind not in DATA_DISPATCHED and anchor.kind not in ("page", "feature"):
         tried.append("литерал")
     if anchor.kind == "type":
         tried.append("индекс символов")

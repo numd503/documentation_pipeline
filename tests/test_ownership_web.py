@@ -143,7 +143,7 @@ def test_namespace_prefix_is_a_directory_not_a_namespace(
 
 
 def test_inherits_is_degenerate_on_the_front_end(manifest: Manifest, tmp_path: Path) -> None:
-    """Наследование в Angular редкость: на фикстуре замыкание есть у трёх узлов из 27.
+    """Наследование в Angular редкость: на фикстуре замыкание есть у четырёх узлов из 30.
 
     Правило по контракту типа здесь не столько не работает, сколько описывает
     почти пустое множество, — и это документируется, а не чинится.
@@ -151,7 +151,7 @@ def test_inherits_is_degenerate_on_the_front_end(manifest: Manifest, tmp_path: P
     with_closure = [
         node for node in manifest.nodes if node.symbol and node.symbol.base_type_closure
     ]
-    assert len(with_closure) <= 3
+    assert len(with_closure) <= 4
 
     ownership = _ownership(
         tmp_path,
