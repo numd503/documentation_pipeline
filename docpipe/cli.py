@@ -2219,11 +2219,12 @@ def graph_resolve(
         counts: dict[str, int] = {}
         for node in loaded.nodes:
             counts[node.kind] = counts.get(node.kind, 0) + 1
+        inventory = ", ".join(f"{kind} — {number}" for kind, number in sorted(counts.items()))
         typer.echo(
             f"По запросу {query!r} не нашлось ничего, даже похожего.\n"
             "Искали среди имён узлов, ключей, маршрутов, названий полей "
             "и заголовков документов.\n"
-            f"В индексе: {', '.join(f'{kind} — {number}' for kind, number in sorted(counts.items()))}."
+            f"В индексе: {inventory}."
         )
         examples = sorted(
             node.name for node in loaded.nodes if node.kind == "entry_point" and node.name
