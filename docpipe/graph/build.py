@@ -27,6 +27,8 @@ from docpipe.graph.data import from_registry as data_from_registry
 from docpipe.graph.data import merge as merge_data
 from docpipe.graph.engine import Engine, EngineGraph, EngineNode, EngineRun
 from docpipe.graph.entrypoints import EntryPointReport, from_manifest, from_registry, link
+from docpipe.graph.grid import GridReport
+from docpipe.graph.grid import seams as grid_seams
 from docpipe.graph.match import MatchReport, apply, match
 from docpipe.graph.model import GraphEdge, GraphIndex, GraphMeta, GraphNode
 from docpipe.graph.reach import Reachability, compute
@@ -75,6 +77,7 @@ class BuildResult:
     entry_points: EntryPointReport | None = None
     binding: BindingReport | None = None
     data: DataReport | None = None
+    grid: GridReport | None = None
     reachability: Reachability | None = None
     searchable: list[SearchEntry] = field(default_factory=list)
     web: WebReport | None = None
@@ -278,6 +281,15 @@ def build(
         )
         report.update(entry_report.as_counts())
 
+    # Швы через кластер: вызов доходит до члена интерфейса, а связь
+    # «интерфейс → зарегистрированная реализация» объявлена реестром.
+    grid_report: GridReport | None = None
+    if arch is not None:
+        say("свожу швы через кластер")
+        grid_edges, grid_report = grid_seams(index.nodes, index.edges)
+        index = GraphIndex(nodes=index.nodes, edges=index.edges + tuple(grid_edges))
+        report.update(grid_report.as_counts())
+
     # Фронт: узлы, цепочка и шов с бэкендом. Идёт ПОСЛЕ точек входа —
     # шов сводится с уже существующими эндпоинтами.
     web_report: WebReport | None = None
@@ -345,6 +357,7 @@ def build(
         entry_points=entry_report,
         binding=binding_report,
         data=data_report,
+        grid=grid_report,
         reachability=reachability,
         searchable=searchable,
         web=web_report,
