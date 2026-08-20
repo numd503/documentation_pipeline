@@ -220,3 +220,62 @@ def test_regex_literals_are_not_routes() -> None:
     assert _REGEX_LITERAL.match("/%20/g")
     assert not _REGEX_LITERAL.match("/api/items")
     assert not _REGEX_LITERAL.match("/api/content/:app/query")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Python: узлы и рёбра приходят тем же мостом
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@engine_required
+def test_python_code_needs_no_parser_of_our_own(engine: Engine, tmp_path: Path) -> None:
+    """Узлы и рёбра `calls` внутри Python приходят из стороннего разбора через
+    тот же мост: отдельного разбора Python в `docpipe` не появляется (G16 п. 2).
+
+    Проверяется на настоящем питоновском коде, а не на фикстуре из одной
+    строки: важно, что рёбра действительно строятся, а не что запрос
+    отработал без ошибки.
+    """
+    (tmp_path / "srv").mkdir()
+    (tmp_path / "srv" / "handlers.py").write_text(
+        "def compute(payload):\n    return payload\n\n\n"
+        "class ForecastHandler:\n    def run(self, payload):\n        return compute(payload)\n",
+        encoding="utf-8",
+    )
+    result = build(engine, tmp_path)
+    languages = {node.lang for node in result.index.nodes}
+    assert "python" in languages
+    assert any(edge.kind == "calls" for edge in result.index.edges)
+
+
+@engine_required
+def test_registry_written_in_python_becomes_a_root(engine: Engine, tmp_path: Path) -> None:
+    """Реестр в виде исполняемого кода даёт точки входа, связанные с классами
+    (G16 п. 3). Разбирается он статически — модуль не импортируется.
+    """
+    from docpipe.arch import ArchRegistry, run_adapter
+    from docpipe.graph.entrypoints import from_registry, link
+
+    (tmp_path / "srv").mkdir()
+    (tmp_path / "srv" / "handlers.py").write_text(
+        "class ForecastHandler:\n    def run(self):\n        return 1\n", encoding="utf-8"
+    )
+    (tmp_path / "srv" / "registry.py").write_text(
+        "from srv.handlers import ForecastHandler\n\nSERVICES = {'forecast': ForecastHandler}\n",
+        encoding="utf-8",
+    )
+
+    produced = run_adapter(
+        "python_code",
+        {"path": "srv/registry.py", "variable": "SERVICES", "entry_kind": "service"},
+        tmp_path,
+        lambda value: Path(value),
+    )
+    registry = ArchRegistry(version="1", records=tuple(produced.records))
+    result = build(engine, tmp_path)
+    entries = from_registry(registry)
+    edges, report = link(entries, result.index.nodes, None)
+
+    assert [node.attributes["entry_kind"] for node in entries] == ["service"]
+    assert edges, "точка входа из реестра не связалась с классом"
+    assert report.linked
