@@ -20,6 +20,10 @@ from typing import Final
 
 from docpipe.arch.model import ArchRegistry
 from docpipe.graph.binding import BindingReport, binds, complete, dispatch
+from docpipe.graph.data import DataReport
+from docpipe.graph.data import collect as collect_data
+from docpipe.graph.data import from_registry as data_from_registry
+from docpipe.graph.data import merge as merge_data
 from docpipe.graph.engine import Engine, EngineGraph, EngineNode, EngineRun
 from docpipe.graph.entrypoints import EntryPointReport, from_manifest, from_registry, link
 from docpipe.graph.match import MatchReport, apply, match
@@ -64,6 +68,7 @@ class BuildResult:
     # Отчёт о корнях. `None` — ни реестра, ни манифеста не давали.
     entry_points: EntryPointReport | None = None
     binding: BindingReport | None = None
+    data: DataReport | None = None
 
 
 def language_of(file: str) -> str:
@@ -247,6 +252,25 @@ def build(
         )
         report.update(entry_report.as_counts())
 
+    # Узлы данных: из объявлений кода и из реестра. Сливаются по ключу —
+    # таблица, объявленная в реестре и использованная через контекст,
+    # это один узел с двумя источниками.
+    data_report: DataReport | None = None
+    if manifest is not None:
+        data_nodes, data_edges, data_report = collect_data(manifest, index.nodes)
+        index = GraphIndex(
+            nodes=index.nodes + tuple(data_nodes), edges=index.edges + tuple(data_edges)
+        )
+        report.update(data_report.as_counts())
+    if arch is not None:
+        roots = tuple(node for node in index.nodes if node.kind == "entry_point")
+        registry_nodes, registry_edges, registry_report = data_from_registry(arch, roots)
+        merged, joined = merge_data(index.nodes, registry_nodes)
+        index = GraphIndex(nodes=tuple(merged), edges=index.edges + tuple(registry_edges))
+        report.update(registry_report)
+        if joined:
+            report["узлов данных сведено из двух источников"] = joined
+
     meta = GraphMeta(
         generation="",
         engine_version=version,
@@ -267,4 +291,5 @@ def build(
         match=match_report,
         entry_points=entry_report,
         binding=binding_report,
+        data=data_report,
     )

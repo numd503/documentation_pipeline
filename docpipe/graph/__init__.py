@@ -7,6 +7,7 @@
 
 from docpipe.graph.binding import BindingReport, binds, complete
 from docpipe.graph.build import BuildResult, build, language_of, node_key, project
+from docpipe.graph.data import DataReport, data_key
 from docpipe.graph.entrypoints import EntryPointReport, entry_key
 from docpipe.graph.identity import member_key, parameter_types, symbol_member_key, symbol_type_key
 from docpipe.graph.match import MatchReport, match
@@ -33,6 +34,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "BindingReport",
     "BuildResult",
+    "DataReport",
     "EntryPointReport",
     "MatchReport",
     "GraphEdge",
@@ -43,6 +45,7 @@ __all__ = [
     "binds",
     "build",
     "complete",
+    "data_key",
     "entry_key",
     "language_of",
     "match",
