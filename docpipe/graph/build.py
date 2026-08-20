@@ -31,9 +31,9 @@ from docpipe.graph.match import MatchReport, apply, match
 from docpipe.graph.model import GraphEdge, GraphIndex, GraphMeta, GraphNode
 from docpipe.graph.reach import Reachability, compute
 from docpipe.graph.search import SearchEntry
+from docpipe.graph.search import entries as search_entries
 from docpipe.graph.web import WebReport
 from docpipe.graph.web import collect as collect_web
-from docpipe.graph.search import entries as search_entries
 from docpipe.model import Manifest
 
 # Расширение → язык. Служит одному решению: чьи рёбра брать. Список короткий
