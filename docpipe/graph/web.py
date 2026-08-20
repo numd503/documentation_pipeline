@@ -41,6 +41,9 @@ class WebReport:
     seams: int = 0
     unmatched_calls: int = 0
     pages_without_route: int = 0
+    # Совпавшие ключи: один маршрут у двух компонентов, два члена с одним
+    # именем. Законно и там и там, но знать об этом надо.
+    shared_keys: int = 0
     examples: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def as_counts(self) -> dict[str, int]:
@@ -50,6 +53,7 @@ class WebReport:
             "швов фронт → бэкенд": self.seams,
             "вызовов фронта без эндпоинта": self.unmatched_calls,
             "страниц без собранного маршрута": self.pages_without_route,
+            "узлов фронта с совпавшим ключом": self.shared_keys,
         }
 
 
@@ -62,9 +66,15 @@ def collect(
     web: Manifest, backend_entry_points: set[str]
 ) -> tuple[list[GraphNode], list[GraphEdge], WebReport]:
     """Узлы и рёбра фронта плюс швы с бэкендом."""
-    nodes: list[GraphNode] = []
+    # Узлы собираются в словарь по ключу, а не в список. Причина измерена
+    # на открытом репозитории: один маршрут бывает у двух компонентов
+    # (макет и содержимое), а у класса бывают два члена с одним именем
+    # (поле и геттер). И то и другое законно, и падать на этом индекс
+    # не должен — как не должен и молча терять второй узел.
+    nodes: dict[str, GraphNode] = {}
     edges: list[GraphEdge] = []
     by_fqn: dict[str, str] = {}
+    duplicates = 0
     pages = 0
     without_route = 0
     unmatched: list[str] = []
@@ -78,34 +88,34 @@ def collect(
         key = _node_key(symbol)
         by_fqn[symbol.fqn] = key
         file = symbol.sources[0].path if symbol.sources else ""
-        nodes.append(
-            GraphNode(
-                key=key,
-                kind="type",
-                name=symbol.name,
+        nodes[key] = GraphNode(
+            key=key,
+            kind="type",
+            name=symbol.name,
+            file=file,
+            lang="typescript",
+            source="web",
+            attributes={
+                "web_kind": document.kind,
+                "module": document.module,
+                "doc_node": document.id,
+                "fqn": symbol.fqn,
+            },
+        )
+        for item in symbol.members:
+            member_key = f"{key}.{item.name}"
+            if member_key in nodes:
+                duplicates += 1
+                continue
+            nodes[member_key] = GraphNode(
+                key=member_key,
+                kind="member",
+                name=item.name,
+                owner=symbol.name,
                 file=file,
                 lang="typescript",
                 source="web",
-                attributes={
-                    "web_kind": document.kind,
-                    "module": document.module,
-                    "doc_node": document.id,
-                    "fqn": symbol.fqn,
-                },
-            )
-        )
-        for item in symbol.members:
-            nodes.append(
-                GraphNode(
-                    key=f"{key}.{item.name}",
-                    kind="member",
-                    name=item.name,
-                    owner=symbol.name,
-                    file=file,
-                    lang="typescript",
-                    source="web",
-                    attributes={"module": document.module},
-                )
+                attributes={"module": document.module},
             )
 
     for document in web.nodes:
@@ -122,9 +132,9 @@ def collect(
                 without_route += 1
             for route in routes:
                 page_key = entry_key("page", route.path)
-                pages += 1
-                nodes.append(
-                    GraphNode(
+                if page_key not in nodes:
+                    pages += 1
+                    nodes[page_key] = GraphNode(
                         key=page_key,
                         kind="entry_point",
                         name=f"{document.title} ({route.path})",
@@ -139,7 +149,11 @@ def collect(
                             "module": document.module,
                         },
                     )
-                )
+                else:
+                    # Один маршрут на два компонента: макет и содержимое.
+                    # Узел остаётся один — маршрут и есть якорь, — а ребро
+                    # диспетчеризации добавляется ко второму компоненту тоже.
+                    duplicates += 1
                 edges.append(
                     GraphEdge(
                         kind="dispatches",
@@ -193,7 +207,7 @@ def collect(
             else:
                 unmatched.append(f"{call.key.http_method} {call.key.route} ← {call.file}")
 
-    known = {node.key for node in nodes}
+    known = set(nodes)
     edges = [edge for edge in edges if edge.source in known or edge.kind == "crosses"]
     report = WebReport(
         pages=pages,
@@ -201,10 +215,11 @@ def collect(
         seams=seams,
         unmatched_calls=len(unmatched),
         pages_without_route=without_route,
+        shared_keys=duplicates,
         examples={"вызов фронта без эндпоинта": tuple(sorted(unmatched)[:10])},
     )
     return (
-        sorted(nodes, key=lambda node: node.key),
+        sorted(nodes.values(), key=lambda node: node.key),
         sorted(edges, key=lambda edge: (edge.kind, edge.source, edge.target)),
         report,
     )

@@ -80,6 +80,25 @@ def sorted_edges(edges: tuple[GraphEdge, ...]) -> list[GraphEdge]:
     return sorted(edges, key=lambda edge: (edge.kind, edge.source, edge.target, edge.via))
 
 
+def _unique(nodes: list[GraphNode]) -> tuple[list[GraphNode], int]:
+    """Узлы без повторов ключа.
+
+    Последняя защита перед записью, а не замена аккуратности источников:
+    источники сводят свои совпадения сами и считают их. Здесь ловится
+    столкновение **между** источниками — например, тип из разбора и узел
+    фронта в одном файле. Падение с `UNIQUE constraint failed` на боевом
+    репозитории объясняет ровно ничего, а число объясняет.
+    """
+    seen: dict[str, GraphNode] = {}
+    dropped = 0
+    for node in nodes:
+        if node.key in seen:
+            dropped += 1
+            continue
+        seen[node.key] = node
+    return list(seen.values()), dropped
+
+
 def write_index(
     path: Path,
     index: GraphIndex,
@@ -94,6 +113,13 @@ def write_index(
     Порядок корней при этом хранится: биты маски назначены именно ему,
     и без него маска — набор чисел без смысла.
     """
+    nodes, dropped = _unique(sorted_nodes(index.nodes))
+    if dropped:
+        index = GraphIndex(nodes=tuple(nodes), edges=index.edges)
+        meta = meta.model_copy(
+            update={"report": {**meta.report, "узлов с совпавшим ключом отброшено": dropped}}
+        )
+
     generation = logical_hash(index)
     meta = meta.model_copy(update={"generation": generation, "schema_version": SCHEMA_VERSION})
 

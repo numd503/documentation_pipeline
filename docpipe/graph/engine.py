@@ -37,6 +37,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -86,6 +87,28 @@ NODE_KIND: Final[dict[str, str]] = {
 }
 
 
+# Литерал регулярного выражения из JS: `/&/g`, `/---/g`, `/%20/g`.
+# Маршрутом такое не является, а по форме на путь похоже.
+#
+# Тело **без косой черты**, флаги — только настоящие флаги регулярки.
+# Наивное `^/.*/[a-z]*$` ловит и `/api/items`: жадная точка съедает `/api`,
+# и «маршрут» объявляется мусором. Ошибка тихая — путь просто исчезает
+# из перекрёстной проверки, и число расхождения растёт без причины.
+_REGEX_LITERAL: Final[re.Pattern[str]] = re.compile(r"^/[^/]*/[gimsuy]*$")
+
+# Имя узла маршрута у разбора собрано с префиксом: `__route__ANY__/api/x`.
+_ROUTE_PREFIX: Final[str] = "__route__"
+
+
+def _split_route(name: str) -> tuple[str, str]:
+    """Разобрать имя узла маршрута на метод и путь."""
+    if not name.startswith(_ROUTE_PREFIX):
+        return "", name.strip()
+    rest = name[len(_ROUTE_PREFIX) :]
+    method, _, route = rest.partition("__")
+    return method.strip().upper(), route.strip()
+
+
 class EngineError(RuntimeError):
     """Отказ движка: не установлен, упал, вернул не-JSON.
 
@@ -130,6 +153,11 @@ class EngineGraph:
     # ровно для одного — увидеть, что метод создаёт объект запроса, у которого
     # есть объявленный обработчик (диспетчеризация по типу).
     usages: tuple[EngineEdge, ...] = ()
+    # Маршруты, которые разбор нашёл во фронтовом коде: пара «метод, путь».
+    # В индекс не идут — это перекрёстная проверка нашего разбора фронта,
+    # второй независимый счёт. Мусор отсеян и посчитан отдельно.
+    http_routes: tuple[tuple[str, str], ...] = ()
+    http_noise: int = 0
     # Отсеянное — не молчание, а числа для отчёта о неполноте.
     filtered_nodes: dict[str, int] = field(default_factory=dict)
     not_indexed: tuple[str, ...] = ()
@@ -266,6 +294,29 @@ class Engine:
 
     # ── чтение ───────────────────────────────────────────────────────────
 
+    def _http_routes(self, project: str, prefix: str) -> tuple[tuple[tuple[str, str], ...], int]:
+        """Маршруты, найденные разбором во фронтовом коде.
+
+        **Половина из них — мусор, и это измерено.** Узлы маршрутов собираются
+        по литералам, а литерал регулярного выражения из минифицированного
+        JS (`/&/g`, `/---/g`) выглядит как путь. Правило отсева записано здесь
+        и его срабатывания считаются: молча выброшенное ребро через месяц
+        неотличимо от потерянного.
+        """
+        found: set[tuple[str, str]] = set()
+        noise = 0
+        query = (
+            "MATCH (x:Method)-[:HTTP_CALLS]->(y:Route) RETURN x.qualified_name, y.qualified_name"
+        )
+        for row in self.query(project, query):
+            target = (row + ["", ""])[1].removeprefix(prefix)
+            method, route = _split_route(target)
+            if not route or _REGEX_LITERAL.match(route):
+                noise += 1
+                continue
+            found.add((method, route))
+        return tuple(sorted(found)), noise
+
     def read(
         self,
         project: str,
@@ -350,6 +401,8 @@ class Engine:
                     if source in known and target in known:
                         usages.append(EngineEdge(kind="usage", source=source, target=target))
 
+        routes, noise = self._http_routes(project, prefix)
+
         schema = self.schema(project)
         declared = schema["edges"]
         return EngineGraph(
@@ -360,5 +413,7 @@ class Engine:
             declared_all=declared,
             declared_node_labels=schema["nodes"],
             usages=tuple(sorted(usages, key=lambda item: (item.source, item.target))),
+            http_routes=routes,
+            http_noise=noise,
             filtered_nodes=filtered,
         )

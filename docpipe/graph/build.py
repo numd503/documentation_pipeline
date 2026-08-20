@@ -181,6 +181,12 @@ def project(graph: EngineGraph, engine_version: str) -> tuple[GraphIndex, dict[s
         read = graph.read_edges.get(kind, 0)
         if declared > read:
             count(f"рёбер {kind} вне наших меток", declared - read)
+    if graph.http_noise:
+        # Мусорные рёбра разбора: литералы регулярок из минифицированного JS,
+        # принятые за маршруты. Правило отсева записано в мосте, срабатывания
+        # считаются здесь.
+        count("рёбер разбора отсеяно как мусор (литералы регулярок)", graph.http_noise)
+
     for reason, number in graph.filtered_nodes.items():
         count(f"узлов разбора отсеяно: {reason}", number)
 
@@ -305,6 +311,22 @@ def build(
             nodes=index.nodes + tuple(web_nodes), edges=index.edges + tuple(web_edges)
         )
         report.update(web_report.as_counts())
+
+        # Перекрёстная проверка: тот же счёт вызовов, сделанный сторонним
+        # разбором. Расходятся формы, которые одна из сторон не видит, —
+        # это дешёвый детектор дыр в обоих, и он живёт в отчёте, а не
+        # в графе: рёбра разбора по TypeScript в индекс не проецируются.
+        ours = {
+            (call.key.http_method.upper(), call.key.route)
+            for node in web.nodes
+            for call in node.web_calls
+        }
+        theirs = {(method, route.strip("/").lower()) for method, route in graph.http_routes}
+        normalized = {(method, route.strip("/").lower()) for method, route in ours}
+        report["маршрутов фронта: у нас"] = len(ours)
+        report["маршрутов фронта: у разбора"] = len(theirs)
+        report["маршрутов фронта: только у нас"] = len(normalized - theirs)
+        report["маршрутов фронта: только у разбора"] = len(theirs - normalized)
 
     # Узлы данных: из объявлений кода и из реестра. Сливаются по ключу —
     # таблица, объявленная в реестре и использованная через контекст,

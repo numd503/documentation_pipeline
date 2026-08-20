@@ -188,3 +188,35 @@ def test_projection_is_pure(engine: Engine) -> None:
     first, _ = project(graph, "0.6.0")
     second, _ = project(graph, "0.6.0")
     assert logical_hash(first) == logical_hash(second)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Маршруты фронта у разбора: перекрёстная проверка и отсев мусора
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_route_name_is_split_into_method_and_path() -> None:
+    """Имя узла маршрута собрано с префиксом: `__route__ANY__/api/x`."""
+    from docpipe.graph.engine import _split_route
+
+    assert _split_route("__route__GET__/api/items") == ("GET", "/api/items")
+    assert _split_route("__route__ANY__/api/content/:app/query") == (
+        "ANY",
+        "/api/content/:app/query",
+    )
+    assert _split_route("api/items") == ("", "api/items")
+
+
+def test_regex_literals_are_not_routes() -> None:
+    """Половина найденных «маршрутов» — литералы регулярок из минифицированного
+    JS: `/&/g`, `/---/g`. По форме от пути неотличимы, маршрутом не являются,
+    и отсев их считается — молча выброшенное ребро через месяц неотличимо
+    от потерянного.
+    """
+    from docpipe.graph.engine import _REGEX_LITERAL
+
+    assert _REGEX_LITERAL.match("/&/g")
+    assert _REGEX_LITERAL.match("/---/g")
+    assert _REGEX_LITERAL.match("/%20/g")
+    assert not _REGEX_LITERAL.match("/api/items")
+    assert not _REGEX_LITERAL.match("/api/content/:app/query")
