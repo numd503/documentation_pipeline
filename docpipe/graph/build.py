@@ -19,7 +19,9 @@ from pathlib import Path
 from typing import Final
 
 from docpipe.graph.engine import Engine, EngineGraph, EngineNode, EngineRun
+from docpipe.graph.match import MatchReport, apply, match
 from docpipe.graph.model import GraphEdge, GraphIndex, GraphMeta, GraphNode
+from docpipe.model import Manifest
 
 # Расширение → язык. Служит одному решению: чьи рёбра брать. Список короткий
 # намеренно — язык, которого здесь нет, попадает в «прочее» и виден в отчёте.
@@ -52,6 +54,10 @@ class BuildResult:
     index: GraphIndex
     meta: GraphMeta
     run: EngineRun
+    # Отчёт сопоставления с манифестом. `None` — манифест не давали,
+    # и это законно: индекс собирается и без него, просто у узлов не будет
+    # ни имени документа, ни модуля.
+    match: MatchReport | None = None
 
 
 def language_of(file: str) -> str:
@@ -172,12 +178,20 @@ def build(
     root: Path,
     *,
     is_excluded: object = None,
+    manifest: Manifest | None = None,
 ) -> BuildResult:
-    """Полный цикл: проверка бинаря, индексация, чтение, проекция."""
+    """Полный цикл: проверка бинаря, индексация, чтение, проекция, сопоставление."""
     version = engine.check()
     run = engine.index(root)
     graph = engine.read(run.project, is_excluded=is_excluded)  # type: ignore[arg-type]
     index, report = project(graph, version)
+
+    match_report: MatchReport | None = None
+    if manifest is not None:
+        attributes, match_report = match(index.nodes, manifest)
+        index = GraphIndex(nodes=apply(index.nodes, attributes), edges=index.edges)
+        report.update(match_report.as_counts())
+
     meta = GraphMeta(
         generation="",
         engine_version=version,
@@ -191,4 +205,4 @@ def build(
         },
         report=report,
     )
-    return BuildResult(index=index, meta=meta, run=run)
+    return BuildResult(index=index, meta=meta, run=run, match=match_report)

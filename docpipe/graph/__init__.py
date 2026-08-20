@@ -6,6 +6,8 @@
 """
 
 from docpipe.graph.build import BuildResult, build, language_of, node_key, project
+from docpipe.graph.identity import member_key, parameter_types, symbol_member_key, symbol_type_key
+from docpipe.graph.match import MatchReport, match
 from docpipe.graph.model import (
     EDGE_KINDS,
     NODE_KINDS,
@@ -28,6 +30,7 @@ __all__ = [
     "NODE_KINDS",
     "SCHEMA_VERSION",
     "BuildResult",
+    "MatchReport",
     "GraphEdge",
     "GraphIndex",
     "GraphMeta",
@@ -35,6 +38,11 @@ __all__ = [
     "IndexVersionError",
     "build",
     "language_of",
+    "match",
+    "member_key",
+    "parameter_types",
+    "symbol_member_key",
+    "symbol_type_key",
     "logical_hash",
     "node_key",
     "project",

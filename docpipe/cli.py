@@ -1787,6 +1787,13 @@ app.add_typer(graph_app, name="graph")
 @graph_app.command("build")
 def graph_build(
     root: Annotated[Path, typer.Option("--root", help="Корень репозитория с исходниками.")],
+    manifest_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--manifest",
+            help="Манифест шага 1: даёт узлам модуль, FQN и связь с документом.",
+        ),
+    ] = None,
     out: Annotated[
         Path | None,
         typer.Option("--out", help="Куда записать индекс. Без флага — `graph.out`."),
@@ -1827,9 +1834,17 @@ def graph_build(
     def excluded(path: str) -> bool:
         return is_excluded(path, ruleset_excludes)
 
+    manifest = None
+    if manifest_path is not None:
+        try:
+            manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            typer.echo(f"Не удалось прочитать манифест: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+
     typer.echo(f"Разбор репозитория {root}…")
     try:
-        result = build_graph(engine, root, is_excluded=excluded)
+        result = build_graph(engine, root, is_excluded=excluded, manifest=manifest)
     except EngineError as exc:
         typer.echo(f"Разбор не состоялся: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -1848,6 +1863,21 @@ def graph_build(
         typer.echo("Что не вошло в индекс:")
         for category, number in sorted(meta.report.items()):
             typer.echo(f"  {category}: {number}")
+
+    if result.match is not None:
+        typer.echo("\nСопоставление с манифестом:")
+        for category, number in result.match.as_counts().items():
+            typer.echo(f"  {category}: {number}")
+        for category, examples in result.match.examples.items():
+            if examples:
+                typer.echo(f"  {category} — примеры:")
+                for example in examples[:5]:
+                    typer.echo(f"    {example}")
+        typer.echo(
+            "  «есть в графе — нет в манифесте» велико по построению: манифест — "
+            "дерево документации, а не полный список объявлений. Смотреть надо "
+            "на обратное число."
+        )
 
 
 @graph_app.command("info")
