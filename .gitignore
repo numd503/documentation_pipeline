@@ -34,10 +34,8 @@ artifacts/
 # заново — в CLAUDE.md, раздел «Инструменты разведки: версии заморожены».
 venv-for-codeindex/
 
-# Артефакты repowise и редактора: к проекту не относятся
-.repowise/
-.repowise-workspace.yaml
-repowise-check.md
+# Машинно-локальное: настройки редактора и регистрация MCP-серверов.
+# К проекту не относятся и у каждого свои.
 .vscode/
 .mcp.json
 
