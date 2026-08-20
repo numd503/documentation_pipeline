@@ -47,6 +47,9 @@ from docpipe.explain import ANY, format_selection, select, selection_json
 from docpipe.graph import build as build_graph
 from docpipe.graph import read_index, read_meta, read_reach, write_index
 from docpipe.graph.engine import Engine, EngineError
+from docpipe.graph.evaluate import format_score
+from docpipe.graph.evaluate import load as load_questions
+from docpipe.graph.evaluate import run as run_questions
 from docpipe.graph.mcp import Server as McpServer
 from docpipe.graph.mcp import serve as serve_mcp
 from docpipe.graph.reach import DEFAULT_FANOUT_THRESHOLD
@@ -2293,6 +2296,42 @@ def graph_serve(
 
     server = McpServer(index or Path(settings.graph.out), root)
     serve_mcp(server)
+
+
+@graph_app.command("eval")
+def graph_eval(
+    questions: Annotated[Path, typer.Argument(help="Файл оценочного набора.")],
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    fail_under: Annotated[
+        float,
+        typer.Option("--fail-under", help="Вернуть ненулевой код, если полнота ниже."),
+    ] = 0.0,
+) -> None:
+    """Прогнать оценочный набор: полнота и точность ответов.
+
+    Числа идут в журнал при каждом релизе — в том числе при смене версии
+    разборщика: обновление бинаря без прогона набора запрещено, это
+    и есть регрессионный тест на чужой код.
+    """
+    path, _ = _open_index(index, config)
+    try:
+        set_of_questions = load_questions(questions)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Набор не прочитан: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    score = run_questions(
+        set_of_questions, path, read_index(path), read_meta(path), read_reach(path)
+    )
+    typer.echo(format_score(score), nl=False)
+    if score.recall < fail_under:
+        typer.echo(f"Полнота {score.recall} ниже порога {fail_under}", err=True)
+        raise typer.Exit(code=1)
 
 
 @graph_app.command("info")

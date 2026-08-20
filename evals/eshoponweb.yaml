@@ -1,0 +1,59 @@
+# Оценочный набор на открытом репозитории eShopOnWeb (G18 п. 2).
+#
+# Второй набор с другим стеком: .NET без Angular, с MediatR и Razor Pages.
+# Ни одной черты целевой системы у него нет — ни XML-реестров, ни грид-сервисов,
+# ни русских названий, — и это единственная проверка правила «инструмент
+# настраивается на репозиторий, а не знает его наизусть», которую нельзя
+# обойти рассуждением.
+#
+# Как собрать индекс:
+#
+#   docpipe scan --root <eShopOnWeb> --out eshop-tree.json --config <конфиг>
+#   docpipe graph build --root <eShopOnWeb> --manifest eshop-tree.json --config <конфиг>
+#
+# Конфигурация: `dispatch_interfaces: [IRequestHandler]` и путь к разборщику.
+
+questions:
+  - id: эндпоинт-достигает-контроллер
+    why: базовый вопрос — что достигает точка входа, найденная в коде
+    form: reaches
+    args:
+      root: "entry:http_endpoint:get order/myorders"
+    expect:
+      - "OrderController.MyOrders"
+
+  - id: приблизительное-имя-сервиса
+    why: вопрос с приблизительным именем — то, на чём ломается точный поиск
+    form: resolve
+    args:
+      query: "basketservice"
+    expect:
+      - "BasketService"
+
+  - id: влияние-правки-сервиса
+    why: список изменённых файлов на входе — основной сценарий в PR
+    form: affects
+    args:
+      keys:
+        - "src/Web/Controllers/OrderController.cs"
+    expect:
+      - "entry:http_endpoint"
+
+  - id: узел-данных-по-имени-сущности
+    why: >-
+      имя таблицы здесь выведено по соглашению из `IRepository<Basket>`,
+      и ответ обязан это показывать — иначе выведенное неотличимо
+      от прочитанного
+    form: resolve
+    args:
+      query: "basket"
+    expect:
+      - "data:basket"
+
+  - id: карточка-узла-данных
+    why: происхождение имени — часть ответа, а не примечание
+    form: card
+    args:
+      node: "data:basket"
+    expect:
+      - "\"origin\": \"convention\""
