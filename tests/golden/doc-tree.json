@@ -1,4 +1,31 @@
 {
+  "di_registrations": [
+    {
+      "confidence": "high",
+      "file": "src/Sample.Pricing.Api/Program.cs",
+      "impl_type": "PricingService",
+      "lifetime": "scoped",
+      "line": 12,
+      "service_type": "IPricingService"
+    },
+    {
+      "confidence": "high",
+      "file": "src/Sample.Pricing.Api/Program.cs",
+      "impl_type": "CurveProvider",
+      "lifetime": "singleton",
+      "line": 13,
+      "service_type": "IPricingProvider<string>"
+    },
+    {
+      "confidence": "high",
+      "file": "src/Sample.Pricing.Api/Program.cs",
+      "impl_type": "ValuationWorkflow",
+      "lifetime": "transient",
+      "line": 14,
+      "service_type": "ValuationWorkflow"
+    }
+  ],
+  "dispatch_handlers": [],
   "modules": [
     {
       "domain": "Sample.Common",

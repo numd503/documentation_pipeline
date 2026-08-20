@@ -21,7 +21,7 @@ from docpipe import __version__
 from docpipe.cache import ParseCache
 from docpipe.classify import Ruleset, load_ruleset
 from docpipe.config import DocpipeConfig
-from docpipe.discovery import discover, in_scope, normalize_scope
+from docpipe.discovery import discover, in_scope, map_files_to_modules, normalize_scope
 from docpipe.dotnet.csproj import parse_csproj, resolve_references
 from docpipe.dotnet.endpoints import extract_endpoints
 from docpipe.dotnet.parser import parse_source
@@ -29,6 +29,7 @@ from docpipe.dotnet.resolve import build_symbol_index, compute_closures
 from docpipe.hashing import content_hash, stable_json_dumps
 from docpipe.merge import merge_manifests, node_in_scope
 from docpipe.model import (
+    DispatchDeclaration,
     DocNode,
     FileParseResult,
     Manifest,
@@ -96,28 +97,6 @@ def write_run_meta(meta: RunMeta, out: Path) -> None:
 # --------------------------------------------------------------------------------------
 # Привязка файлов к модулям
 # --------------------------------------------------------------------------------------
-
-
-def map_files_to_modules(cs_files: list[str], csproj_files: list[str]) -> dict[str, str]:
-    """Файл -> `.csproj` ближайшего вверх по дереву проекта.
-
-    Файлы, не попавшие ни в один проект, в результат не входят: документировать
-    код вне проектов некуда. Такое встречается — общий код, подключённый через
-    `<Compile Include>`, физически лежит вне каталогов проектов (см. T05b).
-    """
-    directories = {str(Path(c).parent): c for c in csproj_files}
-
-    mapping: dict[str, str] = {}
-    for relative in cs_files:
-        current = Path(relative).parent
-        while True:
-            if str(current) in directories:
-                mapping[relative] = directories[str(current)]
-                break
-            if current == Path("."):
-                break
-            current = current.parent
-    return mapping
 
 
 # --------------------------------------------------------------------------------------
@@ -236,6 +215,74 @@ def scan(
     return result.manifest, result.meta
 
 
+def collect_dispatch(
+    symbols: dict[str, Symbol], interfaces: list[str]
+) -> list[DispatchDeclaration]:
+    """Объявленная диспетчеризация: тип, обслуживающий запрос.
+
+    Ищется по списку интерфейсов из конфигурации, а не по зашитым именам:
+    механика одна, а называется интерфейс на каждом репозитории по-своему.
+    Пустой список — пустой результат, и это умолчание.
+
+    Тип запроса берётся ПЕРВЫМ аргументом дженерика. Второй — это результат,
+    и путать их нельзя: диспетчер выбирает обработчик по запросу.
+    """
+    if not interfaces:
+        return []
+
+    wanted = {name.strip() for name in interfaces if name.strip()}
+    found: list[DispatchDeclaration] = []
+    for symbol in symbols.values():
+        for raw in symbol.base_types_raw:
+            head, _, arguments = raw.partition("<")
+            head = head.strip().rsplit(".", 1)[-1]
+            if head not in wanted or not arguments:
+                continue
+            request = split_type_arguments(arguments.rstrip(">"))
+            if not request:
+                continue
+            source = symbol.sources[0] if symbol.sources else None
+            found.append(
+                DispatchDeclaration(
+                    handler_fqn=symbol.fqn,
+                    interface=head,
+                    request_type=request[0],
+                    module=symbol.module,
+                    file=source.path if source else "",
+                    line=source.start if source else 0,
+                )
+            )
+    return sorted(
+        found,
+        key=lambda item: (item.file, item.line, item.handler_fqn, item.request_type),
+    )
+
+
+def split_type_arguments(text: str) -> list[str]:
+    """Аргументы дженерика верхнего уровня.
+
+    Глубина считается по скобкам: `IRequestHandler<GetOrders,
+    IEnumerable<OrderViewModel>>` — два аргумента, а не три, и наивный
+    `split(",")` разрезал бы второй пополам.
+    """
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for char in text:
+        if char in "<([":
+            depth += 1
+        elif char in ">)]":
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    if current:
+        parts.append("".join(current).strip())
+    return [part for part in parts if part]
+
+
 def run(
     root: Path,
     config: DocpipeConfig | None = None,
@@ -288,12 +335,15 @@ def run(
     file_to_module = map_files_to_modules([r.path for r in all_results], known_csproj)
     index = compute_closures(build_symbol_index(all_results, file_to_module))
 
+    registrations = [
+        registration for result in all_results for registration in result.di_registrations
+    ]
     configured, nodes = build_nodes(
         index,
         modules,
         ruleset,
         config,
-        [registration for result in all_results for registration in result.di_registrations],
+        registrations,
         {key: extract_endpoints(symbol) for key, symbol in index.items()},
     )
 
@@ -302,6 +352,13 @@ def run(
         parser=versions,
         modules=configured,
         nodes=nodes,
+        dispatch_handlers=collect_dispatch(index, config.dispatch_interfaces),
+        # Явная сортировка, а не порядок обхода: список идёт в манифест,
+        # а манифест обязан быть байт-в-байт воспроизводимым.
+        di_registrations=sorted(
+            registrations,
+            key=lambda item: (item.file, item.line, item.service_type, item.impl_type or ""),
+        ),
     )
 
     if scope is not None:

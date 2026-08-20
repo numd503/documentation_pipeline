@@ -77,6 +77,7 @@
 | `templates` | | ✓ | ✓ | ✓ | ✓ | |
 | `ownership` | | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `registries` | | ○ | ○ | ○ | ✓ | ✓ | |
+| `dispatch_interfaces` | ✓ | | | | | | |
 | `arch` | | | | | | | ✓ |
 | `arch_adapters` | | | | | | | ✓ |
 | `graph.*` | | | | | | | |

@@ -135,6 +135,28 @@ class DiRegistration(_Base):
     line: int
 
 
+class DispatchDeclaration(_Base):
+    """Объявленная диспетчеризация по типу: «этот тип обслуживает такой запрос».
+
+    Форма `class Handler : IRequestHandler<GetOrders, Result>` встречается
+    у медиаторов, шин команд и обработчиков сообщений. Извлекается она вместе
+    с остальными объявлениями и **по списку интерфейсов из конфигурации**:
+    зашивать сюда имя конкретной библиотеки нельзя — на другом репозитории
+    интерфейс называется иначе, а механика та же.
+
+    Ключевое здесь то же, что и в цепочке фронта: **тип запроса живёт
+    на ребре, а не на вызове**. Один и тот же метод обработчика зовут
+    и диспетчер, и код напрямую.
+    """
+
+    handler_fqn: str
+    interface: str
+    request_type: str
+    module: str
+    file: str
+    line: int
+
+
 class ImportedName(_Base):
     """Одно имя, пришедшее из другого модуля.
 
@@ -173,6 +195,11 @@ class FileParseResult(_Base):
     imports: list[ModuleImport] = Field(default_factory=list)
     declarations: list[RawDeclaration] = Field(default_factory=list)
     di_registrations: list[DiRegistration] = Field(default_factory=list)
+
+    # Объявленная диспетчеризация по типу запроса. Пусто, пока в конфигурации
+    # не назван ни один интерфейс: механика общая, а имена интерфейсов
+    # у каждого репозитория свои.
+    dispatch_handlers: list[DispatchDeclaration] = Field(default_factory=list)
     parse_errors: int = 0
 
 
@@ -436,6 +463,19 @@ class Manifest(_Base):
     partial: PartialInfo | None = None
     modules: list[Module] = Field(default_factory=list)
     nodes: list[DocNode] = Field(default_factory=list)
+
+    # Регистрации контейнера — такой же извлечённый факт о коде, как эндпоинты
+    # контроллеров, и извлекаются они тем же проходом. Раньше они жили внутри
+    # сборки узлов и выбрасывались; теперь остаются в манифесте, потому что
+    # связывание вызовов через интерфейс (G04) без них не делается вовсе,
+    # а второй разбор тех же файлов ради того же факта — это удвоенный проход
+    # по репозиторию.
+    di_registrations: list[DiRegistration] = Field(default_factory=list)
+
+    # Объявленная диспетчеризация по типу запроса. Пусто, пока в конфигурации
+    # не назван ни один интерфейс: механика общая, а имена интерфейсов
+    # у каждого репозитория свои.
+    dispatch_handlers: list[DispatchDeclaration] = Field(default_factory=list)
 
 
 class RunMeta(_Base):

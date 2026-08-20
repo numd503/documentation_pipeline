@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Final
 
 from docpipe.arch.model import ArchRegistry
+from docpipe.graph.binding import BindingReport, binds, complete, dispatch
 from docpipe.graph.engine import Engine, EngineGraph, EngineNode, EngineRun
 from docpipe.graph.entrypoints import EntryPointReport, from_manifest, from_registry, link
 from docpipe.graph.match import MatchReport, apply, match
@@ -62,6 +63,7 @@ class BuildResult:
     match: MatchReport | None = None
     # Отчёт о корнях. `None` — ни реестра, ни манифеста не давали.
     entry_points: EntryPointReport | None = None
+    binding: BindingReport | None = None
 
 
 def language_of(file: str) -> str:
@@ -190,12 +192,45 @@ def build(
     run = engine.index(root)
     graph = engine.read(run.project, is_excluded=is_excluded)  # type: ignore[arg-type]
     index, report = project(graph, version)
+    # Полное имя разбора → узел: обращения приходят в его именах, а индекс
+    # адресуется нашими ключами, и перевод обязан быть один.
+    _by_name = {item.qualified_name: item for item in graph.nodes}
 
     match_report: MatchReport | None = None
     if manifest is not None:
         attributes, match_report = match(index.nodes, manifest)
         index = GraphIndex(nodes=apply(index.nodes, attributes), edges=index.edges)
         report.update(match_report.as_counts())
+
+    # Связывание идёт ПОСЛЕ сопоставления и ДО корней: довершённые рёбра
+    # вызова участвуют в достижимости так же, как чужие, а корни связываются
+    # уже с полным набором узлов.
+    # Диспетчеризация по типу запроса: объявления берутся из манифеста,
+    # места отправки — из обращений члена к типу. Обращения в индекс
+    # не проецируются: это не рёбра вызова.
+    if manifest is not None and manifest.dispatch_handlers:
+        usages = tuple((edge.source, edge.target) for edge in graph.usages)
+        resolved_usages = tuple(
+            (node_key(_by_name[source]), node_key(_by_name[target]))
+            for source, target in usages
+            if source in _by_name and target in _by_name
+        )
+        dispatch_edges, dispatch_report = dispatch(
+            index.nodes, resolved_usages, list(manifest.dispatch_handlers)
+        )
+        index = GraphIndex(nodes=index.nodes, edges=index.edges + tuple(dispatch_edges))
+        report.update(dispatch_report)
+
+    binding_report: BindingReport | None = None
+    if manifest is not None and manifest.di_registrations:
+        bind_edges, binding_report = binds(list(manifest.di_registrations), index.nodes, manifest)
+        completed, binding_report = complete(
+            index.nodes, index.edges, bind_edges, binding_report, manifest
+        )
+        index = GraphIndex(
+            nodes=index.nodes, edges=index.edges + tuple(bind_edges) + tuple(completed)
+        )
+        report.update(binding_report.as_counts())
 
     # Корни собираются ПОСЛЕ сопоставления: связывание с кодом опирается
     # на полное имя типа, а оно приходит из манифеста.
@@ -226,5 +261,10 @@ def build(
         report=report,
     )
     return BuildResult(
-        index=index, meta=meta, run=run, match=match_report, entry_points=entry_report
+        index=index,
+        meta=meta,
+        run=run,
+        match=match_report,
+        entry_points=entry_report,
+        binding=binding_report,
     )

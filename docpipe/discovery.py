@@ -175,3 +175,25 @@ def discover(
         html_files=sorted(found["html_files"]),
         web_project_files=sorted(found["web_project_files"]),
     )
+
+
+def map_files_to_modules(cs_files: list[str], csproj_files: list[str]) -> dict[str, str]:
+    """Файл -> `.csproj` ближайшего вверх по дереву проекта.
+
+    Файлы, не попавшие ни в один проект, в результат не входят: документировать
+    код вне проектов некуда. Такое встречается — общий код, подключённый через
+    `<Compile Include>`, физически лежит вне каталогов проектов (см. T05b).
+    """
+    directories = {str(Path(c).parent): c for c in csproj_files}
+
+    mapping: dict[str, str] = {}
+    for relative in cs_files:
+        current = Path(relative).parent
+        while True:
+            if str(current) in directories:
+                mapping[relative] = directories[str(current)]
+                break
+            if current == Path("."):
+                break
+            current = current.parent
+    return mapping

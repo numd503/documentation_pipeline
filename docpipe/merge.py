@@ -9,7 +9,7 @@
 """
 
 from docpipe.discovery import in_scope, normalize_scope
-from docpipe.model import DocNode, Manifest, Module, PartialInfo
+from docpipe.model import DiRegistration, DocNode, Manifest, Module, PartialInfo
 
 
 def node_in_scope(node: DocNode, scope: list[tuple[str, ...]] | None) -> bool:
@@ -41,10 +41,25 @@ def merge_manifests(previous: Manifest, partial: Manifest, scope: list[str]) -> 
     modules: dict[str, Module] = {module.id: module for module in previous.modules}
     modules.update({module.id: module for module in partial.modules})
 
+    # Регистрации сливаются по тому же правилу, что и узлы: из старого
+    # манифеста берутся только те, чей файл вне скоупа. Без этой строки
+    # скоуп-прогон терял бы все регистрации за пределами скоупа — и связывание
+    # вызовов через интерфейс (G04) на частичном манифесте молча теряло бы
+    # половину рёбер.
+    registrations: list[DiRegistration] = [
+        registration
+        for registration in previous.di_registrations
+        if not in_scope(registration.file, normalized)
+    ] + list(partial.di_registrations)
+
     return Manifest(
         ruleset_version=partial.ruleset_version,
         parser=partial.parser,
         partial=PartialInfo(scope=sorted(scope), outside_from_cache=True),
         modules=sorted(modules.values(), key=lambda module: module.id),
         nodes=sorted(nodes.values(), key=lambda node: node.id),
+        di_registrations=sorted(
+            registrations,
+            key=lambda item: (item.file, item.line, item.service_type, item.impl_type or ""),
+        ),
     )

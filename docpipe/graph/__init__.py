@@ -5,6 +5,7 @@
 отсюда и о нём не знают ничего (правило Р13).
 """
 
+from docpipe.graph.binding import BindingReport, binds, complete
 from docpipe.graph.build import BuildResult, build, language_of, node_key, project
 from docpipe.graph.entrypoints import EntryPointReport, entry_key
 from docpipe.graph.identity import member_key, parameter_types, symbol_member_key, symbol_type_key
@@ -30,6 +31,7 @@ __all__ = [
     "EDGE_KINDS",
     "NODE_KINDS",
     "SCHEMA_VERSION",
+    "BindingReport",
     "BuildResult",
     "EntryPointReport",
     "MatchReport",
@@ -38,7 +40,9 @@ __all__ = [
     "GraphMeta",
     "GraphNode",
     "IndexVersionError",
+    "binds",
     "build",
+    "complete",
     "entry_key",
     "language_of",
     "match",

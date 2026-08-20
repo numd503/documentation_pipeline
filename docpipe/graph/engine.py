@@ -125,6 +125,11 @@ class EngineGraph:
     # объяснения выглядит как потеря семидесяти восьми.
     declared_all: dict[str, int] = field(default_factory=dict)
     declared_node_labels: dict[str, int] = field(default_factory=dict)
+    # Обращения члена к типу. В индекс НЕ проецируются: это не «неразрешённый
+    # вызов», а смесь чтений полей, констант и упоминаний типов. Нужны они
+    # ровно для одного — увидеть, что метод создаёт объект запроса, у которого
+    # есть объявленный обработчик (диспетчеризация по типу).
+    usages: tuple[EngineEdge, ...] = ()
     # Отсеянное — не молчание, а числа для отчёта о неполноте.
     filtered_nodes: dict[str, int] = field(default_factory=dict)
     not_indexed: tuple[str, ...] = ()
@@ -329,6 +334,22 @@ class Engine:
                         count += 1
             read_counts[EDGE_KIND[edge_type]] = count
 
+        usages: list[EngineEdge] = []
+        for source_label in ("Method", "Function"):
+            for target_label in ("Class", "Interface", "Enum"):
+                query = (
+                    f"MATCH (x:{source_label})-[:USAGE]->(y:{target_label}) "
+                    "RETURN x.qualified_name, y.qualified_name"
+                )
+                for row in self.query(project, query):
+                    source, target = (row + ["", ""])[:2]
+                    if not source or not target:
+                        continue
+                    source = source.removeprefix(prefix)
+                    target = target.removeprefix(prefix)
+                    if source in known and target in known:
+                        usages.append(EngineEdge(kind="usage", source=source, target=target))
+
         schema = self.schema(project)
         declared = schema["edges"]
         return EngineGraph(
@@ -338,5 +359,6 @@ class Engine:
             read_edges=read_counts,
             declared_all=declared,
             declared_node_labels=schema["nodes"],
+            usages=tuple(sorted(usages, key=lambda item: (item.source, item.target))),
             filtered_nodes=filtered,
         )
