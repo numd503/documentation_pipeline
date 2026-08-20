@@ -27,3 +27,17 @@ artifacts/
 
 # Рабочие каталоги Claude Code: к проекту не относятся
 .claude/
+
+# Окружение code-index-mcp: отдельный venv, потому что версия там заморожена
+# (2.17.0) и не должна ехать вместе с зависимостями docpipe при `uv sync`.
+# Каталог в git не входит: это сотни мегабайт чужих пакетов. Как его собрать
+# заново — в CLAUDE.md, раздел «Инструменты разведки: версии заморожены».
+venv-for-codeindex/
+
+# Артефакты repowise и редактора: к проекту не относятся
+.repowise/
+.repowise-workspace.yaml
+repowise-check.md
+.vscode/
+.mcp.json
+

@@ -313,9 +313,19 @@ SQLite обеспечить трудно; вместо него хэш от от
 **Через CLI, как с подпроцессом.** MCP-протокол не обязателен:
 
 ```
-codebase-memory-mcp cli --json index_repository --repo-path <путь> --mode fast
-codebase-memory-mcp cli --json query_graph --project <имя> --query "<Cypher>"
+codebase-memory-mcp cli index_repository '{"repo_path":"<путь>","mode":"fast"}'
+codebase-memory-mcp cli query_graph '{"project":"<имя>","query":"<Cypher>"}'
 ```
+
+**Форма вызова у 0.6.0 другая, чем записано в findings.** Протокол снимался
+на v0.10.8, где у `cli` были флаги; в 0.6.0 подкоманда — это `cli <tool> '<json>'`
+с одним позиционным JSON-аргументом. Флаг `--json` там не флаг, а первое слово
+после `cli`, поэтому строка из findings падает с `unknown tool: --json` —
+и падает **громко**, что в данном случае повезло. Сами возможности на месте:
+`mode` со значениями `full`/`moderate`/`fast` объявлен в схеме инструмента
+(умолчание — `full`), `query_graph` принимает `project`, `query` и `max_rows`.
+Это первая подтверждённая точка дрейфа между 0.6.0 и v0.10.8, и она же —
+довод за то, что перемер G01-п.1 не формальность.
 
 Движок зовётся как `git` — детерминированно, без демона, без сети. Читающее
 подмножество openCypher (`MATCH`/`WHERE`/`RETURN`/агрегаты) — единственный
