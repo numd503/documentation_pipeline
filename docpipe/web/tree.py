@@ -78,6 +78,8 @@ from docpipe.web.store import (
     extract_dispatches,
     extract_selects,
 )
+from docpipe.web.templates import TEMPLATE_MEMBER, template_of
+from docpipe.web.templates import calls as template_calls
 from docpipe.web.usage import (
     RawUsage,
     constructor_bindings,
@@ -601,11 +603,66 @@ def _store_usages_of(
     return [found[key] for key in sorted(found)], counters
 
 
+def _template_usages(
+    root: Path,
+    symbol: Symbol,
+    parsed_by_file: dict[str, _Parsed],
+    ctx: ResolveContext,
+    by_fqn: dict[str, Symbol],
+) -> tuple[list[Usage], Counter[str]]:
+    """Обращения из шаблона компонента.
+
+    Известная дыра разбора `.ts`: `(click)="save()"` и `service.list() | async`
+    живут в разметке. Для страницы это существенно — метод, который зовут
+    только из шаблона, иначе выглядит мёртвым, а сервис, к которому обращаются
+    прямо из разметки, не связан со страницей вовсе.
+
+    Источником вызова записывается **шаблон**, а не член: вызов пишет разметка,
+    и приписать его конструктору или первому методу значило бы соврать про то,
+    кто зовёт.
+    """
+    template = template_of(root, symbol)
+    counters: Counter[str] = Counter()
+    if template is None:
+        return [], counters
+
+    counters["templates"] += 1
+    members = {member.name for member in symbol.members}
+    bindings = _bindings_of(symbol, parsed_by_file, by_fqn)
+    file = symbol.sources[0].path if symbol.sources else ""
+
+    found: dict[tuple[str, str, str], Usage] = {}
+    for call in template_calls(template.text, members, set(bindings)):
+        if call.own:
+            # Свой член ребром НЕ становится: `Usage` — это обращение узла
+            # к члену **другого** узла, исамоссылка сломало бы и модель,
+            # и список зависимостей страницы. Число печатается: оно отвечает
+            # на вопрос «сколько членов зовут только из разметки», а сама
+            # достижимость такого члена от страницы обеспечивается связью
+            # «тип содержит член» в графе.
+            counters["template_own"] += 1
+            continue
+
+        bound = bindings.get(call.receiver)
+        declared = resolve_name(bound, file, ctx) if bound else None
+        target = f"{module_fqn(declared)}.{bound}" if declared and bound else ""
+        if not target or target not in by_fqn:
+            counters["template_external"] += 1
+            continue
+        found[(target, call.member, TEMPLATE_MEMBER)] = Usage(
+            target=target, member=call.member, via=TEMPLATE_MEMBER
+        )
+        counters["template_resolved"] += 1
+
+    return [found[key] for key in sorted(found)], counters
+
+
 def _usages(
     index: dict[str, Symbol],
     parsed: list[_Parsed],
     ranges: MemberRanges,
     ctx: ResolveContext,
+    root: Path | None = None,
 ) -> tuple[dict[str, list[Usage]], Counter[str], dict[tuple[str, str], str]]:
     """Граф вызовов: FQN источника -> рёбра, счётчики неудач и типы экшенов."""
     parsed_by_file = {item.result.path: item for item in parsed}
@@ -622,7 +679,17 @@ def _usages(
         )
         counters.update(counted)
 
-        merged = {(item.target, item.member, item.via): item for item in direct + through_store}
+        from_template: list[Usage] = []
+        if root is not None:
+            from_template, counted = _template_usages(
+                root, by_fqn[fqn], parsed_by_file, ctx, by_fqn
+            )
+            counters.update(counted)
+
+        merged = {
+            (item.target, item.member, item.via): item
+            for item in direct + through_store + from_template
+        }
         if merged:
             edges[fqn] = [merged[key] for key in sorted(merged)]
     return edges, counters, handlers.type_by_member
@@ -910,7 +977,7 @@ def run(
     )
 
     ranges = member_ranges(index.values())
-    uses, usage_counts, action_of_member = _usages(index, parsed, ranges, context)
+    uses, usage_counts, action_of_member = _usages(index, parsed, ranges, context, root)
     calls, calls_by_file = _calls_by_file(parsed, modules, config, ranges, action_of_member)
     sources = {relative: (root / relative).read_bytes() for relative in found.ts_files}
     routes = build_routes(sources, context)
@@ -969,6 +1036,14 @@ def run(
             "dispatches": usage_counts["dispatches"],
             "actions_without_handler": usage_counts["actions_without_handler"],
             "selects": usage_counts["selects"],
+            # Шаблоны: сколько прочитано, сколько обращений из разметки
+            # дошло до чужого узла и сколько пришлось на свои члены.
+            # Последнее число — это ровно те методы, которые в `.ts`
+            # выглядят никем не зовомыми.
+            "templates": usage_counts["templates"],
+            "template_usages": usage_counts["template_resolved"],
+            "template_own_members": usage_counts["template_own"],
+            "template_external": usage_counts["template_external"],
             "pages_added": len(override_report.added),
             "pages_removed": len(override_report.removed),
             "overrides_stale": len(override_report.stale),
