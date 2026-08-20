@@ -14,6 +14,7 @@
 и дальше в отчёт о неполноте.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -193,11 +194,23 @@ def build(
     is_excluded: object = None,
     manifest: Manifest | None = None,
     arch: ArchRegistry | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> BuildResult:
-    """Полный цикл: проверка бинаря, индексация, чтение, проекция, сопоставление."""
+    """Полный цикл: проверка бинаря, индексация, чтение, проекция, сопоставление.
+
+    `progress` вызывается на границах этапов. Это не украшение: пользователь,
+    ждущий минуты без единого сообщения, решит, что инструмент завис,
+    и прервёт прогон — а прерванный прогон выглядит как сломанный инструмент.
+    """
+    say = progress or (lambda _message: None)
+
+    say("проверяю разборщик")
     version = engine.check()
+    say("индексирую репозиторий")
     run = engine.index(root)
+    say(f"читаю граф: узлов {run.nodes}, рёбер {run.edges}")
     graph = engine.read(run.project, is_excluded=is_excluded)  # type: ignore[arg-type]
+    say("перевожу в наши термины")
     index, report = project(graph, version)
     # Полное имя разбора → узел: обращения приходят в его именах, а индекс
     # адресуется нашими ключами, и перевод обязан быть один.
@@ -205,6 +218,7 @@ def build(
 
     match_report: MatchReport | None = None
     if manifest is not None:
+        say("сопоставляю с манифестом")
         attributes, match_report = match(index.nodes, manifest)
         index = GraphIndex(nodes=apply(index.nodes, attributes), edges=index.edges)
         report.update(match_report.as_counts())
@@ -216,6 +230,7 @@ def build(
     # места отправки — из обращений члена к типу. Обращения в индекс
     # не проецируются: это не рёбра вызова.
     if manifest is not None and manifest.dispatch_handlers:
+        say("собираю диспетчеризацию по типу запроса")
         usages = tuple((edge.source, edge.target) for edge in graph.usages)
         resolved_usages = tuple(
             (node_key(_by_name[source]), node_key(_by_name[target]))
@@ -230,6 +245,7 @@ def build(
 
     binding_report: BindingReport | None = None
     if manifest is not None and manifest.di_registrations:
+        say("связываю вызовы по регистрациям контейнера")
         bind_edges, binding_report = binds(list(manifest.di_registrations), index.nodes, manifest)
         completed, binding_report = complete(
             index.nodes, index.edges, bind_edges, binding_report, manifest
@@ -243,6 +259,7 @@ def build(
     # на полное имя типа, а оно приходит из манифеста.
     entry_report: EntryPointReport | None = None
     if arch is not None or manifest is not None:
+        say("собираю точки входа")
         entries: list[GraphNode] = []
         if arch is not None:
             entries.extend(from_registry(arch))
@@ -259,6 +276,7 @@ def build(
     # это один узел с двумя источниками.
     data_report: DataReport | None = None
     if manifest is not None:
+        say("собираю узлы данных")
         data_nodes, data_edges, data_report = collect_data(manifest, index.nodes)
         index = GraphIndex(
             nodes=index.nodes + tuple(data_nodes), edges=index.edges + tuple(data_edges)
@@ -276,6 +294,7 @@ def build(
     # Достижимость считается последней: к этому моменту в индексе есть все
     # рёбра — чужие вызовы, наши довершения, диспетчеризация и обращения
     # к данным. Посчитать её раньше значит посчитать по половине графа.
+    say(f"считаю достижимость: узлов {len(index.nodes)}, рёбер {len(index.edges)}")
     reachability = compute(index)
 
     meta = GraphMeta(

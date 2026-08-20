@@ -1857,7 +1857,12 @@ def graph_build(
     typer.echo(f"Разбор репозитория {root}…")
     try:
         result = build_graph(
-            engine, root, is_excluded=excluded, manifest=manifest, arch=arch_registry
+            engine,
+            root,
+            is_excluded=excluded,
+            manifest=manifest,
+            arch=arch_registry,
+            progress=lambda message: typer.echo(f"  … {message}"),
         )
     except EngineError as exc:
         typer.echo(f"Разбор не состоялся: {exc}", err=True)
