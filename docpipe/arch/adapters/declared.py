@@ -158,6 +158,20 @@ def _build(
     name = _first(item.fields, _NAME_FIELDS)
     key = record_key(item, parent_key)
 
+    # Разобранные части ключа кладутся полями, а не оставляются на разбор
+    # строки. Разбирать ключ обратно — это вторая реализация правила его
+    # сборки, и она разойдётся с первой на первом же реестре, где ключ
+    # собран иначе.
+    parts = {
+        "registry_id": spec.id,
+        "registry_kind": item.kind,
+        "ref": item.ref,
+    }
+    if item.fields.get("version"):
+        parts["version"] = item.fields["version"].strip()
+    if parent is not None:
+        parts["parent"] = parent.ref
+
     if kind == "entry_point":
         consumed = set(_NAME_FIELDS) | set(_IMPL_FIELDS)
         return EntryPointRecord(
@@ -172,7 +186,7 @@ def _build(
             else (),
             source=source,
             provenance="adapter",
-            attributes=_attributes(item.fields, consumed),
+            attributes={**parts, **_attributes(item.fields, consumed)},
         )
     if kind == "data":
         consumed = set(_NAME_FIELDS) | set(_TABLE_FIELDS)
@@ -186,7 +200,7 @@ def _build(
             references=tuple(sorted({field.references for field in fields if field.references})),
             source=source,
             provenance="adapter",
-            attributes=_attributes(item.fields, consumed),
+            attributes={**parts, **_attributes(item.fields, consumed)},
         )
     if kind == "seam":
         consumed = set(_NAME_FIELDS)
@@ -197,7 +211,7 @@ def _build(
             literal=item.fields.get("literal", "") or key,
             source=source,
             provenance="adapter",
-            attributes=_attributes(item.fields, consumed),
+            attributes={**parts, **_attributes(item.fields, consumed)},
         )
     return LayerRecord(
         key=key,
@@ -206,7 +220,7 @@ def _build(
         path=item.fields.get("path", ""),
         source=source,
         provenance="adapter",
-        attributes=_attributes(item.fields, set(_NAME_FIELDS)),
+        attributes={**parts, **_attributes(item.fields, set(_NAME_FIELDS))},
     )
 
 

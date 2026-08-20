@@ -45,7 +45,7 @@ from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.explain import ANY, format_selection, select, selection_json
 from docpipe.graph import build as build_graph
-from docpipe.graph import read_meta, write_index
+from docpipe.graph import read_index, read_meta, write_index
 from docpipe.graph.engine import Engine, EngineError
 from docpipe.hashing import content_hash, stable_json_dumps
 from docpipe.materialize.apply import apply_plan, format_result, write_atomic
@@ -1834,6 +1834,14 @@ def graph_build(
     def excluded(path: str) -> bool:
         return is_excluded(path, ruleset_excludes)
 
+    arch_registry = None
+    if settings.arch or settings.arch_adapters:
+        try:
+            arch_registry = _collect_records(None, settings, config, root).registry
+        except (OSError, ValueError) as exc:
+            typer.echo(f"Не удалось прочитать реестр: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+
     manifest = None
     if manifest_path is not None:
         try:
@@ -1844,7 +1852,9 @@ def graph_build(
 
     typer.echo(f"Разбор репозитория {root}…")
     try:
-        result = build_graph(engine, root, is_excluded=excluded, manifest=manifest)
+        result = build_graph(
+            engine, root, is_excluded=excluded, manifest=manifest, arch=arch_registry
+        )
     except EngineError as exc:
         typer.echo(f"Разбор не состоялся: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -1864,6 +1874,17 @@ def graph_build(
         for category, number in sorted(meta.report.items()):
             typer.echo(f"  {category}: {number}")
 
+    if result.entry_points is not None and not result.entry_points.registry_present:
+        typer.echo(
+            "\nДекларативных источников точек входа нет: корни собраны только "
+            "из кода. Это законное состояние — на репозитории, где точки входа "
+            "объявлены в коде, реестр не нужен."
+        )
+    if result.entry_points is not None and result.entry_points.unlinked_examples:
+        typer.echo("\nКорни без узла кода (состояние работы, не дефект):")
+        for example in result.entry_points.unlinked_examples[:5]:
+            typer.echo(f"  {example}")
+
     if result.match is not None:
         typer.echo("\nСопоставление с манифестом:")
         for category, number in result.match.as_counts().items():
@@ -1878,6 +1899,74 @@ def graph_build(
             "дерево документации, а не полный список объявлений. Смотреть надо "
             "на обратное число."
         )
+
+
+@graph_app.command("entrypoints")
+def graph_entrypoints(
+    index: Annotated[
+        Path | None, typer.Argument(help="Файл индекса. Без аргумента — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    kind: Annotated[str | None, typer.Option("--kind", help="Только корни этого вида.")] = None,
+    unlinked: Annotated[
+        bool, typer.Option("--unlinked", help="Только корни, не связанные с кодом.")
+    ] = False,
+) -> None:
+    """Показать корни графа: вид, источник и связан ли корень с кодом.
+
+    Пустой вывод здесь запрещён так же, как в поиске: «корней нет» говорится
+    словами и со списком того, где искали.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    path = index or Path(settings.graph.out)
+    if not path.is_file():
+        typer.echo(
+            f"Индекса нет: {path}. Соберите: docpipe graph build --root <репозиторий>",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    try:
+        loaded = read_index(path)
+    except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    linked = {edge.source for edge in loaded.edges if edge.kind == "dispatches"}
+    roots = [node for node in loaded.nodes if node.kind == "entry_point"]
+    if kind:
+        roots = [node for node in roots if node.attributes.get("entry_kind") == kind]
+    if unlinked:
+        roots = [node for node in roots if node.key not in linked]
+
+    if not roots:
+        typer.echo(
+            "Корней не найдено. Искали в реестре (ключ `arch`, адаптеры "
+            "`arch_adapters`) и в манифесте (эндпоинты контроллеров). "
+            "Если реестра нет — это законное состояние; если он есть, "
+            "проверьте `docpipe arch records`."
+        )
+        return
+
+    by_source = {"registry": "реестр", "manifest": "код"}
+    for node in sorted(roots, key=lambda item: item.key):
+        mark = "связан" if node.key in linked else "НЕ СВЯЗАН"
+        entry_kind = node.attributes.get("entry_kind", "—")
+        where = node.attributes.get("source_record") or node.attributes.get("member") or ""
+        typer.echo(
+            f"{entry_kind:<16} {node.name:<44} {by_source.get(node.source, node.source):<8} "
+            f"{mark:<10} {node.file}{(' → ' + where) if where else ''}"
+        )
+    typer.echo(
+        f"\nВсего корней: {len(roots)}, из них связано с кодом: "
+        f"{sum(1 for node in roots if node.key in linked)}"
+    )
 
 
 @graph_app.command("info")

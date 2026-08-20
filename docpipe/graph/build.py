@@ -18,7 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from docpipe.arch.model import ArchRegistry
 from docpipe.graph.engine import Engine, EngineGraph, EngineNode, EngineRun
+from docpipe.graph.entrypoints import EntryPointReport, from_manifest, from_registry, link
 from docpipe.graph.match import MatchReport, apply, match
 from docpipe.graph.model import GraphEdge, GraphIndex, GraphMeta, GraphNode
 from docpipe.model import Manifest
@@ -58,6 +60,8 @@ class BuildResult:
     # и это законно: индекс собирается и без него, просто у узлов не будет
     # ни имени документа, ни модуля.
     match: MatchReport | None = None
+    # Отчёт о корнях. `None` — ни реестра, ни манифеста не давали.
+    entry_points: EntryPointReport | None = None
 
 
 def language_of(file: str) -> str:
@@ -179,6 +183,7 @@ def build(
     *,
     is_excluded: object = None,
     manifest: Manifest | None = None,
+    arch: ArchRegistry | None = None,
 ) -> BuildResult:
     """Полный цикл: проверка бинаря, индексация, чтение, проекция, сопоставление."""
     version = engine.check()
@@ -191,6 +196,21 @@ def build(
         attributes, match_report = match(index.nodes, manifest)
         index = GraphIndex(nodes=apply(index.nodes, attributes), edges=index.edges)
         report.update(match_report.as_counts())
+
+    # Корни собираются ПОСЛЕ сопоставления: связывание с кодом опирается
+    # на полное имя типа, а оно приходит из манифеста.
+    entry_report: EntryPointReport | None = None
+    if arch is not None or manifest is not None:
+        entries: list[GraphNode] = []
+        if arch is not None:
+            entries.extend(from_registry(arch))
+        if manifest is not None:
+            entries.extend(from_manifest(manifest))
+        dispatches, entry_report = link(entries, index.nodes, manifest)
+        index = GraphIndex(
+            nodes=index.nodes + tuple(entries), edges=index.edges + tuple(dispatches)
+        )
+        report.update(entry_report.as_counts())
 
     meta = GraphMeta(
         generation="",
@@ -205,4 +225,6 @@ def build(
         },
         report=report,
     )
-    return BuildResult(index=index, meta=meta, run=run, match=match_report)
+    return BuildResult(
+        index=index, meta=meta, run=run, match=match_report, entry_points=entry_report
+    )
