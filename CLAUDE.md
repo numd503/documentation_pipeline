@@ -81,6 +81,10 @@ uv run docpipe arch status arch-registry.yaml --root ПУТЬ
 uv run docpipe arch records --root ПУТЬ               # снимок плюс адаптеры
 uv run docpipe arch snapshot --out arch-registry.yaml --root ПУТЬ
 
+# индекс связей (G01): разбор чужим движком, проекция и запись — наши
+uv run docpipe graph build --root ПУТЬ    # нужен ключ `graph.engine_path`
+uv run docpipe graph info                 # паспорт индекса: чем собран и что не вошло
+
 # полная проверка перед коммитом
 uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv run pytest -q
 ```

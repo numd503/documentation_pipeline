@@ -148,6 +148,30 @@ class ArchAdapterConfig(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
+class GraphConfig(BaseModel):
+    """Секция `graph`: сборка индекса связей.
+
+    `engine_path` не имеет значения по умолчанию намеренно, и это не мелочь:
+    умолчание вида «поищем в PATH» означает запуск того, что нашлось, —
+    а версия движка разбора определяет и числа, и качество разрешения вызовов.
+    Пусто — отказ с указанием, что заполнить.
+
+    `engine_sha256` пустой означает «взять ожидаемую чек-сумму из моста»:
+    версия закреплена в коде, а ключ существует, чтобы её можно было сменить
+    осознанно, а не чтобы её можно было не проверять.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    engine_path: str = ""
+    engine_sha256: str = ""
+    mode: Literal["fast", "moderate", "full"] = "fast"
+    # Цели записи, поэтому от текущего каталога, как `out` и `worklist`:
+    # индекс и кэш разбора — артефакты прогона, а не часть репозитория.
+    out: str = "artifacts/graph.db"
+    cache_dir: str = ".docpipe/engine-cache"
+
+
 class DocpipeConfig(BaseModel):
     """Настройки прогона.
 
@@ -230,6 +254,10 @@ class DocpipeConfig(BaseModel):
     # список — рабочее состояние: снимок в `arch` остаётся способом, а на
     # репозитории, который видишь впервые, он единственный.
     arch_adapters: list[ArchAdapterConfig] = Field(default_factory=list)
+
+    # Сборка индекса связей. Секция необязательна: репозиторий, для которого
+    # граф не собирают, её не заводит.
+    graph: GraphConfig = Field(default_factory=lambda: GraphConfig())
 
     # Шаг 3. Куда `docpipe worklist` кладёт очередь для внешнего исполнителя.
     # Путь относительно текущего каталога, как `out`, а не относительно `--root`:

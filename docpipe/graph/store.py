@@ -1,0 +1,206 @@
+"""Наш индекс на диске: SQLite, локальный, не в git.
+
+Три свойства, каждое из которых ломается молча, если о нём не помнить.
+
+**Запись атомарна.** Сборка пишет во временный файл и подменяет индекс
+переименованием. Читатель, пришедший во время пересборки, иначе получит
+полуиндекс без единого сообщения об ошибке.
+
+**Поколение выводится из содержимого.** Один вход — одно поколение;
+времени в индексе нет вовсе, иначе два прогона на одном входе выглядели бы
+как разные индексы, и сравнить их было бы нечем.
+
+**Детерминизм логический, а не побайтовый (Р4).** Побайтовое равенство
+SQLite обеспечить трудно; вместо него хэш от отсортированного набора узлов
+с атрибутами и рёбер, записанный рядом.
+"""
+
+import json
+import os
+import sqlite3
+from pathlib import Path
+
+from docpipe.graph.model import SCHEMA_VERSION, GraphEdge, GraphIndex, GraphMeta, GraphNode
+from docpipe.hashing import stable_hash
+
+_SCHEMA = """
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE nodes (
+    key TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    file TEXT NOT NULL,
+    lang TEXT NOT NULL,
+    source TEXT NOT NULL,
+    attributes TEXT NOT NULL
+);
+CREATE TABLE edges (
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL,
+    target TEXT NOT NULL,
+    via TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    attributes TEXT NOT NULL
+);
+CREATE INDEX edges_source ON edges (source, kind);
+CREATE INDEX edges_target ON edges (target, kind);
+CREATE INDEX nodes_kind ON nodes (kind);
+"""
+
+
+class IndexVersionError(RuntimeError):
+    """Индекс собран другой версией схемы: читать нельзя, надо пересобрать."""
+
+
+def logical_hash(index: GraphIndex) -> str:
+    """Хэш логического содержимого: узлы с атрибутами и рёбра, отсортированные."""
+    return stable_hash(
+        {
+            "schema": SCHEMA_VERSION,
+            "nodes": [node.model_dump(mode="json") for node in sorted_nodes(index.nodes)],
+            "edges": [edge.model_dump(mode="json") for edge in sorted_edges(index.edges)],
+        }
+    )
+
+
+def sorted_nodes(nodes: tuple[GraphNode, ...]) -> list[GraphNode]:
+    return sorted(nodes, key=lambda node: (node.kind, node.key))
+
+
+def sorted_edges(edges: tuple[GraphEdge, ...]) -> list[GraphEdge]:
+    return sorted(edges, key=lambda edge: (edge.kind, edge.source, edge.target, edge.via))
+
+
+def write_index(path: Path, index: GraphIndex, meta: GraphMeta) -> GraphMeta:
+    """Записать индекс атомарно и вернуть паспорт с проставленным поколением."""
+    generation = logical_hash(index)
+    meta = meta.model_copy(update={"generation": generation, "schema_version": SCHEMA_VERSION})
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    if temporary.exists():
+        temporary.unlink()
+
+    connection = sqlite3.connect(temporary)
+    try:
+        connection.executescript(_SCHEMA)
+        connection.executemany(
+            "INSERT INTO meta (key, value) VALUES (?, ?)",
+            sorted(_meta_rows(meta)),
+        )
+        connection.executemany(
+            "INSERT INTO nodes (key, kind, name, owner, file, lang, source, attributes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    node.key,
+                    node.kind,
+                    node.name,
+                    node.owner,
+                    node.file,
+                    node.lang,
+                    node.source,
+                    json.dumps(node.attributes, sort_keys=True, ensure_ascii=False),
+                )
+                for node in sorted_nodes(index.nodes)
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO edges (kind, source, target, via, confidence, attributes) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    edge.kind,
+                    edge.source,
+                    edge.target,
+                    edge.via,
+                    edge.confidence,
+                    json.dumps(edge.attributes, sort_keys=True, ensure_ascii=False),
+                )
+                for edge in sorted_edges(index.edges)
+            ],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    # Подмена переименованием: читатель либо видит прежний индекс целиком,
+    # либо новый целиком, и никогда — половину.
+    os.replace(temporary, path)
+    return meta
+
+
+def _meta_rows(meta: GraphMeta) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = [
+        ("schema_version", meta.schema_version),
+        ("generation", meta.generation),
+        ("engine_version", meta.engine_version),
+        ("engine_checksum", meta.engine_checksum),
+        ("repo", meta.repo),
+        ("counts", json.dumps(meta.counts, sort_keys=True, ensure_ascii=False)),
+        ("report", json.dumps(meta.report, sort_keys=True, ensure_ascii=False)),
+    ]
+    return rows
+
+
+def read_meta(path: Path) -> GraphMeta:
+    """Прочитать паспорт индекса. Несовпадение версии — отказ."""
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        rows = dict(connection.execute("SELECT key, value FROM meta").fetchall())
+    finally:
+        connection.close()
+    version = rows.get("schema_version", "")
+    if version != SCHEMA_VERSION:
+        raise IndexVersionError(
+            f"индекс собран схемой {version or '(не указана)'}, поддерживается {SCHEMA_VERSION}. "
+            "Пересоберите: docpipe graph build --root <репозиторий>"
+        )
+    return GraphMeta(
+        schema_version=version,
+        generation=rows.get("generation", ""),
+        engine_version=rows.get("engine_version", ""),
+        engine_checksum=rows.get("engine_checksum", ""),
+        repo=rows.get("repo", ""),
+        counts=json.loads(rows.get("counts", "{}")),
+        report=json.loads(rows.get("report", "{}")),
+    )
+
+
+def read_index(path: Path) -> GraphIndex:
+    """Прочитать индекс целиком. Для запросов это не нужно — только для проверок."""
+    read_meta(path)
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        nodes = [
+            GraphNode(
+                key=row[0],
+                kind=row[1],
+                name=row[2],
+                owner=row[3],
+                file=row[4],
+                lang=row[5],
+                source=row[6],
+                attributes=json.loads(row[7]),
+            )
+            for row in connection.execute(
+                "SELECT key, kind, name, owner, file, lang, source, attributes FROM nodes"
+            )
+        ]
+        edges = [
+            GraphEdge(
+                kind=row[0],
+                source=row[1],
+                target=row[2],
+                via=row[3],
+                confidence=row[4],
+                attributes=json.loads(row[5]),
+            )
+            for row in connection.execute(
+                "SELECT kind, source, target, via, confidence, attributes FROM edges"
+            )
+        ]
+    finally:
+        connection.close()
+    return GraphIndex(nodes=tuple(nodes), edges=tuple(edges))

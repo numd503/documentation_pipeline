@@ -40,9 +40,13 @@ from docpipe.business.status import statuses as business_statuses
 from docpipe.classify import load_ruleset
 from docpipe.config import DocpipeConfig, candidate_inputs, load_config, resolve_input
 from docpipe.diff import diff_manifests, format_changes
+from docpipe.discovery import is_excluded
 from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.explain import ANY, format_selection, select, selection_json
+from docpipe.graph import build as build_graph
+from docpipe.graph import read_meta, write_index
+from docpipe.graph.engine import Engine, EngineError
 from docpipe.hashing import content_hash, stable_json_dumps
 from docpipe.materialize.apply import apply_plan, format_result, write_atomic
 from docpipe.materialize.build import BuildContext, build_context
@@ -1771,6 +1775,120 @@ def arch_status(
     stale = [item for item in statuses if item.state in ("stale", "source_missing")]
     if stale and fail_on_stale:
         raise typer.Exit(code=1)
+
+
+graph_app = typer.Typer(
+    help="Индекс связей: точки входа, вызовы, данные и швы.",
+    no_args_is_help=True,
+)
+app.add_typer(graph_app, name="graph")
+
+
+@graph_app.command("build")
+def graph_build(
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория с исходниками.")],
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Куда записать индекс. Без флага — `graph.out`."),
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+) -> None:
+    """Собрать индекс связей: разбор, чтение, проекция, запись.
+
+    Один вход — один выход: хэш логического содержимого совпадает между двумя
+    прогонами на одном входе. Времени в индексе нет вовсе, поколение выводится
+    из содержимого.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    if not settings.graph.engine_path:
+        typer.echo(
+            "Не задан путь к разборщику: ключ `graph.engine_path` в docpipe.yaml. "
+            "Умолчания у него нет намеренно — запускать то, что нашлось в PATH, "
+            "значит получить числа от другой версии и не заметить этого.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    ruleset_excludes = list(settings.exclude)
+    engine = Engine(
+        binary=Path(settings.graph.engine_path).expanduser(),
+        cache_dir=Path(settings.graph.cache_dir),
+        mode=settings.graph.mode,
+        expected_sha256=settings.graph.engine_sha256 or Engine.expected_sha256,
+    )
+
+    def excluded(path: str) -> bool:
+        return is_excluded(path, ruleset_excludes)
+
+    typer.echo(f"Разбор репозитория {root}…")
+    try:
+        result = build_graph(engine, root, is_excluded=excluded)
+    except EngineError as exc:
+        typer.echo(f"Разбор не состоялся: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    target = out or Path(settings.graph.out)
+    meta = write_index(target, result.index, result.meta)
+
+    typer.echo(
+        f"Индекс записан: {target}\n"
+        f"  узлов: {meta.counts.get('nodes', 0)}, рёбер: {meta.counts.get('edges', 0)}\n"
+        f"  у разборщика было: узлов {meta.counts.get('engine_nodes', 0)}, "
+        f"рёбер {meta.counts.get('engine_edges', 0)}\n"
+        f"  поколение: {meta.generation}"
+    )
+    if meta.report:
+        typer.echo("Что не вошло в индекс:")
+        for category, number in sorted(meta.report.items()):
+            typer.echo(f"  {category}: {number}")
+
+
+@graph_app.command("info")
+def graph_info(
+    index: Annotated[
+        Path | None,
+        typer.Argument(help="Файл индекса. Без аргумента — `graph.out`."),
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+) -> None:
+    """Показать паспорт индекса: чем собран, из чего и что не вошло."""
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    path = index or Path(settings.graph.out)
+    if not path.is_file():
+        typer.echo(
+            f"Индекса нет: {path}. Соберите: docpipe graph build --root <репозиторий>",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    try:
+        meta = read_meta(path)
+    except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    typer.echo(f"Индекс: {path}")
+    typer.echo(f"  схема: {meta.schema_version}, поколение: {meta.generation}")
+    typer.echo(f"  репозиторий: {meta.repo}, разборщик: {meta.engine_version}")
+    for name, number in sorted(meta.counts.items()):
+        typer.echo(f"  {name}: {number}")
+    if meta.report:
+        typer.echo("  что не вошло:")
+        for category, number in sorted(meta.report.items()):
+            typer.echo(f"    {category}: {number}")
 
 
 anchors_app = typer.Typer(
