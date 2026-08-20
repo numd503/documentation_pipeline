@@ -47,6 +47,8 @@ from docpipe.explain import ANY, format_selection, select, selection_json
 from docpipe.graph import build as build_graph
 from docpipe.graph import read_index, read_meta, read_reach, write_index
 from docpipe.graph.engine import Engine, EngineError
+from docpipe.graph.coverage import coverage as coverage_of
+from docpipe.graph.coverage import format_coverage
 from docpipe.graph.evaluate import format_score
 from docpipe.graph.evaluate import load as load_questions
 from docpipe.graph.evaluate import run as run_questions
@@ -2331,6 +2333,47 @@ def graph_eval(
     typer.echo(format_score(score), nl=False)
     if score.recall < fail_under:
         typer.echo(f"Полнота {score.recall} ниже порога {fail_under}", err=True)
+        raise typer.Exit(code=1)
+
+
+@graph_app.command("coverage")
+def graph_coverage(
+    index: Annotated[
+        Path | None, typer.Argument(help="Файл индекса. Без аргумента — `graph.out`.")
+    ] = None,
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория: от него ищется каталог.")
+    ] = Path("."),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    fail_under: Annotated[
+        float,
+        typer.Option("--fail-under", help="Ненулевой код, если описано меньше этой доли."),
+    ] = 0.0,
+) -> None:
+    """Какие точки входа описаны бизнес-документами, а какие нет.
+
+    Непокрытые точки входа — состояние работы, а не дефект: отчёт печатается
+    всегда и кода возврата не меняет, пока порог не задан явно. Линт, красный
+    с первого дня, выключают на второй.
+    """
+    path, settings = _open_index(index, config)
+    catalog_root = root / settings.business_root
+    if not catalog_root.is_dir():
+        typer.echo(
+            f"Каталога бизнес-документов нет: {catalog_root}. "
+            "Ключ `business_root` в docpipe.yaml задаёт, где его искать.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    catalog = load_catalog(root, settings.business_root)
+    report = coverage_of(read_index(path).nodes, catalog)
+    typer.echo(format_coverage(report), nl=False)
+    share = report.covered / report.entry_points if report.entry_points else 1.0
+    if share < fail_under:
+        typer.echo(f"Описано {share:.0%}, порог {fail_under:.0%}", err=True)
         raise typer.Exit(code=1)
 
 
