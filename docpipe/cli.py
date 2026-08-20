@@ -47,6 +47,8 @@ from docpipe.explain import ANY, format_selection, select, selection_json
 from docpipe.graph import build as build_graph
 from docpipe.graph import read_index, read_meta, read_reach, write_index
 from docpipe.graph.engine import Engine, EngineError
+from docpipe.graph.mcp import Server as McpServer
+from docpipe.graph.mcp import serve as serve_mcp
 from docpipe.graph.reach import DEFAULT_FANOUT_THRESHOLD
 from docpipe.graph.reach import path as graph_path
 from docpipe.graph.report import health as health_report
@@ -2240,6 +2242,34 @@ def graph_resolve(
             f"{match.kind:<12} {match.name:<40} {match.how} по полю «{match.field}»"
             f"{module}\n    {match.node}"
         )
+
+
+@graph_app.command("serve")
+def graph_serve(
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория: нужен формам без графа.")
+    ] = Path("."),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+) -> None:
+    """Запустить MCP-сервер на stdio: формы вопроса становятся инструментами агента.
+
+    Сервер не собирает граф сам: отсутствие индекса — внятная ошибка с командой
+    сборки. Отсутствие реестра ошибкой не является — `overview`, `why` и `card`
+    работают и без него.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    server = McpServer(index or Path(settings.graph.out), root)
+    serve_mcp(server)
 
 
 @graph_app.command("info")
