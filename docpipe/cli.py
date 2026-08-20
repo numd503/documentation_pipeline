@@ -9,6 +9,15 @@ import typer
 from pydantic import BaseModel
 
 from docpipe import __version__
+from docpipe.arch import (
+    ArchRegistry,
+    check_document,
+    format_statuses,
+    load_arch_registry,
+    read_document,
+    source_statuses,
+    statuses_json,
+)
 from docpipe.business import Catalog, doc_path_for, load_catalog, resolve_all
 from docpipe.business import build_context as build_resolve_context
 from docpipe.business.build import backlinks, compose, entry_snippet, link_warnings
@@ -131,6 +140,7 @@ def version() -> None:
 SCHEMA_MODELS: Final[dict[str, tuple[type[BaseModel], str]]] = {
     "doc-tree": (Manifest, "schema/doc-tree.schema.json"),
     "worklist": (Worklist, "schema/doc-worklist.schema.json"),
+    "arch": (ArchRegistry, "schema/arch-registry.schema.json"),
 }
 
 
@@ -1463,6 +1473,142 @@ def docs_owners(
     counted = Counter(owner_of(node, ownership).team or "(не задан)" for node in manifest.nodes)
     width = max(len(name) for name in counted)
     typer.echo("\n".join(f"{name:<{width}}  {count:>5}" for name, count in sorted(counted.items())))
+
+
+arch_app = typer.Typer(
+    help="Нормализованный реестр архитектурных элементов: точки входа, данные, швы, слои.",
+    no_args_is_help=True,
+)
+app.add_typer(arch_app, name="arch")
+
+
+def _arch_path(arch: Path | None, settings: DocpipeConfig, config: Path | None) -> Path:
+    """Путь к реестру: флаг важнее конфигурации, но конфигурация читается.
+
+    Реестр — вход инструмента, поэтому путь разрешается двумя ступенями
+    (`resolve_input`): сначала от текущего каталога, потом от каталога
+    `docpipe.yaml`. Конфигурация лежит не в корне, и путь внутри неё пишут
+    относительно неё же.
+    """
+    if arch is not None:
+        return arch
+    if settings.arch:
+        return resolve_input(settings.arch, config)
+    typer.echo(
+        "Реестр не задан: укажите путь аргументом или ключом `arch` в docpipe.yaml",
+        err=True,
+    )
+    raise typer.Exit(code=2)
+
+
+@arch_app.command("validate")
+def arch_validate(
+    arch: Annotated[
+        Path | None, typer.Argument(help="Файл реестра. Без аргумента — ключ `arch`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    draft: Annotated[
+        bool,
+        typer.Option(
+            "--draft",
+            help="Проверять черновик скилла: разрешён провенанс `skill_proposed`.",
+        ),
+    ] = False,
+) -> None:
+    """Проверить реестр целиком и назвать все находки сразу.
+
+    Все, а не первую: файл заполняет человек, и второй заход ради второй
+    ошибки — способ отучить его заполнять файл.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    path = _arch_path(arch, settings, config)
+    if not path.exists():
+        typer.echo(f"Реестр не найден: {path}", err=True)
+        raise typer.Exit(code=2)
+
+    try:
+        raw = read_document(path)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Не удалось прочитать реестр: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    registry, problems = check_document(raw, draft=draft)
+    if registry is None:
+        typer.echo(f"{path}: реестр не прошёл проверку", err=True)
+        for problem in problems:
+            typer.echo(f"  {problem.where}: {problem.message}", err=True)
+        raise typer.Exit(code=1)
+
+    kinds = ("entry_point", "data", "seam", "layer")
+    counts = {kind: len(registry.of_kind(kind)) for kind in kinds}
+    listed = ", ".join(f"{kind}: {count}" for kind, count in counts.items())
+    if not registry.records:
+        typer.echo(
+            f"{path}: реестр пуст и это валидное состояние — "
+            "на репозитории без реестров граф строится и без него."
+        )
+        return
+    typer.echo(f"{path}: реестр в порядке, версия {registry.version}. Записей — {listed}.")
+
+
+@arch_app.command("status")
+def arch_status(
+    arch: Annotated[
+        Path | None, typer.Argument(help="Файл реестра. Без аргумента — ключ `arch`.")
+    ] = None,
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория: пути источников от него.")
+    ] = Path("."),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Машиночитаемый вывод вместо текста.")
+    ] = False,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", help="Печатать все записи, а не первые пять в категории.")
+    ] = False,
+    fail_on_stale: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-stale",
+            help="Вернуть ненулевой код, если снимок отстал от источника.",
+        ),
+    ] = False,
+) -> None:
+    """Показать записи, у которых снимок разошёлся с источником.
+
+    Красным по умолчанию отчёт не бывает: устаревший снимок — состояние
+    работы, а не дефект, и линт, красный с первого дня, выключают на второй.
+    Порог задаёт вызывающий флагом.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    path = _arch_path(arch, settings, config)
+    try:
+        registry = load_arch_registry(path)
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    statuses = source_statuses(registry, root)
+    if as_json:
+        typer.echo(stable_json_dumps(statuses_json(statuses)), nl=False)
+    else:
+        typer.echo(format_statuses(statuses, verbose=verbose), nl=False)
+
+    stale = [item for item in statuses if item.state in ("stale", "source_missing")]
+    if stale and fail_on_stale:
+        raise typer.Exit(code=1)
 
 
 anchors_app = typer.Typer(

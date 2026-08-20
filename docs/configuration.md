@@ -13,7 +13,7 @@
 | База | Ключи |
 |---|---|
 | **`--root`** (корень репозитория) | `docs_root`, `modules_dir`, `business_root`, `cache_dir`, `roots`, `web.roots` |
-| **входы**: текущий каталог, затем каталог `docpipe.yaml` | `rules`, `web.rules`, `web.pages`, `templates`, `ownership`, `registries` |
+| **входы**: текущий каталог, затем каталог `docpipe.yaml` | `rules`, `web.rules`, `web.pages`, `templates`, `ownership`, `registries`, `arch` |
 | **цели записи**: только текущий каталог | `out`, `worklist`, `web.out`, `web.link_out` |
 | ни то ни другое (глобы и значения) | `enrolled`, `exclude`, `domains`, `doc_layout`, `docs_scan_exclude`, `web.url_rewrite`, `web.registry_calls` |
 
@@ -61,8 +61,8 @@
 
 ## Кто что читает
 
-| Ключ | scan | materialize | worklist | docs status / accept / adopt | business | anchors |
-|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| Ключ | scan | materialize | worklist | docs status / accept / adopt | business | anchors | arch |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
 | `roots` | ✓ | | | | | |
 | `enrolled` | ✓ | | | | | |
 | `exclude` | ✓ | | | | | |
@@ -76,8 +76,9 @@
 | `docs_scan_exclude` | | ✓ | ✓ | ✓ | | |
 | `templates` | | ✓ | ✓ | ✓ | ✓ | |
 | `ownership` | | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `registries` | | ○ | ○ | ○ | ✓ | ✓ |
-| `business_root` | | ○ | ○ | ○ | ✓ | |
+| `registries` | | ○ | ○ | ○ | ✓ | ✓ | |
+| `arch` | | | | | | | ✓ |
+| `business_root` | | ○ | ○ | ○ | ✓ | | |
 | `worklist` | | | ✓ | | | |
 | `web.roots` | | | | | | |
 | `web.rules` | | | | | | |
@@ -90,6 +91,11 @@
 
 ✓ — читается и влияет на результат; ○ — читается мягко: неготовый бизнес-слой
 не роняет шаг 2, раздел «Бизнес-контекст» просто не собирается.
+
+Пустых клеток в строках у ключей, читаемых одной командой, больше, чем кажется
+уместным, и это намеренно: `arch` читают только команды `arch *`, а дальше его
+будет читать сборка графа. Расширять список «на всякий случай» нельзя — ключ,
+который читают все, через месяц читают по-разному.
 
 ## Две ветки дерева документации
 
