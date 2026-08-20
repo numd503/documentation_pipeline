@@ -5,6 +5,7 @@
 вопрос без ожидания не принимается, а прогон на фикстурах повторяем.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,14 @@ from typer.testing import CliRunner
 
 from docpipe.cli import app
 from docpipe.graph import GraphEdge, GraphIndex, GraphMeta, GraphNode, compute, write_index
-from docpipe.graph.evaluate import format_score, load, run
+from docpipe.graph.evaluate import (
+    check_requests,
+    format_requests,
+    format_score,
+    load,
+    merged_requests,
+    run,
+)
 from docpipe.graph.search import entries
 
 runner = CliRunner()
@@ -185,3 +193,120 @@ def test_cli_can_fail_under_a_threshold(tmp_path: Path, prepared: tuple) -> None
         app, ["graph", "eval", str(path), "--index", str(target), "--fail-under", "0.5"]
     )
     assert strict.exit_code == 1
+
+
+# ------------------------------------------------------------------------------------------
+# Проверка на влитых правках (G18 п. 4)
+# ------------------------------------------------------------------------------------------
+
+
+def _repo_with_history(root: Path) -> None:
+    """Крохотный репозиторий с историей: две правки, вторая трогает точку входа."""
+    import subprocess
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(root), *args],
+            check=True,
+            capture_output=True,
+            env={
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": str(root),
+                "GIT_AUTHOR_NAME": "t",
+                "GIT_AUTHOR_EMAIL": "t@t",
+                "GIT_COMMITTER_NAME": "t",
+                "GIT_COMMITTER_EMAIL": "t@t",
+                "GIT_AUTHOR_DATE": "2020-01-01T00:00:00+00:00",
+                "GIT_COMMITTER_DATE": "2020-01-01T00:00:00+00:00",
+            },
+        )
+
+    root.mkdir(parents=True, exist_ok=True)
+    git("init", "-q")
+    (root / "readme.md").write_text("нет кода\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "документация")
+    (root / "Api.cs").write_text("class Api {}\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "правка кода")
+
+
+def test_requests_without_code_are_not_counted_as_checked(tmp_path: Path) -> None:
+    """Правка, не тронувшая код, в набор не попадает.
+
+    Иначе набор из десяти правок документации даёт десять строк
+    «предсказано 0, обязано 0» и выглядит проверкой, которой не было.
+    """
+    root = tmp_path / "repo"
+    _repo_with_history(root)
+    requests = merged_requests(root, count=10, scan=50)
+    assert [request.subject for request in requests] == ["правка кода"]
+
+
+def test_missing_entry_point_is_reported(tmp_path: Path) -> None:
+    """Точка входа, чей файл менялся, обязана найтись — иначе это пропуск."""
+    root = tmp_path / "repo"
+    _repo_with_history(root)
+
+    nodes = (
+        GraphNode(key="Api.cs#Api", kind="type", name="Api", file="Api.cs"),
+        GraphNode(key="entry:http:get api", kind="entry_point", name="GET api", file="doc.md"),
+    )
+    # Корень связан с узлом кода — по этой связи и собирается истина.
+    edges = (
+        GraphEdge(
+            kind="dispatches",
+            source="entry:http:get api",
+            target="Api.cs#Api",
+            via="entry:manifest",
+            confidence=1.0,
+        ),
+    )
+    index = GraphIndex(nodes=nodes, edges=edges)
+    meta = GraphMeta(generation="x", roots=("entry:http:get api",))
+
+    class _Empty:
+        """Достижимость, которая не находит ничего: имитация пропуска."""
+
+        def fanout(self, key: str) -> int:
+            return 0
+
+        def roots_of(self, key: str) -> set[str]:
+            return set()
+
+    outcomes = check_requests(merged_requests(root, 10, 50), index, meta, _Empty())  # type: ignore[arg-type]
+    assert [outcome.missed for outcome in outcomes] == [("entry:http:get api",)]
+    assert "пропущено: 1" in format_requests(outcomes)
+
+
+def test_entry_point_file_is_the_code_file_not_the_document(tmp_path: Path) -> None:
+    """Истина собирается по файлу кода, а не по `file` узла корня.
+
+    У корня из манифеста там лежит путь документа: ground truth по нему
+    пуст всегда, и проверка молча объявляет «пропусков нет».
+    """
+    root = tmp_path / "repo"
+    _repo_with_history(root)
+    nodes = (
+        GraphNode(key="Api.cs#Api", kind="type", name="Api", file="Api.cs"),
+        GraphNode(
+            key="entry:http:get api",
+            kind="entry_point",
+            name="GET api",
+            file="docs/modules/api.md",
+        ),
+    )
+    edges = (
+        GraphEdge(
+            kind="dispatches",
+            source="entry:http:get api",
+            target="Api.cs#Api",
+            via="entry:manifest",
+            confidence=1.0,
+        ),
+    )
+    index = GraphIndex(nodes=nodes, edges=edges)
+    meta = GraphMeta(generation="x", roots=("entry:http:get api",))
+    reachability = compute(index)
+    outcomes = check_requests(merged_requests(root, 10, 50), index, meta, reachability)
+    assert [outcome.obvious for outcome in outcomes] == [("entry:http:get api",)]

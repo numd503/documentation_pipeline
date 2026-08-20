@@ -194,3 +194,184 @@ def format_score(score: Score) -> str:
         lines.append(f"  {name}: {number}")
     lines.append("")
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class PullRequest:
+    """Влитая правка: что в ней менялось."""
+
+    commit: str
+    subject: str
+    files: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PullRequestOutcome:
+    request: PullRequest
+    predicted: tuple[str, ...] = ()
+    obvious: tuple[str, ...] = ()
+    missed: tuple[str, ...] = ()
+    downstream: int = 0
+    shared: int = 0
+
+
+# Расширения, по которым правка считается правкой кода. Слияние, тронувшее
+# только документацию и настройки сборки, об `affects` не говорит ничего:
+# оно даст ноль предсказаний и ноль обязательных находок, а в отчёте будет
+# выглядеть как проверенный случай.
+CODE_SUFFIXES: Final[frozenset[str]] = frozenset(
+    {".cs", ".ts", ".js", ".py", ".sql", ".html", ".razor", ".cshtml"}
+)
+
+
+def merged_requests(root: Path, count: int, scan: int = 0) -> list[PullRequest]:
+    """Последние влитые правки, тронувшие код, и их файлы.
+
+    Берутся коммиты слияния: они и есть влитые PR. Если истории слияний нет
+    (репозиторий с линейной историей), берутся обычные коммиты — вопрос
+    «что предсказал `affects` на реальной правке» от этого не меняется.
+
+    Просматривается `scan` последних, а возвращается `count` из них: подряд
+    идущие слияния часто оказываются правками документации, и набор из десяти
+    таких — это десять строк «предсказано 0, обязано 0», по которым о качестве
+    ответа не сказано ничего.
+    """
+    import subprocess
+
+    def log(extra: list[str]) -> list[str]:
+        proc = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.quotePath=false",
+                "-C",
+                str(root),
+                "log",
+                f"-{max(scan, count)}",
+                "--format=%H%x02%s",
+                *extra,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return proc.stdout.splitlines() if proc.returncode == 0 else []
+
+    lines = log(["--merges"]) or log([])
+    requests: list[PullRequest] = []
+    for line in lines:
+        if len(requests) >= count:
+            break
+        commit, _, subject = line.partition("\x02")
+        proc = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.quotePath=false",
+                "-C",
+                str(root),
+                "show",
+                "--name-only",
+                "--format=",
+                "-m",
+                "--first-parent",
+                commit,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        files = tuple(sorted({line.strip() for line in proc.stdout.splitlines() if line.strip()}))
+        if not any(Path(file).suffix in CODE_SUFFIXES for file in files):
+            continue
+        requests.append(PullRequest(commit=commit[:12], subject=subject, files=files))
+    return requests
+
+
+def check_requests(
+    requests: list[PullRequest],
+    index: GraphIndex,
+    meta: GraphMeta,
+    reachability: Reachability,
+) -> list[PullRequestOutcome]:
+    """Прогнать `affects` по влитым правкам.
+
+    **Что здесь считается истиной.** Настоящая истина — «что реально
+    затрагивалось в ревью», и её у открытого репозитория нет. Но есть
+    проверяемая её часть: если правка меняла файл точки входа, то `affects`
+    по этой правке обязан эту точку входа назвать. Пропуск здесь — ложное
+    отрицание, а это самый опасный вид ошибки: он тихий.
+
+    Всё, что `affects` назвал сверх этого, — предсказание вниз по графу;
+    оно считается отдельным числом и истиной не объявляется.
+    """
+    # Файл точки входа — это файл **кода**, с которым она связана, а не поле
+    # `file` её узла: у корня, пришедшего из манифеста, там лежит путь
+    # документа (`docs/modules/…/x.md`). Ground truth, собранный по нему,
+    # был бы пуст всегда и молча — проверка показывала бы «пропусков нет»
+    # ровно потому, что проверять оказалось нечего.
+    nodes = {node.key: node for node in index.nodes}
+    roots = {node.key for node in index.nodes if node.kind == "entry_point"}
+    roots_by_file: dict[str, set[str]] = {}
+    for key in roots:
+        node = nodes[key]
+        if node.file and not node.file.endswith(".md"):
+            roots_by_file.setdefault(node.file, set()).add(key)
+    for edge in index.edges:
+        if edge.source in roots:
+            target = nodes.get(edge.target)
+            if target is not None and target.file:
+                roots_by_file.setdefault(target.file, set()).add(edge.source)
+
+    outcomes: list[PullRequestOutcome] = []
+    for request in requests:
+        # Предел страницы снят намеренно: усечённый список, прочитанный
+        # как полный, дал бы «пропущено» там, где точка входа просто
+        # не поместилась в страницу.
+        answer = affects(index, meta, reachability, list(request.files), limit=1_000_000)
+        predicted = {str(item["node"]) for item in answer.get("entry_points", {}).get("items", [])}
+        obvious = {key for file in request.files for key in roots_by_file.get(file, set())}
+        outcomes.append(
+            PullRequestOutcome(
+                request=request,
+                predicted=tuple(sorted(predicted)),
+                obvious=tuple(sorted(obvious)),
+                missed=tuple(sorted(obvious - predicted)),
+                downstream=len(predicted - obvious),
+                shared=len(answer.get("shared_components", [])),
+            )
+        )
+    return outcomes
+
+
+def format_requests(outcomes: list[PullRequestOutcome]) -> str:
+    """Отчёт по влитым правкам."""
+    checked = [outcome for outcome in outcomes if outcome.obvious]
+    missed = sum(len(outcome.missed) for outcome in checked)
+    expected = sum(len(outcome.obvious) for outcome in checked)
+    lines = [
+        f"Правок просмотрено: {len(outcomes)}, из них меняли файл точки входа: {len(checked)}",
+        f"Точек входа, которые обязаны были найтись: {expected}, пропущено: {missed}",
+        "",
+    ]
+    for outcome in outcomes:
+        mark = "OK " if not outcome.missed else "НЕТ"
+        lines.append(
+            f"{mark} {outcome.request.commit}  файлов {len(outcome.request.files)}, "
+            f"предсказано точек входа {len(outcome.predicted)} "
+            f"(из них вниз по графу {outcome.downstream}), "
+            f"общих компонентов {outcome.shared}"
+        )
+        lines.append(f"      {outcome.request.subject[:100]}")
+        for key in outcome.missed:
+            lines.append(f"      ПРОПУЩЕНА: {key}")
+    lines.append("")
+    lines.append(
+        "Истина здесь — проверяемая её часть: правка меняла файл точки входа, "
+        "значит `affects` обязан был её назвать. Всё, что названо сверх, — "
+        "предсказание вниз по графу, и истиной оно не объявляется."
+    )
+    lines.append("")
+    return "\n".join(lines)

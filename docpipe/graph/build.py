@@ -30,7 +30,7 @@ from docpipe.graph.engine import Engine, EngineGraph, EngineNode, EngineRun
 from docpipe.graph.entrypoints import EntryPointReport, from_manifest, from_registry, link
 from docpipe.graph.grid import GridReport
 from docpipe.graph.grid import seams as grid_seams
-from docpipe.graph.match import MatchReport, apply, match
+from docpipe.graph.match import MatchReport, RootMismatchError, apply, diagnose_roots, match
 from docpipe.graph.model import GraphEdge, GraphIndex, GraphMeta, GraphNode
 from docpipe.graph.reach import Reachability, compute
 from docpipe.graph.search import SearchEntry
@@ -237,6 +237,12 @@ def build(
     if manifest is not None:
         say("сопоставляю с манифестом")
         attributes, match_report = match(index.nodes, manifest)
+        if match_report.matched == 0 and match_report.only_manifest and match_report.only_graph:
+            # Продолжать нечем: ни один атрибут манифеста не доедет до узла,
+            # `affects` по путям из `git diff` не найдёт ничего, и всё это
+            # без единого сообщения об ошибке.
+            diagnosis = diagnose_roots(index.nodes, manifest)
+            raise RootMismatchError(diagnosis or "манифест и разбор не сошлись ни в одном файле")
         index = GraphIndex(nodes=apply(index.nodes, attributes), edges=index.edges)
         report.update(match_report.as_counts())
 
@@ -362,9 +368,21 @@ def build(
     say("собираю пространство поиска")
     searchable = search_entries(index, manifest)
 
+    # Файлы, где собирается контейнер. Композиционный корень — обратная
+    # сторона общего компонента: в него не входит **ни одно** ребро вызова,
+    # поэтому `affects` по нему честно отвечает «точек входа ноль», и ноль
+    # читается как «правка ничего не задела». На деле правка `Program.cs`
+    # задевает всё, что здесь собирается, и ответ обязан это назвать (Р7).
+    composition_roots = (
+        tuple(sorted({registration.file for registration in manifest.di_registrations}))
+        if manifest is not None
+        else ()
+    )
+
     meta = GraphMeta(
         generation="",
         roots=reachability.roots,
+        composition_roots=composition_roots,
         engine_version=version,
         engine_checksum=engine.expected_sha256,
         repo=root.resolve().name,

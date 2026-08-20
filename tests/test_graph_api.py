@@ -218,3 +218,79 @@ def test_only_path_walks_the_graph() -> None:
         )
     ]
     assert walkers == ["path"]
+
+
+# ------------------------------------------------------------------------------------------
+# Ноль точек входа обязан быть объяснён (Р7)
+# ------------------------------------------------------------------------------------------
+
+
+def _composition_index() -> tuple[GraphIndex, GraphMeta]:
+    nodes = (GraphNode(key="Config.cs#Services", kind="type", name="Services", file="Config.cs"),)
+    index = GraphIndex(nodes=nodes, edges=())
+    meta = GraphMeta(
+        generation="x",
+        roots=(),
+        composition_roots=("Config.cs", "Program.cs"),
+    )
+    return index, meta
+
+
+def test_zero_entry_points_in_a_composition_root_says_why() -> None:
+    """Ноль по файлу сборки контейнера читается как «ничего не задето»."""
+    index, meta = _composition_index()
+    answer = affects(index, meta, compute(index), ["Config.cs"])
+    assert answer["found"] is True
+    assert answer["entry_points"]["total"] == 0
+    assert "сборку контейнера" in answer["note"]
+
+
+def test_composition_root_without_nodes_is_still_answered() -> None:
+    """`Program.cs` на top-level statements узлов не даёт вовсе.
+
+    «Не найдено» здесь формально верно и практически ложно: именно этот файл
+    меняется чаще прочих, и именно он задевает всё.
+    """
+    index, meta = _composition_index()
+    answer = affects(index, meta, compute(index), ["Program.cs"])
+    assert answer["found"] is False
+    assert answer["composition_roots"] == ["Program.cs"]
+    assert "задевает всё" in answer["note"]
+
+
+def test_zero_entry_points_elsewhere_says_something_else() -> None:
+    """Ноль вне композиционного корня объясняется по-другому — и тоже объясняется."""
+    nodes = (GraphNode(key="Dead.cs#Dead", kind="type", name="Dead", file="Dead.cs"),)
+    index = GraphIndex(nodes=nodes, edges=())
+    meta = GraphMeta(generation="x", roots=())
+    answer = affects(index, meta, compute(index), ["Dead.cs"])
+    assert "ни одна точка входа" in answer["note"]
+
+
+def test_page_limit_is_a_property_of_the_presentation() -> None:
+    """Усечение списка не должно менять ответ на вопрос «сколько».
+
+    Проверка на влитых правках читает список целиком, и если бы предел
+    был зашит, она объявляла бы пропуском то, что не поместилось.
+    """
+    nodes = [GraphNode(key="Code.cs#Code", kind="type", name="Code", file="Code.cs")]
+    edges = []
+    for number in range(25):
+        key = f"entry:http:get {number:02d}"
+        nodes.append(GraphNode(key=key, kind="entry_point", name=f"GET {number:02d}"))
+        edges.append(
+            GraphEdge(
+                kind="dispatches",
+                source=key,
+                target="Code.cs#Code",
+                via="entry:manifest",
+                confidence=1.0,
+            )
+        )
+    index = GraphIndex(nodes=tuple(nodes), edges=tuple(edges))
+    meta = GraphMeta(
+        generation="x", roots=tuple(sorted(n.key for n in nodes if n.kind == "entry_point"))
+    )
+    answer = affects(index, meta, compute(index), ["Code.cs"], limit=1_000)
+    assert answer["entry_points"]["total"] == 25
+    assert len(answer["entry_points"]["items"]) == 25

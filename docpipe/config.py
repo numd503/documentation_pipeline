@@ -255,6 +255,14 @@ class DocpipeConfig(BaseModel):
     # их значит завести правило, которое где-то сработает не на том.
     dispatch_interfaces: list[str] = Field(default_factory=list)
 
+    # Самодельные обёртки регистрации в контейнере: `AddSingletonAs`,
+    # `AddCashflowServices`. Стандартные `AddScoped`/`AddSingleton`/
+    # `AddTransient`/`AddHostedService` известны и без настройки; угадывать
+    # остальные нельзя — имя, придуманное по одному репозиторию, на другом
+    # совпадёт не с тем вызовом. Пустой список — умолчание, и репозиторий
+    # со своей обёрткой без этого ключа даёт ноль регистраций молча.
+    di_methods: list[str] = Field(default_factory=list)
+
     arch: str | None = None
 
     # Адаптеры реестров: читают исходные реестры при каждой сборке. Пустой

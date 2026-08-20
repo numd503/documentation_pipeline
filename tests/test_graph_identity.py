@@ -16,7 +16,7 @@ from docpipe.graph import (
     symbol_type_key,
 )
 from docpipe.graph.identity import generic_arity
-from docpipe.graph.match import apply
+from docpipe.graph.match import apply, diagnose_roots
 from docpipe.model import Manifest, Member, ParserVersions, SourceSpan, Symbol
 
 
@@ -321,3 +321,39 @@ def test_no_key_collides_on_the_wild_fixture(wild_solution: Path, tmp_path: Path
     assert type_keys, "фикстура не дала ни одного типа — тест проверяет пустоту"
     assert len(type_keys) == len(set(type_keys))
     assert len(member_keys) == len(set(member_keys))
+
+
+# ------------------------------------------------------------------------------------------
+# Разные корни: ноль совпадений — не неполнота
+# ------------------------------------------------------------------------------------------
+
+
+def test_leading_segment_is_named_when_nothing_matches() -> None:
+    """Манифест снят с `repo/App`, разбор — с `repo`.
+
+    Прогон при этом проходит целиком: индекс собирается, «сопоставлено 0»
+    печатается строкой среди прочих чисел, а `affects` по выводу `git diff`
+    не находит ни одного файла — и выглядит это как «правка ничего не задела».
+    """
+    manifest = manifest_of(symbol())
+    prefixed = tuple(
+        node.model_copy(
+            update={
+                "file": f"App/{node.file}",
+                "key": f"App/{node.key}",
+                "owner": node.owner,
+            }
+        )
+        for node in graph_nodes()
+    )
+    _, report = match(prefixed, manifest)
+    assert report.matched == 0
+
+    diagnosis = diagnose_roots(prefixed, manifest)
+    assert "App/" in diagnosis
+    assert "корни разные" in diagnosis
+
+
+def test_diagnosis_is_empty_when_there_is_nothing_to_diagnose() -> None:
+    """Выдумывать причину хуже, чем не ставить её: у пустой стороны диагноза нет."""
+    assert diagnose_roots((), manifest_of(symbol())) == ""

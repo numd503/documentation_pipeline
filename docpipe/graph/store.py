@@ -201,6 +201,7 @@ def _meta_rows(meta: GraphMeta) -> list[tuple[str, str]]:
         ("counts", json.dumps(meta.counts, sort_keys=True, ensure_ascii=False)),
         ("report", json.dumps(meta.report, sort_keys=True, ensure_ascii=False)),
         ("roots", json.dumps(meta.roots, ensure_ascii=False)),
+        ("composition_roots", json.dumps(meta.composition_roots, ensure_ascii=False)),
     ]
     return rows
 
@@ -227,6 +228,7 @@ def read_meta(path: Path) -> GraphMeta:
         counts=json.loads(rows.get("counts", "{}")),
         report=json.loads(rows.get("report", "{}")),
         roots=tuple(json.loads(rows.get("roots", "[]"))),
+        composition_roots=tuple(json.loads(rows.get("composition_roots", "[]"))),
     )
 
 

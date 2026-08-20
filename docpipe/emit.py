@@ -110,10 +110,10 @@ def write_run_meta(meta: RunMeta, out: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
-def _parse_one(item: tuple[str, bytes]) -> FileParseResult:
+def _parse_one(item: tuple[str, bytes, frozenset[str]]) -> FileParseResult:
     """Разбор в отдельном процессе. Верхнеуровневая функция — иначе не сериализуется."""
-    path, source = item
-    return parse_source(source, path)
+    path, source, di_methods = item
+    return parse_source(source, path, di_methods)
 
 
 def parse_files(
@@ -121,6 +121,7 @@ def parse_files(
     relatives: list[str],
     cache: ParseCache | None,
     jobs: int = 1,
+    di_methods: frozenset[str] = frozenset(),
 ) -> list[FileParseResult]:
     """Разобрать файлы, переиспользуя кэш. Результат отсортирован по пути.
 
@@ -128,7 +129,7 @@ def parse_files(
     а от порядка `results` зависит слияние `partial`-объявлений на T10.
     """
     results: list[FileParseResult] = []
-    pending: list[tuple[str, bytes]] = []
+    pending: list[tuple[str, bytes, frozenset[str]]] = []
 
     for relative in relatives:
         source = (root / relative).read_bytes()
@@ -136,7 +137,7 @@ def parse_files(
         if cached is not None:
             results.append(cached)
         else:
-            pending.append((relative, source))
+            pending.append((relative, source, di_methods))
 
     if pending and jobs > 1:
         with ProcessPoolExecutor(max_workers=jobs) as pool:
@@ -435,11 +436,18 @@ def run(
         [parse_csproj(root / relative, root) for relative in found.csproj_files]
     )
 
-    cache = ParseCache(cache_dir / "parse.sqlite", versions) if cache_dir else None
+    # Список самодельных методов регистрации входит в ключ кэша: он меняет
+    # результат разбора того же файла, а хэш содержимого при этом тот же.
+    di_methods = frozenset(config.di_methods)
+    cache = (
+        ParseCache(cache_dir / "parse.sqlite", versions, stable_json_dumps(sorted(di_methods)))
+        if cache_dir
+        else None
+    )
     outside: list[FileParseResult] = []
     missing: list[str] = []
     try:
-        results = parse_files(root, found.cs_files, cache, jobs)
+        results = parse_files(root, found.cs_files, cache, jobs, di_methods)
         if scope is None:
             if cache is not None:
                 cache.prune(set(found.cs_files))

@@ -143,3 +143,90 @@ def test_verbatim_string_is_read_without_quotes() -> None:
         """
     )
     assert result.literal_calls[0].arguments == ["AspNetUsers"]
+
+
+# ------------------------------------------------------------------------------------------
+# Самодельные обёртки регистрации (G04, найдено на squidex)
+# ------------------------------------------------------------------------------------------
+
+WRAPPER_SOURCE = b"""
+public static class Services
+{
+    public static void Configure(IServiceCollection services)
+    {
+        services.AddSingletonAs<TempFolderBackupArchiveLocation>()
+            .As<IBackupArchiveLocation>();
+
+        services.AddSingletonAs<AppResolver>()
+            .AsSelf();
+
+        services.AddTransientAs<Multi>()
+            .As<IFirst>()
+            .As<ISecond>();
+
+        services.AddScoped<IFoo, Foo>();
+    }
+}
+"""
+
+
+def test_custom_registration_methods_are_invisible_without_configuration() -> None:
+    """Без ключа конфигурации обёртки не видны — и это ноль без сообщения.
+
+    Именно так на squidex терялись 314 регистраций из 361: отчёт показывал
+    непустое число, потому что стандартная форма в репозитории тоже была.
+    """
+    result = parse_source(WRAPPER_SOURCE, "Services.cs")
+    names = {(r.service_type, r.impl_type) for r in result.di_registrations}
+    assert names == {("IFoo", "Foo")}
+
+
+def test_custom_registration_methods_come_from_configuration() -> None:
+    methods = frozenset({"AddSingletonAs", "AddTransientAs"})
+    result = parse_source(WRAPPER_SOURCE, "Services.cs", methods)
+    pairs = {(r.service_type, r.impl_type) for r in result.di_registrations}
+    assert ("IBackupArchiveLocation", "TempFolderBackupArchiveLocation") in pairs
+    # `.AsSelf()` тип-аргумента не несёт: регистрация остаётся на себя.
+    assert ("AppResolver", "AppResolver") in pairs
+    # Одно звено цепочки — одна регистрация: два интерфейса на одну реализацию
+    # законны и обязаны дать два ребра, а не одно.
+    assert ("IFirst", "Multi") in pairs
+    assert ("ISecond", "Multi") in pairs
+
+
+def test_lifetime_of_custom_method_comes_from_its_name() -> None:
+    """Вид времени жизни читается из имени подстрокой, а не угадывается."""
+    result = parse_source(WRAPPER_SOURCE, "Services.cs", frozenset({"AddTransientAs"}))
+    lifetimes = {r.lifetime for r in result.di_registrations if r.impl_type == "Multi"}
+    assert lifetimes == {"transient"}
+
+
+def test_unnamed_lifetime_is_unknown_and_not_a_guess() -> None:
+    source = b"""
+    public static class Services
+    {
+        public static void Configure(IServiceCollection services)
+        {
+            services.RegisterCashflow<Impl>().As<IThing>();
+        }
+    }
+    """
+    result = parse_source(source, "Services.cs", frozenset({"RegisterCashflow"}))
+    assert [(r.service_type, r.lifetime) for r in result.di_registrations] == [
+        ("IThing", "unknown")
+    ]
+
+
+def test_chain_is_not_read_through_an_argument() -> None:
+    """`.As<…>` снаружи чужого вызова к нашей регистрации не относится."""
+    source = b"""
+    public static class Services
+    {
+        public static void Configure(IServiceCollection services)
+        {
+            Wrap(services.AddSingletonAs<Impl>()).As<IWrong>();
+        }
+    }
+    """
+    result = parse_source(source, "Services.cs", frozenset({"AddSingletonAs"}))
+    assert [(r.service_type, r.impl_type) for r in result.di_registrations] == [("Impl", "Impl")]

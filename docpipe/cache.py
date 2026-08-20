@@ -20,7 +20,12 @@ from docpipe.model import FileParseResult, ParserVersions
 
 # Версия формата хранения. Менять при любом изменении схемы или способа
 # сериализации payload — иначе старый кэш будет прочитан как новый.
-CACHE_VERSION = "3"
+#
+# И при изменении **правил разбора** тоже: версия грамматики их не покрывает,
+# она та же, а вывод другой. Проверено на себе — разбор цепочки `.As<I>()`
+# после самодельной обёртки регистрации дал прежние числа, потому что файлы
+# приехали из кэша, и выглядело это как «правка не сработала».
+CACHE_VERSION = "4"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta  (key TEXT PRIMARY KEY, value TEXT);
@@ -42,13 +47,13 @@ class ParseCache:
     на поведение внутри прогона это не влияет.
     """
 
-    def __init__(self, db_path: Path, parser_versions: ParserVersions) -> None:
+    def __init__(self, db_path: Path, parser_versions: ParserVersions, options: str = "") -> None:
         self._path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._connection = self._connect()
         self._connection.executescript(_SCHEMA)
-        self._invalidate_if_stale(parser_versions)
+        self._invalidate_if_stale(parser_versions, options)
 
     # ----------------------------------------------------------------------------------
     # Открытие и инвалидация
@@ -69,7 +74,7 @@ class ParseCache:
             self._path.unlink(missing_ok=True)
             return sqlite3.connect(self._path)
 
-    def _invalidate_if_stale(self, parser_versions: ParserVersions) -> None:
+    def _invalidate_if_stale(self, parser_versions: ParserVersions, options: str = "") -> None:
         """Очистить кэш, если он писался другой версией парсера или формата.
 
         Апгрейд грамматики может законно изменить вывод парсера на том же
@@ -80,6 +85,9 @@ class ParseCache:
         expected = {
             "cache_version": CACHE_VERSION,
             "parser_versions": stable_json_dumps(parser_versions.model_dump()),
+            # Настройки, меняющие результат разбора того же файла. Версия
+            # парсера их не покрывает: она та же, а вывод другой.
+            "options": options,
         }
         stored = dict(self._connection.execute("SELECT key, value FROM meta").fetchall())
 

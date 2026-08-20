@@ -296,3 +296,16 @@ def test_graph_does_not_touch_the_manifest() -> None:
         assert "from docpipe.emit" not in text, f"{path}: индекс не пишет манифест"
         assert "from docpipe.tree" not in text, f"{path}: индекс не собирает манифест"
         assert "write_manifest" not in text, f"{path}: индекс не пишет манифест"
+
+
+def test_composition_roots_survive_the_round_trip(tmp_path: Path) -> None:
+    """Файлы сборки контейнера — часть паспорта, а не пометка на узлах.
+
+    У самого частого композиционного корня — `Program.cs` на top-level
+    statements — узлов нет вовсе, помечать было бы нечего.
+    """
+    index = GraphIndex(nodes=(GraphNode(key="a.cs#A", kind="type", name="A", file="a.cs"),))
+    meta = GraphMeta(generation="", composition_roots=("Program.cs", "Startup.cs"))
+    target = tmp_path / "index.db"
+    write_index(target, index, meta)
+    assert read_meta(target).composition_roots == ("Program.cs", "Startup.cs")

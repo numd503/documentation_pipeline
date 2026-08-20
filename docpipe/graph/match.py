@@ -80,6 +80,59 @@ def _manifest_index(
     return types, members
 
 
+class RootMismatchError(RuntimeError):
+    """Манифест и разбор сняты с разных корней."""
+
+
+def diagnose_roots(nodes: tuple[GraphNode, ...], manifest: Manifest) -> str:
+    """Почему не совпало **ничего**.
+
+    Ноль совпадений при непустых обеих сторонах — это не неполнота, а разные
+    корни: манифест снят с `repo/App`, разбор — с `repo`, и пути отличаются
+    одним ведущим сегментом. Прогон при этом проходит целиком: индекс
+    собирается, отчёт печатает «сопоставлено 0» строкой среди прочих чисел,
+    `affects` по выводу `git diff` не находит ни одного файла, а выглядит это
+    как «правка ничего не задела». Проверять надо здесь, потому что здесь обе
+    стороны видны сразу.
+
+    Возвращает пустую строку, когда причина не опознана: выдумывать диагноз
+    хуже, чем не ставить его.
+    """
+    graph_files = {node.file for node in nodes if node.file}
+    manifest_files = {
+        source.path
+        for node in manifest.nodes
+        if node.symbol is not None
+        for source in node.symbol.sources
+    }
+    if not graph_files or not manifest_files:
+        return ""
+
+    for path in sorted(manifest_files):
+        for candidate in sorted(graph_files):
+            if candidate.endswith(f"/{path}"):
+                prefix = candidate[: -len(path) - 1]
+                return (
+                    f"корни разные: у разбора пути начинаются с `{prefix}/`, "
+                    f"у манифеста — нет (`{path}` против `{candidate}`). "
+                    "Совпасть не может ничего, поэтому дальше идти незачем: "
+                    f"либо соберите манифест от `--root …/{prefix}`, либо "
+                    "разбор — от того же корня, что и манифест"
+                )
+            if path.endswith(f"/{candidate}"):
+                prefix = path[: -len(candidate) - 1]
+                return (
+                    f"корни разные: у манифеста пути начинаются с `{prefix}/`, "
+                    f"у разбора — нет (`{path}` против `{candidate}`). "
+                    "Совпасть не может ничего"
+                )
+    return (
+        "не совпало ни одного объявления при непустых обеих сторонах. "
+        f"Пример пути разбора: `{sorted(graph_files)[0]}`, "
+        f"пример пути манифеста: `{sorted(manifest_files)[0]}`"
+    )
+
+
 def match(
     nodes: tuple[GraphNode, ...], manifest: Manifest
 ) -> tuple[dict[str, dict[str, str]], MatchReport]:

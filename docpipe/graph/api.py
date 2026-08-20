@@ -178,18 +178,50 @@ def reaches(
     }
 
 
+def _why_empty(roots: set[str], shared: list[dict[str, Any]], composition: list[str]) -> str:
+    """Объяснить ноль точек входа. Пустой ответ без причины запрещён (Р7).
+
+    Ноль здесь означает три разные вещи, и по числу они неразличимы:
+    композиционный корень (рёбер вызова в него не входит по построению,
+    а влияние — на всё, что здесь собирается), мёртвый код и путь,
+    которого в графе нет. Читатель, получивший голый ноль, прочтёт его
+    как «правка ничего не задела» — то есть как самый безопасный
+    из трёх, а верен чаще самый опасный.
+    """
+    if roots or shared:
+        return ""
+    if composition:
+        return (
+            "точек входа ноль, потому что изменение затрагивает сборку контейнера "
+            f"({', '.join(composition[:3])}): рёбер вызова в такой узел не входит "
+            "по построению, а влияние — на всё, что здесь собирается. "
+            "Сузить анализ нечем, и это не то же самое, что «ничего не задето»"
+        )
+    return (
+        "узлы найдены, но ни одна точка входа до них не доходит: либо код "
+        "не используется, либо путь идёт способом, которого в графе нет — "
+        "смотрите `incomplete` этого же ответа"
+    )
+
+
 def affects(
     index: GraphIndex,
     meta: GraphMeta,
     reachability: Reachability,
     keys: list[str],
     threshold: int = DEFAULT_FANOUT_THRESHOLD,
+    limit: int = PAGE,
 ) -> dict[str, Any]:
     """Какие точки входа затронет изменение этих узлов или файлов.
 
     Принимает и ключи узлов, и пути файлов: вывод `git diff --name-only` —
     основной сценарий в PR, и требовать от вызывающего перевода путей
     в ключи значит требовать знания, которого у него нет.
+
+    `limit` открыт наружу ради проверки на влитых правках. Усечение списка
+    — свойство представления, а не ответа: проверка, читающая усечённый
+    список как полный, объявит пропуском то, что просто не поместилось
+    в страницу, и отчёт о качестве будет мерить размер страницы.
     """
     nodes = {node.key: node for node in index.nodes}
     by_file: dict[str, list[GraphNode]] = {}
@@ -208,6 +240,23 @@ def affects(
             unknown.append(key)
 
     if not selected:
+        roots_asked = sorted(set(keys) & set(meta.composition_roots))
+        if roots_asked:
+            # Самый частый композиционный корень — `Program.cs` на top-level
+            # statements: ни класса, ни метода, поэтому узлов у него нет
+            # и «не найдено» — формально верно и практически ложно.
+            return {
+                "found": False,
+                "asked": keys,
+                "unknown": [key for key in unknown if key not in roots_asked],
+                "composition_roots": roots_asked,
+                "note": (
+                    "узлов в этих файлах нет (сборка контейнера обычно живёт "
+                    "в top-level statements), но здесь собирается приложение: "
+                    "изменение задевает всё, что регистрируется, а не ничего. "
+                    "Сузить анализ нечем"
+                ),
+            }
         return {
             "found": False,
             "asked": keys,
@@ -220,6 +269,9 @@ def affects(
 
     roots: set[str] = set()
     shared: list[dict[str, Any]] = []
+    composition: list[str] = sorted(
+        {node.file for node in selected if node.file in set(meta.composition_roots)}
+    )
     for node in selected:
         fanout = reachability.fanout(node.key)
         if fanout > threshold:
@@ -248,10 +300,11 @@ def affects(
                 ),
                 key=lambda item: str(item["name"]),
             ),
-            PAGE,
+            limit,
             "docpipe graph affects <узел>",
         ),
-        "note": (
+        "note": _why_empty(roots, shared, composition)
+        or (
             "для общих компонентов список точек входа не строится намеренно: "
             "инструмент, который всегда что-то отвечает, теряет доверие целиком"
         ),

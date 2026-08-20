@@ -49,9 +49,10 @@ from docpipe.graph import read_index, read_meta, read_reach, write_index
 from docpipe.graph.coverage import coverage as coverage_of
 from docpipe.graph.coverage import format_coverage
 from docpipe.graph.engine import Engine, EngineError
-from docpipe.graph.evaluate import format_score
+from docpipe.graph.evaluate import check_requests, format_requests, format_score, merged_requests
 from docpipe.graph.evaluate import load as load_questions
 from docpipe.graph.evaluate import run as run_questions
+from docpipe.graph.match import RootMismatchError
 from docpipe.graph.mcp import Server as McpServer
 from docpipe.graph.mcp import serve as serve_mcp
 from docpipe.graph.reach import DEFAULT_FANOUT_THRESHOLD
@@ -1898,6 +1899,9 @@ def graph_build(
     except EngineError as exc:
         typer.echo(f"Разбор не состоялся: {exc}", err=True)
         raise typer.Exit(code=2) from exc
+    except RootMismatchError as exc:
+        typer.echo(f"Манифест и разбор сняты с разных корней: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
 
     target = out or Path(settings.graph.out)
     meta = write_index(target, result.index, result.meta, result.reachability, result.searchable)
@@ -2374,6 +2378,47 @@ def graph_coverage(
     share = report.covered / report.entry_points if report.entry_points else 1.0
     if share < fail_under:
         typer.echo(f"Описано {share:.0%}, порог {fail_under:.0%}", err=True)
+        raise typer.Exit(code=1)
+
+
+@graph_app.command("pr-check")
+def graph_pr_check(
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория с историей git.")],
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    count: Annotated[int, typer.Option("--count", help="Сколько влитых правок взять.")] = 10,
+    scan: Annotated[
+        int, typer.Option("--scan", help="Сколько последних правок просмотреть в поиске кода.")
+    ] = 100,
+    fail_on_missed: Annotated[
+        bool,
+        typer.Option("--fail-on-missed", help="Ненулевой код, если точка входа пропущена."),
+    ] = False,
+) -> None:
+    """Что предсказал `affects` на уже влитых правках.
+
+    Настоящая истина — «что реально затрагивалось в ревью» — есть только там,
+    где есть ревью. Проверяемая её часть есть везде: если правка меняла файл
+    точки входа, `affects` обязан эту точку входа назвать. Пропуск здесь —
+    ложное отрицание, самый опасный вид ошибки, потому что он тихий.
+    """
+    path, _ = _open_index(index, config)
+    requests = merged_requests(root, count, scan)
+    if not requests:
+        typer.echo(
+            f"В {root} не нашлось истории git — брать нечего. "
+            "Проверка работает на репозитории с историей, а не на выгрузке.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    outcomes = check_requests(requests, read_index(path), read_meta(path), read_reach(path))
+    typer.echo(format_requests(outcomes), nl=False)
+    if fail_on_missed and any(outcome.missed for outcome in outcomes):
         raise typer.Exit(code=1)
 
 

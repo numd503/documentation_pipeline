@@ -232,3 +232,24 @@ def test_declarations_carry_decl_hash_through_cache(tmp_path: Path) -> None:
     assert restored is not None
     assert restored.declarations[0].decl_hash == parsed.declarations[0].decl_hash
     assert restored.declarations[0].decl_hash.startswith("sha256:")
+
+
+def test_options_are_part_of_the_cache_key(tmp_path: Path) -> None:
+    """Настройки разбора меняют вывод на том же файле — значит, и ключ кэша.
+
+    Список самодельных методов регистрации приходит из конфигурации: без него
+    в ключе смена списка не пересобрала бы ничего, и новые регистрации
+    не появились бы до ручной чистки каталога кэша.
+    """
+    versions = ParserVersions(tree_sitter="0.25.0", grammar_c_sharp="0.23.1")
+    result = FileParseResult(path="a.cs", content_hash="h")
+
+    with ParseCache(tmp_path / "c.sqlite", versions, options='["AddSingletonAs"]') as cache:
+        cache.put(result)
+        assert cache.get("a.cs", "h") is not None
+
+    with ParseCache(tmp_path / "c.sqlite", versions, options='["AddSingletonAs"]') as cache:
+        assert cache.get("a.cs", "h") is not None
+
+    with ParseCache(tmp_path / "c.sqlite", versions, options="[]") as cache:
+        assert cache.get("a.cs", "h") is None
