@@ -84,6 +84,11 @@ uv run docpipe arch snapshot --out arch-registry.yaml --root ПУТЬ
 # индекс связей (G01): разбор чужим движком, проекция и запись — наши
 uv run docpipe graph build --root ПУТЬ    # нужен ключ `graph.engine_path`
 uv run docpipe graph info                 # паспорт индекса: чем собран и что не вошло
+uv run docpipe graph report --out artifacts/entrypoints.md   # таблица точек входа (Веха 2)
+uv run docpipe graph reaches "имя точки входа"               # что она достигает
+uv run docpipe graph affects ИМЯ_УЗЛА                        # какие точки входа затронет
+uv run docpipe graph path ОТКУДА КУДА                        # как связаны две сущности
+uv run docpipe graph health               # отчёт о неполноте: что не разрешилось
 
 # полная проверка перед коммитом
 uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv run pytest -q

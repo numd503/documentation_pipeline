@@ -20,11 +20,13 @@ from docpipe.graph.model import (
     GraphMeta,
     GraphNode,
 )
+from docpipe.graph.reach import Reachability, compute, path, shared_components
 from docpipe.graph.store import (
     IndexVersionError,
     logical_hash,
     read_index,
     read_meta,
+    read_reach,
     write_index,
 )
 
@@ -35,6 +37,7 @@ __all__ = [
     "BindingReport",
     "BuildResult",
     "DataReport",
+    "Reachability",
     "EntryPointReport",
     "MatchReport",
     "GraphEdge",
@@ -45,6 +48,7 @@ __all__ = [
     "binds",
     "build",
     "complete",
+    "compute",
     "data_key",
     "entry_key",
     "language_of",
@@ -56,7 +60,10 @@ __all__ = [
     "logical_hash",
     "node_key",
     "project",
+    "path",
     "read_index",
     "read_meta",
+    "read_reach",
+    "shared_components",
     "write_index",
 ]

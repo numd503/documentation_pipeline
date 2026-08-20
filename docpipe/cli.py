@@ -45,8 +45,12 @@ from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.explain import ANY, format_selection, select, selection_json
 from docpipe.graph import build as build_graph
-from docpipe.graph import read_index, read_meta, write_index
+from docpipe.graph import read_index, read_meta, read_reach, write_index
 from docpipe.graph.engine import Engine, EngineError
+from docpipe.graph.reach import DEFAULT_FANOUT_THRESHOLD
+from docpipe.graph.reach import path as graph_path
+from docpipe.graph.report import health as health_report
+from docpipe.graph.report import render as render_report
 from docpipe.hashing import content_hash, stable_json_dumps
 from docpipe.materialize.apply import apply_plan, format_result, write_atomic
 from docpipe.materialize.build import BuildContext, build_context
@@ -1860,13 +1864,14 @@ def graph_build(
         raise typer.Exit(code=2) from exc
 
     target = out or Path(settings.graph.out)
-    meta = write_index(target, result.index, result.meta)
+    meta = write_index(target, result.index, result.meta, result.reachability)
 
     typer.echo(
         f"Индекс записан: {target}\n"
         f"  узлов: {meta.counts.get('nodes', 0)}, рёбер: {meta.counts.get('edges', 0)}\n"
         f"  у разборщика было: узлов {meta.counts.get('engine_nodes', 0)}, "
         f"рёбер {meta.counts.get('engine_edges', 0)}\n"
+        f"  корней: {meta.counts.get('roots', 0)}\n"
         f"  поколение: {meta.generation}"
     )
     if meta.report:
@@ -1967,6 +1972,216 @@ def graph_entrypoints(
         f"\nВсего корней: {len(roots)}, из них связано с кодом: "
         f"{sum(1 for node in roots if node.key in linked)}"
     )
+
+
+def _open_index(index: Path | None, config: Path | None) -> tuple[Path, DocpipeConfig]:
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    path = index or Path(settings.graph.out)
+    if not path.is_file():
+        typer.echo(
+            f"Индекса нет: {path}. Соберите: docpipe graph build --root <репозиторий>",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    return path, settings
+
+
+@graph_app.command("report")
+def graph_report(
+    index: Annotated[
+        Path | None, typer.Argument(help="Файл индекса. Без аргумента — `graph.out`.")
+    ] = None,
+    out: Annotated[
+        Path | None, typer.Option("--out", help="Куда записать markdown. Без флага — на экран.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    threshold: Annotated[
+        int,
+        typer.Option("--fanout", help="Порог веерности: выше него узел считается общим."),
+    ] = DEFAULT_FANOUT_THRESHOLD,
+) -> None:
+    """Таблица точек входа: что достигается, какие таблицы, где обрывается.
+
+    Одна команда, а не сумма трёх, которые надо догадаться позвать.
+    Формат детерминированный: отчёт кладут в ревью и сравнивают между
+    прогонами.
+    """
+    path, _ = _open_index(index, config)
+    try:
+        loaded = read_index(path)
+        meta = read_meta(path)
+        reachability = read_reach(path)
+    except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    text = render_report(loaded, meta, reachability, threshold)
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+        typer.echo(f"Отчёт записан: {out}")
+        return
+    typer.echo(text)
+
+
+@graph_app.command("health")
+def graph_health(
+    index: Annotated[
+        Path | None, typer.Argument(help="Файл индекса. Без аргумента — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+) -> None:
+    """Отчёт о неполноте: что не разрешилось и в каком количестве.
+
+    Красным по умолчанию отчёт не бывает: линт, красный с первого дня,
+    выключают на второй.
+    """
+    path, _ = _open_index(index, config)
+    try:
+        typer.echo(health_report(read_meta(path)), nl=False)
+    except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+
+@graph_app.command("reaches")
+def graph_reaches(
+    root: Annotated[str, typer.Argument(help="Ключ или имя точки входа.")],
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    kind: Annotated[
+        str | None, typer.Option("--kind", help="Только узлы этого вида: member, type, data.")
+    ] = None,
+) -> None:
+    """Что достигает эта точка входа: код, таблицы, швы."""
+    path, _ = _open_index(index, config)
+    loaded = read_index(path)
+    reachability = read_reach(path)
+
+    nodes = {node.key: node for node in loaded.nodes}
+    candidates = [
+        node
+        for node in loaded.nodes
+        if node.kind == "entry_point" and (node.key == root or root.lower() in node.name.lower())
+    ]
+    if not candidates:
+        # Пустой ответ запрещён: называется, что искали и что рядом.
+        known = sorted(node.name for node in loaded.nodes if node.kind == "entry_point")[:10]
+        typer.echo(f"Точка входа {root!r} не найдена. Известные корни (первые): {known}")
+        raise typer.Exit(code=1)
+    if len(candidates) > 1:
+        typer.echo(f"Под {root!r} подходит несколько корней — уточните:")
+        for node in candidates[:10]:
+            typer.echo(f"  {node.key}  {node.name}")
+        raise typer.Exit(code=1)
+
+    found = candidates[0]
+    reached = [nodes[key] for key in reachability.reached_by(found.key) if key in nodes]
+    if kind:
+        reached = [node for node in reached if node.kind == kind]
+    typer.echo(f"{found.name} ({found.attributes.get('entry_kind', '—')})")
+    for group in ("data", "member", "type", "seam"):
+        selected = sorted(node.name or node.key for node in reached if node.kind == group)
+        if selected:
+            typer.echo(f"  {group}: {len(selected)}")
+            for name in selected[:15]:
+                typer.echo(f"    {name}")
+    if not reached:
+        typer.echo(
+            "  ничего не достигается: у корня нет узла кода либо из него не видно ни одного вызова"
+        )
+
+
+@graph_app.command("affects")
+def graph_affects(
+    node: Annotated[str, typer.Argument(help="Ключ узла или часть его имени.")],
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    threshold: Annotated[
+        int, typer.Option("--fanout", help="Порог веерности: выше него анализ не сужает.")
+    ] = DEFAULT_FANOUT_THRESHOLD,
+) -> None:
+    """Какие точки входа затронет изменение этого узла.
+
+    Узел выше порога веерности — это не «затронуто триста процессов»,
+    а «общий компонент, анализ не сужает». Инструмент, который всегда
+    что-то отвечает, теряет доверие целиком.
+    """
+    path, _ = _open_index(index, config)
+    loaded = read_index(path)
+    reachability = read_reach(path)
+    nodes = {item.key: item for item in loaded.nodes}
+
+    matches = [
+        item
+        for item in loaded.nodes
+        if item.key == node or node.lower() in (item.name or "").lower()
+    ]
+    if not matches:
+        typer.echo(f"Узел {node!r} не найден. Проверьте `docpipe graph entrypoints` и имена узлов.")
+        raise typer.Exit(code=1)
+
+    for item in sorted(matches, key=lambda value: value.key)[:5]:
+        fanout = reachability.fanout(item.key)
+        typer.echo(f"{item.key}")
+        if fanout > threshold:
+            typer.echo(
+                f"  ОБЩИЙ КОМПОНЕНТ: достижим от {fanout} корней при пороге {threshold}. "
+                "Анализ влияния здесь не сужает — список точек входа не печатается "
+                "намеренно."
+            )
+            continue
+        roots = [nodes[key].name for key in reachability.roots_of(item.key) if key in nodes]
+        if not roots:
+            typer.echo("  не достижим ни от одной точки входа")
+            continue
+        typer.echo(f"  точек входа: {len(roots)}")
+        for name in sorted(roots)[:20]:
+            typer.echo(f"    {name}")
+
+
+@graph_app.command("path")
+def graph_path_command(
+    source: Annotated[str, typer.Argument(help="Откуда: ключ узла.")],
+    target: Annotated[str, typer.Argument(help="Куда: ключ узла.")],
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    depth: Annotated[int, typer.Option("--depth", help="Предел глубины обхода.")] = 12,
+) -> None:
+    """Как связаны две сущности. Единственная команда, которая обходит граф."""
+    path, _ = _open_index(index, config)
+    loaded = read_index(path)
+    found = graph_path(loaded, source, target, depth)
+    if not found:
+        typer.echo(
+            f"Пути от {source} до {target} не нашлось при глубине {depth}. "
+            "Это может значить и «связи нет», и «цепочка длиннее предела» — "
+            "попробуйте --depth."
+        )
+        raise typer.Exit(code=1)
+    typer.echo(source)
+    for edge in found:
+        typer.echo(f"  --{edge.kind}({edge.via})--> {edge.target}")
 
 
 @graph_app.command("info")

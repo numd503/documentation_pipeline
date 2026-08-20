@@ -28,6 +28,7 @@ from docpipe.graph.engine import Engine, EngineGraph, EngineNode, EngineRun
 from docpipe.graph.entrypoints import EntryPointReport, from_manifest, from_registry, link
 from docpipe.graph.match import MatchReport, apply, match
 from docpipe.graph.model import GraphEdge, GraphIndex, GraphMeta, GraphNode
+from docpipe.graph.reach import Reachability, compute
 from docpipe.model import Manifest
 
 # Расширение → язык. Служит одному решению: чьи рёбра брать. Список короткий
@@ -69,6 +70,7 @@ class BuildResult:
     entry_points: EntryPointReport | None = None
     binding: BindingReport | None = None
     data: DataReport | None = None
+    reachability: Reachability | None = None
 
 
 def language_of(file: str) -> str:
@@ -271,14 +273,21 @@ def build(
         if joined:
             report["узлов данных сведено из двух источников"] = joined
 
+    # Достижимость считается последней: к этому моменту в индексе есть все
+    # рёбра — чужие вызовы, наши довершения, диспетчеризация и обращения
+    # к данным. Посчитать её раньше значит посчитать по половине графа.
+    reachability = compute(index)
+
     meta = GraphMeta(
         generation="",
+        roots=reachability.roots,
         engine_version=version,
         engine_checksum=engine.expected_sha256,
         repo=root.resolve().name,
         counts={
             "nodes": len(index.nodes),
             "edges": len(index.edges),
+            "roots": len(reachability.roots),
             "engine_nodes": run.nodes,
             "engine_edges": run.edges,
         },
@@ -292,4 +301,5 @@ def build(
         entry_points=entry_report,
         binding=binding_report,
         data=data_report,
+        reachability=reachability,
     )

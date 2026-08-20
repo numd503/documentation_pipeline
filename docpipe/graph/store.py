@@ -21,6 +21,7 @@ import sqlite3
 from pathlib import Path
 
 from docpipe.graph.model import SCHEMA_VERSION, GraphEdge, GraphIndex, GraphMeta, GraphNode
+from docpipe.graph.reach import Reachability
 from docpipe.hashing import stable_hash
 
 _SCHEMA = """
@@ -42,6 +43,11 @@ CREATE TABLE edges (
     via TEXT NOT NULL,
     confidence REAL NOT NULL,
     attributes TEXT NOT NULL
+);
+CREATE TABLE reach (
+    node TEXT PRIMARY KEY,
+    mask BLOB NOT NULL,
+    component INTEGER NOT NULL
 );
 CREATE INDEX edges_source ON edges (source, kind);
 CREATE INDEX edges_target ON edges (target, kind);
@@ -72,8 +78,19 @@ def sorted_edges(edges: tuple[GraphEdge, ...]) -> list[GraphEdge]:
     return sorted(edges, key=lambda edge: (edge.kind, edge.source, edge.target, edge.via))
 
 
-def write_index(path: Path, index: GraphIndex, meta: GraphMeta) -> GraphMeta:
-    """Записать индекс атомарно и вернуть паспорт с проставленным поколением."""
+def write_index(
+    path: Path,
+    index: GraphIndex,
+    meta: GraphMeta,
+    reachability: Reachability | None = None,
+) -> GraphMeta:
+    """Записать индекс атомарно и вернуть паспорт с проставленным поколением.
+
+    Достижимость в хэш логического содержимого **не входит**: она выводится
+    из узлов и рёбер, и включать её значило бы хэшировать одно и то же дважды.
+    Порядок корней при этом хранится: биты маски назначены именно ему,
+    и без него маска — набор чисел без смысла.
+    """
     generation = logical_hash(index)
     meta = meta.model_copy(update={"generation": generation, "schema_version": SCHEMA_VERSION})
 
@@ -121,6 +138,18 @@ def write_index(path: Path, index: GraphIndex, meta: GraphMeta) -> GraphMeta:
                 for edge in sorted_edges(index.edges)
             ],
         )
+        if reachability is not None:
+            connection.executemany(
+                "INSERT INTO reach (node, mask, component) VALUES (?, ?, ?)",
+                [
+                    (
+                        key,
+                        mask.to_bytes((mask.bit_length() + 7) // 8 or 1, "big"),
+                        reachability.component_size.get(key, 1),
+                    )
+                    for key, mask in sorted(reachability.masks.items())
+                ],
+            )
         connection.commit()
     finally:
         connection.close()
@@ -140,6 +169,7 @@ def _meta_rows(meta: GraphMeta) -> list[tuple[str, str]]:
         ("repo", meta.repo),
         ("counts", json.dumps(meta.counts, sort_keys=True, ensure_ascii=False)),
         ("report", json.dumps(meta.report, sort_keys=True, ensure_ascii=False)),
+        ("roots", json.dumps(meta.roots, ensure_ascii=False)),
     ]
     return rows
 
@@ -165,6 +195,7 @@ def read_meta(path: Path) -> GraphMeta:
         repo=rows.get("repo", ""),
         counts=json.loads(rows.get("counts", "{}")),
         report=json.loads(rows.get("report", "{}")),
+        roots=tuple(json.loads(rows.get("roots", "[]"))),
     )
 
 
@@ -204,3 +235,22 @@ def read_index(path: Path) -> GraphIndex:
     finally:
         connection.close()
     return GraphIndex(nodes=tuple(nodes), edges=tuple(edges))
+
+
+def read_reach(path: Path) -> Reachability:
+    """Прочитать предвычисленную достижимость.
+
+    Порядок корней берётся из паспорта: биты маски назначены ему, и прочитать
+    маску, не зная порядка, нельзя — числа совпадут, а смысл будет чужой.
+    """
+    meta = read_meta(path)
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        rows = connection.execute("SELECT node, mask, component FROM reach").fetchall()
+    finally:
+        connection.close()
+    return Reachability(
+        roots=meta.roots,
+        masks={row[0]: int.from_bytes(row[1], "big") for row in rows},
+        component_size={row[0]: row[2] for row in rows},
+    )
