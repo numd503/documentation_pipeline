@@ -239,7 +239,15 @@ def test_target_diverging_from_the_registration_is_reported_and_completed() -> N
     produced, report = complete(nodes, edges, bind_edges, report)
     assert report.diverged == 1
     assert [edge.target for edge in produced] == ["src/A/Cached.cs#Cached.Do"]
-    assert report.alternatives == 1
+    # Ребро построено поверх выбора, который разошёлся с регистрацией, —
+    # и считается отдельно от обычной альтернативы. Посылка у него слабее:
+    # ровно так же выглядит вызов статического помощника, чьё имя совпало
+    # с именем члена интерфейса (`SimpleMapper.Map` → `AssemblyTypeProvider.Map`
+    # на squidex), а различить их нечем — получателя вызова у нас нет.
+    assert report.alternatives == 0
+    assert report.from_diverged == 1
+    assert produced[0].via.endswith("diverged")
+    assert produced[0].confidence < 1
     assert report.examples["цель разошлась с регистрацией"]
 
 
@@ -443,3 +451,28 @@ def test_send_site_without_a_code_node_is_counted() -> None:
     )
     assert edges == []
     assert report["мест отправки без узла кода"] == 1
+
+
+def test_name_collision_with_a_static_helper_is_marked_not_hidden() -> None:
+    """Обращение к статическому помощнику, чьё имя совпало с членом интерфейса.
+
+    На 0.6.0 вызов разрешается по имени члена, поэтому
+    `SimpleMapper.Map(this, new X())` приезжает в `AssemblyTypeProvider.Map`,
+    который и правда реализует `ITypeProvider` (измерено на squidex: 562
+    расхождения, 2451 ребро поверх них). Структурно этот случай неотличим
+    от полезного — от декоратора, — поэтому он не отбрасывается, а метится
+    и считается отдельно: истолковать число обязан человек, а не догадка.
+    """
+    nodes, _ = decorator_case()
+    edges = (
+        calls("src/A/Caller.cs#Caller.Run", "src/A/Plain.cs#Plain.Do"),
+        inherits("src/A/Plain.cs#Plain", "src/A/IService.cs#IService"),
+    )
+    bind_edges, report = binds([registration("IService", "Cached")], nodes)
+    produced, report = complete(nodes, edges, bind_edges, report)
+
+    assert report.from_diverged == 1
+    assert report.as_counts()["рёбер к другим реализациям поверх расхождения"] == 1
+    # Ребро остаётся в графе: из расхождения бывает и польза. Но уверенность
+    # у него ниже, чем у альтернативы поверх подтверждённого выбора.
+    assert 0 < produced[0].confidence < 1

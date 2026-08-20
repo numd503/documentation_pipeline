@@ -33,6 +33,20 @@ VIA_REGISTRATION: Final[str] = "di:registration"
 VIA_COMPLETION: Final[str] = "di:completion"
 VIA_ALTERNATIVE: Final[str] = "di:alternative"
 
+# Ребро к другой реализации, построенное поверх выбора, который **разошёлся**
+# с регистрацией. Помечено отдельно намеренно: посылка у него слабее, и
+# отличать его от обычной альтернативы обязан читатель ответа, а не догадка.
+#
+# Откуда берётся. На 0.6.0 вызов разрешается по имени члена, поэтому обращение
+# к статическому помощнику попадает в одноимённый член реализации интерфейса:
+# `SimpleMapper.Map(this, new AlgoliaFlowStep())` в squidex приезжает
+# в `AssemblyTypeProvider.Map`, который и правда реализует `ITypeProvider`.
+# Структурно этот случай неотличим от полезного — от декоратора, где движок
+# выбрал внутреннюю реализацию, а реестр называет обёртку. Различить их
+# нечем: получателя вызова у нас нет. Поэтому оба остаются, но считаются
+# и метятся врозь.
+VIA_DIVERGED: Final[str] = "di:alternative:diverged"
+
 
 @dataclass(frozen=True)
 class BindingReport:
@@ -45,6 +59,10 @@ class BindingReport:
     verified: int = 0
     diverged: int = 0
     alternatives: int = 0
+    # Рёбра к другим реализациям, построенные поверх разошедшегося выбора.
+    # Отдельным числом: посылка у них слабее, и в одной куче с обычными
+    # альтернативами их не отличить.
+    from_diverged: int = 0
     # Сужение по хосту: сколько раз оно сработало и сколько раз не смогло.
     # Второе число важнее: не сузилось — значит, рёбра пошли ко всем
     # реализациям, включая живущие в другом хосте.
@@ -59,6 +77,7 @@ class BindingReport:
             "рёбер довершено по регистрации": self.completed,
             "целей подтверждено регистрацией": self.verified,
             "целей разошлось с регистрацией": self.diverged,
+            "рёбер к другим реализациям поверх расхождения": self.from_diverged,
             "рёбер к другим зарегистрированным реализациям": self.alternatives,
             "довершений сужено по хосту": self.narrowed,
             "довершений не сужено (хост неизвестен)": self.not_narrowed,
@@ -315,7 +334,7 @@ def complete(
 
     existing = {(edge.kind, edge.source, edge.target) for edge in edges}
     produced: list[GraphEdge] = []
-    completed = verified = diverged = alternatives = 0
+    completed = verified = diverged = alternatives = from_diverged = 0
     diverged_examples: list[str] = []
 
     def add(source: str, target: str, via: str, confidence: float) -> bool:
@@ -367,17 +386,25 @@ def complete(
             narrowed += 1 if was_narrowed else 0
             not_narrowed += 0 if was_narrowed else 1
             targets = {bind.target for bind in options}
-            if owner in targets:
+            confirmed = owner in targets
+            if confirmed:
                 verified += 1
             else:
                 diverged += 1
                 if len(diverged_examples) < 10:
                     diverged_examples.append(f"{edge.source} → {edge.target}")
             weight = round(1 / len(options), 3)
+            # Посылка у разошедшегося выбора слабее: уверенность делится ещё
+            # раз. Не отбрасывается — из расхождения бывает и польза (декоратор),
+            # и вред (совпадение имён), а различить их нечем.
+            via = VIA_ALTERNATIVE if confirmed else VIA_DIVERGED
             for other in sorted(targets - {owner}):
                 member = index.member_of(other, target_node.name)
-                if member and add(edge.source, member, VIA_ALTERNATIVE, weight):
-                    alternatives += 1
+                if member and add(edge.source, member, via, weight if confirmed else weight / 2):
+                    if confirmed:
+                        alternatives += 1
+                    else:
+                        from_diverged += 1
 
     updated = BindingReport(
         registrations=report.registrations,
@@ -387,6 +414,7 @@ def complete(
         verified=verified,
         diverged=diverged,
         alternatives=alternatives,
+        from_diverged=from_diverged,
         narrowed=narrowed,
         not_narrowed=not_narrowed,
         examples={

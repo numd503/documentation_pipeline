@@ -1931,6 +1931,18 @@ def graph_build(
         for example in result.entry_points.unlinked_examples[:5]:
             typer.echo(f"  {example}")
 
+    if result.binding is not None and result.binding.diverged:
+        # Расхождение выбора с регистрацией — категория, ради которой сверка
+        # и делается: без примеров её число нечем истолковать. Оба смысла
+        # расхождения выглядят одинаково (полезный — декоратор, вредный —
+        # совпадение имён у статического помощника), и различает их человек.
+        typer.echo(
+            f"\nЦель разошлась с регистрацией: {result.binding.diverged}; "
+            f"рёбер поверх расхождения: {result.binding.from_diverged}"
+        )
+        for example in result.binding.examples.get("цель разошлась с регистрацией", ())[:5]:
+            typer.echo(f"  {example}")
+
     if result.match is not None:
         typer.echo("\nСопоставление с манифестом:")
         for category, number in result.match.as_counts().items():
