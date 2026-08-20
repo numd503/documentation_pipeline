@@ -100,15 +100,29 @@ def check_document(
             for item in error.errors():
                 problems.append(ArchProblem(where, _describe(item)))
             continue
-        if record.provenance == "skill_proposed" and not draft:
-            problems.append(
-                ArchProblem(
-                    where,
-                    "провенанс `skill_proposed` в реестре запрещён: предложение скилла "
-                    "переносит в реестр человек и меняет провенанс на `skill_confirmed` "
-                    "(Р10). Черновик проверяется командой `arch validate --draft`",
+        if record.provenance == "skill_proposed":
+            if not draft:
+                problems.append(
+                    ArchProblem(
+                        where,
+                        "провенанс `skill_proposed` в реестре запрещён: предложение скилла "
+                        "переносит в реестр человек и меняет провенанс на `skill_confirmed` "
+                        "(Р10). Черновик проверяется командой `arch validate --draft`",
+                    )
                 )
-            )
+            elif not record.note.strip():
+                # Предложение без обоснования в черновик не попадает — критерий
+                # приёмки R02 п. 1. Проверка здесь, а не в инструкции скилла:
+                # инструкцию можно не выполнить, а загрузчик не уговоришь.
+                # Обоснование — единственное, что отличает предложение модели
+                # от выдумки, и стоит оно одной строки.
+                problems.append(
+                    ArchProblem(
+                        where,
+                        "предложение без обоснования: заполните `note` — какой файл, "
+                        "какая запись и какое пересечение литералов его породило",
+                    )
+                )
         records.append(record)
 
     seen: dict[tuple[str, str], str] = {}

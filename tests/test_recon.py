@@ -366,3 +366,56 @@ def test_cli_writes_both_forms(tmp_path: Path) -> None:
     payload = json.loads(json_out.read_text(encoding="utf-8"))
     assert payload["schema"] == "docpipe.recon/1"
     assert "РАЗВЕДКА РЕПОЗИТОРИЯ" in text_out.read_text(encoding="utf-8")
+
+
+def test_same_language_family_is_not_a_seam(recon: ModuleType, tmp_path: Path) -> None:
+    """`.ts` и `.js` живут в одном рантайме и делят модули.
+
+    Общий литерал у них — переиспользование, а не сообщение через строку.
+    Без этого правила первые места в блоке швов занимали `root`, `name`
+    и `value` — проверено на открытом репозитории.
+    """
+    make_repo(
+        tmp_path,
+        {
+            "web/a.ts": "export const mode = 'compact-mode';\n",
+            "web/b.js": "const mode = 'compact-mode';\n",
+        },
+    )
+    report = recon.build_report(tmp_path, 12, 10, [])
+    seams = next(b for b in report["blocks"] if b["id"] == "seams")["data"]
+    assert all(row["literal"] != "compact-mode" for row in seams["candidates"])
+
+
+def test_route_inside_one_language_is_still_a_seam(recon: ModuleType, tmp_path: Path) -> None:
+    """Фронт и бэк одного языка говорят по HTTP ровно так же, как разные
+    языки, и терять эту границу нельзя: её сводит шов web ↔ backend."""
+    make_repo(
+        tmp_path,
+        {
+            "web/service.ts": "export const url = '/api/v1/projects/terms';\n",
+            "api/controller.ts": "export const route = '/api/v1/projects/terms';\n",
+        },
+    )
+    report = recon.build_report(tmp_path, 12, 10, [])
+    seams = next(b for b in report["blocks"] if b["id"] == "seams")["data"]
+    hit = [row for row in seams["candidates"] if row["literal"] == "/api/v1/projects/terms"]
+    assert hit and hit[0]["kind"] == "маршрут"
+
+
+def test_import_specifier_is_not_a_seam(recon: ModuleType, tmp_path: Path) -> None:
+    """Строка, по которой модуль импортирует другой модуль, — зависимость.
+
+    Косая черта в `@angular/core` есть, маршрутом он от этого не становится;
+    без правила такие имена занимали первые пять мест блока.
+    """
+    make_repo(
+        tmp_path,
+        {
+            "web/a.ts": "import { Component } from '@angular/core';\n",
+            "srv/b.py": "PACKAGE = '@angular/core'\n",
+        },
+    )
+    report = recon.build_report(tmp_path, 12, 10, [])
+    seams = next(b for b in report["blocks"] if b["id"] == "seams")["data"]
+    assert all(row["literal"] != "@angular/core" for row in seams["candidates"])

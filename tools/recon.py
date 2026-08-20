@@ -161,6 +161,33 @@ CODE_LANGS = frozenset(
 
 DATA_LANGS = frozenset({"xml", "json", "yaml", "ini"})
 
+# Семьи языков. Шов — это граница между РАНТАЙМАМИ, а не между расширениями
+# файлов: `.ts` и `.js` живут в одном процессе и делят модули, поэтому общий
+# литерал у них — обычное переиспользование, а не сообщение через строку.
+# Проверено на открытом репозитории: без этого правила первые места в блоке
+# швов занимали `root`, `name`, `value` и `react` — литералы, общие у фронта
+# и его же конфигурации сборки.
+LANG_FAMILY: dict[str, str] = {
+    "typescript": "node",
+    "javascript": "node",
+    "vue": "node",
+    "csharp": "dotnet",
+    "fsharp": "dotnet",
+    "vbnet": "dotnet",
+    "razor": "dotnet",
+    "c": "native",
+    "cpp": "native",
+    "objc": "native",
+    "java": "jvm",
+    "kotlin": "jvm",
+    "scala": "jvm",
+}
+
+
+def family_of(lang: str) -> str:
+    return LANG_FAMILY.get(lang, lang)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Отсев. Каталоги вендоринга и сборки исключаются ПО СЕГМЕНТАМ пути, а не глобом.
 # Причина записана в CLAUDE.md и проверена на реальном коде: `fnmatch` не понимает
@@ -1111,9 +1138,13 @@ def block_structure(facts: list[FileFacts], top: int) -> dict[str, Any]:
         "center": center,
         "center_dirs": center_dirs,
         "note": (
-            "на C# импорт ловится в ПРОСТРАНСТВО ИМЁН, а не в файл: все файлы "
-            "одного пространства получают одинаковый вес и стоят в списке рядом. "
-            "Это не ошибка счёта, а гранулярность источника"
+            (
+                "на C# импорт ловится в ПРОСТРАНСТВО ИМЁН, а не в файл: все файлы "
+                "одного пространства получают одинаковый вес и стоят в списке рядом. "
+                "Это не ошибка счёта, а гранулярность источника"
+            )
+            if any(item.lang == "csharp" for item in facts)
+            else ""
         ),
         "no_incoming_imports": {
             "count": len(orphans),
@@ -1164,11 +1195,19 @@ RE_DOTTEDISH = re.compile(r"^[A-Za-z_]\w*(\.\w+)+$")
 RE_KEBABISH = re.compile(r"^[a-z0-9]+([-.][a-z0-9]+)+$")
 
 
+# Якорь почти всегда имеет структуру: разделитель, верхний регистр или длину.
+# Голое короткое слово в нижнем регистре (`name`, `value`, `root`) — это имя
+# переменной в двух местах, а не имя, которое обе стороны обязаны знать.
+RE_STRUCTURED = re.compile(r"[/.\-_:]")
+
+
 def literal_is_noise(value: str) -> bool:
     lowered = value.lower()
     if lowered in LITERAL_STOPLIST:
         return True
     if RE_VERSIONISH.match(value):
+        return True
+    if not RE_STRUCTURED.search(value) and len(value) < 12 and not value.isupper():
         return True
     suffix = PurePosixPath(value).suffix.lower()
     return bool(suffix) and (suffix in LANG_BY_EXT or suffix in BINARY_EXTS)
@@ -1403,7 +1442,7 @@ def block_seams(
     counts: dict[str, int],
     langs: dict[str, set[str]],
     examples: dict[str, list[str]],
-    declared: set[str],
+    imports: set[str],
     top: int,
 ) -> dict[str, Any]:
     """Швы: литерал, который знают по обе стороны языковой границы.
@@ -1414,21 +1453,32 @@ def block_seams(
     """
     rows: list[dict[str, Any]] = []
     for value, value_langs in langs.items():
-        if len(value_langs) < 2 or literal_is_noise(value):
+        # Строка, по которой модуль импортирует другой модуль, — не шов,
+        # а зависимость. Без этого правила первые места занимают
+        # `@angular/core` и `@nestjs/common`: косая черта в них есть,
+        # маршрутом они от этого не становятся.
+        if value in imports or literal_is_noise(value):
+            continue
+        families = {family_of(lang) for lang in value_langs}
+        kind = seam_kind(value)
+        # Две семьи — шов между рантаймами. Одна семья и форма маршрута —
+        # тоже шов: фронт и бэк одного языка говорят по HTTP ровно так же,
+        # как разные языки, и терять эту границу нельзя (её сводит G15).
+        if len(families) < 2 and not (kind == "маршрут" and counts.get(value, 0) >= 2):
             continue
         rows.append(
             {
                 "literal": value,
-                "kind": seam_kind(value),
+                "kind": kind,
                 "languages": sorted(value_langs),
+                "families": sorted(families),
                 "files": counts.get(value, 0),
-                "declared_in_code": value in declared,
                 "examples": examples.get(value, [])[:4],
             }
         )
     rows.sort(
         key=lambda row: (
-            -len(list(row["languages"])),
+            -len(list(row["families"])),
             -int(row["files"]),
             str(row["literal"]),
         )
@@ -1523,14 +1573,14 @@ def build_report(root: Path, months: int, top: int, extra_excludes: list[str]) -
 
     counts, langs, examples = build_literal_index(facts)
     declarations = build_declaration_index(facts)
-    declared = set(declarations)
+    import_specifiers = {spec for item in facts for spec in item.imports}
 
     data = {
         "composition": block_composition(facts, files),
         "archaeology": block_archaeology(root, facts, head, months, top),
         "structure": block_structure(facts, top),
         "registries": block_registries(facts, counts, examples, declarations, top),
-        "seams": block_seams(counts, langs, examples, declared, top),
+        "seams": block_seams(counts, langs, examples, import_specifiers, top),
         "limits": block_limits(dropped, too_big, unreadable, minified, top),
     }
     return {
@@ -1738,7 +1788,8 @@ def render_text(report: dict[str, Any]) -> str:
             "каталогов нет",
         )
     )
-    lines.append(f"  {structure['note']}.")
+    if structure["note"]:
+        lines.append(f"  {structure['note']}.")
     orphans = structure["no_incoming_imports"]
     lines.append("")
     lines.append(f"  Никем не импортируется: {orphans['count']} файлов. {orphans['note']}.")
@@ -1804,7 +1855,6 @@ def render_text(report: dict[str, Any]) -> str:
             lines.append(
                 f"  {row['literal']}  [{row['kind']}]  языки: {', '.join(row['languages'])}, "
                 f"файлов: {row['files']}"
-                + ("  (есть объявление с таким именем)" if row["declared_in_code"] else "")
             )
             lines.append(f"      {', '.join(row['examples'])}")
 

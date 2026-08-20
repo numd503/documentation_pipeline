@@ -135,13 +135,27 @@ def test_skill_proposal_is_refused_in_registry() -> None:
     а в файл, который человек прочитал. Проверка данными, а не памятью, —
     единственный способ заметить, что подтверждение выпало из цикла (Р-11).
     """
-    document = {"version": ARCH_VERSION, "records": [record(provenance="skill_proposed")]}
+    proposed = record(provenance="skill_proposed", note="блок 4 разведки: Job/@name, 12 совпадений")
+    document = {"version": ARCH_VERSION, "records": [proposed]}
     registry, problems = check_document(document)
     assert registry is None
     assert any("skill_proposed" in problem.message for problem in problems)
 
     draft, draft_problems = check_document(document, draft=True)
     assert draft is not None and not draft_problems
+
+
+def test_proposal_without_justification_is_refused_even_in_draft() -> None:
+    """Предложение без обоснования в черновик не попадает (R02 п. 1).
+
+    Проверка в загрузчике, а не в инструкции скилла: инструкцию можно
+    не выполнить, а загрузчик не уговоришь. Обоснование — единственное,
+    что отличает предложение модели от выдумки.
+    """
+    document = {"version": ARCH_VERSION, "records": [record(provenance="skill_proposed")]}
+    draft, problems = check_document(document, draft=True)
+    assert draft is None
+    assert any("без обоснования" in problem.message for problem in problems)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

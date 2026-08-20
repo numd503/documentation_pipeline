@@ -72,6 +72,15 @@ uv run docpipe scan --root tests/fixtures/SampleSolution --out /tmp/dt.json
 uv run docpipe materialize /tmp/dt.json --root /tmp/docs
 uv run docpipe docs status /tmp/dt.json --root /tmp/docs
 
+# разведка репозитория, который видишь впервые (R01); скилл поверх неё — `.claude/skills/recon`
+python3 tools/recon.py --root ПУТЬ --json recon.json --text recon.txt
+
+# нормализованный реестр архитектурных элементов (R03, R04)
+uv run docpipe arch validate arch-registry.yaml       # черновик скилла — с `--draft`
+uv run docpipe arch status arch-registry.yaml --root ПУТЬ
+uv run docpipe arch records --root ПУТЬ               # снимок плюс адаптеры
+uv run docpipe arch snapshot --out arch-registry.yaml --root ПУТЬ
+
 # полная проверка перед коммитом
 uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv run pytest -q
 ```
