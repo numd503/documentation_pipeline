@@ -46,9 +46,9 @@ from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.explain import ANY, format_selection, select, selection_json
 from docpipe.graph import build as build_graph
 from docpipe.graph import read_index, read_meta, read_reach, write_index
-from docpipe.graph.engine import Engine, EngineError
 from docpipe.graph.coverage import coverage as coverage_of
 from docpipe.graph.coverage import format_coverage
+from docpipe.graph.engine import Engine, EngineError
 from docpipe.graph.evaluate import format_score
 from docpipe.graph.evaluate import load as load_questions
 from docpipe.graph.evaluate import run as run_questions
