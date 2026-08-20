@@ -255,7 +255,15 @@ def path(index: GraphIndex, source: str, target: str, depth: int = 12) -> list[G
             successors.setdefault(origin, []).append(
                 known.get((origin, neighbour))
                 or GraphEdge(
-                    kind="calls", source=origin, target=neighbour, via="владение", confidence=1.0
+                    # `owns` — не вызов, и называть его вызовом нельзя: это
+                    # связь «тип содержит член», по которой достижимость идёт,
+                    # а исполнение — нет. В индексе такого ребра не лежит,
+                    # оно существует только в ответе о пути.
+                    kind="owns",
+                    source=origin,
+                    target=neighbour,
+                    via="владение",
+                    confidence=1.0,
                 )
             )
 

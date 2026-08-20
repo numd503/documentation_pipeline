@@ -1801,6 +1801,13 @@ def graph_build(
             help="Манифест шага 1: даёт узлам модуль, FQN и связь с документом.",
         ),
     ] = None,
+    web_manifest_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--web-manifest",
+            help="Манифест шага `web`: страницы, цепочка фронта и швы с бэкендом.",
+        ),
+    ] = None,
     out: Annotated[
         Path | None,
         typer.Option("--out", help="Куда записать индекс. Без флага — `graph.out`."),
@@ -1857,6 +1864,16 @@ def graph_build(
             typer.echo(f"Не удалось прочитать манифест: {exc}", err=True)
             raise typer.Exit(code=2) from exc
 
+    web_manifest = None
+    if web_manifest_path is not None:
+        try:
+            web_manifest = Manifest.model_validate_json(
+                web_manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as exc:
+            typer.echo(f"Не удалось прочитать манифест фронта: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+
     typer.echo(f"Разбор репозитория {root}…")
     try:
         result = build_graph(
@@ -1865,6 +1882,7 @@ def graph_build(
             is_excluded=excluded,
             manifest=manifest,
             arch=arch_registry,
+            web=web_manifest,
             progress=lambda message: typer.echo(f"  … {message}"),
         )
     except EngineError as exc:

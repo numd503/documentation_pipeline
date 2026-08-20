@@ -31,6 +31,8 @@ from docpipe.graph.match import MatchReport, apply, match
 from docpipe.graph.model import GraphEdge, GraphIndex, GraphMeta, GraphNode
 from docpipe.graph.reach import Reachability, compute
 from docpipe.graph.search import SearchEntry
+from docpipe.graph.web import WebReport
+from docpipe.graph.web import collect as collect_web
 from docpipe.graph.search import entries as search_entries
 from docpipe.model import Manifest
 
@@ -75,6 +77,7 @@ class BuildResult:
     data: DataReport | None = None
     reachability: Reachability | None = None
     searchable: list[SearchEntry] = field(default_factory=list)
+    web: WebReport | None = None
 
 
 def language_of(file: str) -> str:
@@ -197,6 +200,7 @@ def build(
     is_excluded: object = None,
     manifest: Manifest | None = None,
     arch: ArchRegistry | None = None,
+    web: Manifest | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> BuildResult:
     """Полный цикл: проверка бинаря, индексация, чтение, проекция, сопоставление.
@@ -274,6 +278,22 @@ def build(
         )
         report.update(entry_report.as_counts())
 
+    # Фронт: узлы, цепочка и шов с бэкендом. Идёт ПОСЛЕ точек входа —
+    # шов сводится с уже существующими эндпоинтами.
+    web_report: WebReport | None = None
+    if web is not None:
+        say("свожу фронт с бэкендом")
+        endpoints = {
+            node.key
+            for node in index.nodes
+            if node.kind == "entry_point" and node.attributes.get("entry_kind") == "http_endpoint"
+        }
+        web_nodes, web_edges, web_report = collect_web(web, endpoints)
+        index = GraphIndex(
+            nodes=index.nodes + tuple(web_nodes), edges=index.edges + tuple(web_edges)
+        )
+        report.update(web_report.as_counts())
+
     # Узлы данных: из объявлений кода и из реестра. Сливаются по ключу —
     # таблица, объявленная в реестре и использованная через контекст,
     # это один узел с двумя источниками.
@@ -327,4 +347,5 @@ def build(
         data=data_report,
         reachability=reachability,
         searchable=searchable,
+        web=web_report,
     )
