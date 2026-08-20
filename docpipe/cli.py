@@ -1931,6 +1931,17 @@ def graph_build(
         for example in result.entry_points.unlinked_examples[:5]:
             typer.echo(f"  {example}")
 
+    if result.seams is not None and result.seams.declared:
+        typer.echo(
+            f"\nОбъявленные швы: {result.seams.declared}, "
+            f"соединили обе стороны: {result.seams.both_sides}"
+        )
+        # Шов с одной стороной — состояние работы, а не дефект: другой
+        # стороны может не быть в индексе вовсе. Молча потерять его нельзя:
+        # он тогда неотличим от «шва нет».
+        for example in result.seams.examples.get("швы с одной стороной", ())[:5]:
+            typer.echo(f"  {example}")
+
     if result.binding is not None and result.binding.diverged:
         # Расхождение выбора с регистрацией — категория, ради которой сверка
         # и делается: без примеров её число нечем истолковать. Оба смысла

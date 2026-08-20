@@ -52,3 +52,31 @@ records:
       file: registries.yaml
       record: structure[Prices]
     provenance: manual
+
+  # Шов между языками: маршрут, который знают обе стороны. Литерал приходит
+  # сюда из разведки, потому что на зовущей стороне он собирается из кусков
+  # и статическим поиском не находится (Р2).
+  - kind: seam
+    key: api/prices/{id}
+    seam_kind: http_route
+    http_method: GET
+    literal: /api/prices/{id}
+    name: Цена по идентификатору
+    sides: ["python", "dotnet"]
+    source:
+      file: tools/price_client.py
+      record: PriceClient.load
+    provenance: manual
+
+  # Шов через очередь: та же механика, другой вид литерала. Отвечающая
+  # сторона ищется среди точек входа вида `queue`/`kafka_topic`/`event`.
+  - kind: seam
+    key: prices-recalculated
+    seam_kind: topic
+    literal: prices-recalculated
+    name: Пересчёт цен
+    sides: ["dotnet", "python"]
+    source:
+      file: tools/price_client.py
+      record: PriceClient.publish
+    provenance: manual

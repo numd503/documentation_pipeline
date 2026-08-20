@@ -33,6 +33,8 @@ from docpipe.graph.grid import seams as grid_seams
 from docpipe.graph.match import MatchReport, RootMismatchError, apply, diagnose_roots, match
 from docpipe.graph.model import GraphEdge, GraphIndex, GraphMeta, GraphNode
 from docpipe.graph.reach import Reachability, compute
+from docpipe.graph.seams import SeamReport
+from docpipe.graph.seams import declared as declared_seams
 from docpipe.graph.search import SearchEntry
 from docpipe.graph.search import entries as search_entries
 from docpipe.graph.web import WebReport
@@ -77,6 +79,7 @@ class BuildResult:
     # Отчёт о корнях. `None` — ни реестра, ни манифеста не давали.
     entry_points: EntryPointReport | None = None
     binding: BindingReport | None = None
+    seams: SeamReport | None = None
     data: DataReport | None = None
     grid: GridReport | None = None
     reachability: Reachability | None = None
@@ -290,6 +293,18 @@ def build(
         )
         report.update(entry_report.as_counts())
 
+    # Объявленные швы: литерал, который знают обе стороны. Идут ПОСЛЕ точек
+    # входа — отвечающая сторона ищется среди корней, и до их сборки её
+    # просто нет.
+    seam_report: SeamReport | None = None
+    if arch is not None:
+        say("свожу объявленные швы по литералу")
+        seam_nodes, seam_edges, seam_report = declared_seams(arch, index.nodes, index.edges)
+        index = GraphIndex(
+            nodes=index.nodes + tuple(seam_nodes), edges=index.edges + tuple(seam_edges)
+        )
+        report.update(seam_report.as_counts())
+
     # Швы через кластер: вызов доходит до члена интерфейса, а связь
     # «интерфейс → зарегистрированная реализация» объявлена реестром.
     grid_report: GridReport | None = None
@@ -402,6 +417,7 @@ def build(
         match=match_report,
         entry_points=entry_report,
         binding=binding_report,
+        seams=seam_report,
         data=data_report,
         grid=grid_report,
         reachability=reachability,
