@@ -21,6 +21,7 @@ from docpipe.graph.model import (
     GraphNode,
 )
 from docpipe.graph.reach import Reachability, compute, path, shared_components
+from docpipe.graph.search import Match, resolve
 from docpipe.graph.store import (
     IndexVersionError,
     logical_hash,
@@ -44,6 +45,7 @@ __all__ = [
     "GraphIndex",
     "GraphMeta",
     "GraphNode",
+    "Match",
     "IndexVersionError",
     "binds",
     "build",
@@ -64,6 +66,7 @@ __all__ = [
     "read_index",
     "read_meta",
     "read_reach",
+    "resolve",
     "shared_components",
     "write_index",
 ]

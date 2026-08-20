@@ -15,7 +15,7 @@
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
@@ -30,6 +30,8 @@ from docpipe.graph.entrypoints import EntryPointReport, from_manifest, from_regi
 from docpipe.graph.match import MatchReport, apply, match
 from docpipe.graph.model import GraphEdge, GraphIndex, GraphMeta, GraphNode
 from docpipe.graph.reach import Reachability, compute
+from docpipe.graph.search import SearchEntry
+from docpipe.graph.search import entries as search_entries
 from docpipe.model import Manifest
 
 # Расширение → язык. Служит одному решению: чьи рёбра брать. Список короткий
@@ -72,6 +74,7 @@ class BuildResult:
     binding: BindingReport | None = None
     data: DataReport | None = None
     reachability: Reachability | None = None
+    searchable: list[SearchEntry] = field(default_factory=list)
 
 
 def language_of(file: str) -> str:
@@ -296,6 +299,8 @@ def build(
     # к данным. Посчитать её раньше значит посчитать по половине графа.
     say(f"считаю достижимость: узлов {len(index.nodes)}, рёбер {len(index.edges)}")
     reachability = compute(index)
+    say("собираю пространство поиска")
+    searchable = search_entries(index, manifest)
 
     meta = GraphMeta(
         generation="",
@@ -321,4 +326,5 @@ def build(
         binding=binding_report,
         data=data_report,
         reachability=reachability,
+        searchable=searchable,
     )

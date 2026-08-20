@@ -51,6 +51,7 @@ from docpipe.graph.reach import DEFAULT_FANOUT_THRESHOLD
 from docpipe.graph.reach import path as graph_path
 from docpipe.graph.report import health as health_report
 from docpipe.graph.report import render as render_report
+from docpipe.graph.search import resolve as resolve_names
 from docpipe.hashing import content_hash, stable_json_dumps
 from docpipe.materialize.apply import apply_plan, format_result, write_atomic
 from docpipe.materialize.build import BuildContext, build_context
@@ -1869,7 +1870,7 @@ def graph_build(
         raise typer.Exit(code=2) from exc
 
     target = out or Path(settings.graph.out)
-    meta = write_index(target, result.index, result.meta, result.reachability)
+    meta = write_index(target, result.index, result.meta, result.reachability, result.searchable)
 
     typer.echo(
         f"Индекс записан: {target}\n"
@@ -2187,6 +2188,57 @@ def graph_path_command(
     typer.echo(source)
     for edge in found:
         typer.echo(f"  --{edge.kind}({edge.via})--> {edge.target}")
+
+
+@graph_app.command("resolve")
+def graph_resolve(
+    query: Annotated[str, typer.Argument(help="Свободный текст: имя, маршрут, таблица.")],
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Сколько кандидатов показать.")] = 10,
+) -> None:
+    """Что это такое, если известно только приблизительное имя.
+
+    Ответ называет, **чем совпало**: без этого вызывающий не знает, стоит ли
+    переформулировать запрос и как именно. Пустого ответа не бывает —
+    при отсутствии точного совпадения печатаются ближайшие по триграммам.
+    """
+    path, _ = _open_index(index, config)
+    loaded = read_index(path)
+    nodes = {node.key: node for node in loaded.nodes}
+    matches, inexact = resolve_names(path, query, nodes, limit)
+
+    if not matches:
+        # Пустота — худший из возможных ответов: она неотличима от факта
+        # и не даёт зацепки для второй попытки. Поэтому говорится, где
+        # искали и что вообще есть в индексе.
+        counts: dict[str, int] = {}
+        for node in loaded.nodes:
+            counts[node.kind] = counts.get(node.kind, 0) + 1
+        typer.echo(
+            f"По запросу {query!r} не нашлось ничего, даже похожего.\n"
+            "Искали среди имён узлов, ключей, маршрутов, названий полей "
+            "и заголовков документов.\n"
+            f"В индексе: {', '.join(f'{kind} — {number}' for kind, number in sorted(counts.items()))}."
+        )
+        examples = sorted(
+            node.name for node in loaded.nodes if node.kind == "entry_point" and node.name
+        )[:5]
+        if examples:
+            typer.echo(f"Точки входа, например: {', '.join(examples)}")
+        raise typer.Exit(code=1)
+    if inexact:
+        typer.echo("Точного совпадения нет; ниже — ближайшее по тому, чем совпало.")
+    for match in matches:
+        module = f"  [{match.module}]" if match.module else ""
+        typer.echo(
+            f"{match.kind:<12} {match.name:<40} {match.how} по полю «{match.field}»"
+            f"{module}\n    {match.node}"
+        )
 
 
 @graph_app.command("info")

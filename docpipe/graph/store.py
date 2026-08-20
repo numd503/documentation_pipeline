@@ -22,6 +22,8 @@ from pathlib import Path
 
 from docpipe.graph.model import SCHEMA_VERSION, GraphEdge, GraphIndex, GraphMeta, GraphNode
 from docpipe.graph.reach import Reachability
+from docpipe.graph.search import SearchEntry
+from docpipe.graph.search import write as write_search
 from docpipe.hashing import stable_hash
 
 _SCHEMA = """
@@ -83,6 +85,7 @@ def write_index(
     index: GraphIndex,
     meta: GraphMeta,
     reachability: Reachability | None = None,
+    searchable: list[SearchEntry] | None = None,
 ) -> GraphMeta:
     """Записать индекс атомарно и вернуть паспорт с проставленным поколением.
 
@@ -138,6 +141,8 @@ def write_index(
                 for edge in sorted_edges(index.edges)
             ],
         )
+        if searchable:
+            write_search(connection, searchable)
         if reachability is not None:
             connection.executemany(
                 "INSERT INTO reach (node, mask, component) VALUES (?, ?, ?)",
