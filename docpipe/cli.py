@@ -10,8 +10,12 @@ from pydantic import BaseModel
 
 from docpipe import __version__
 from docpipe.arch import (
+    AdapterSpec,
     ArchRegistry,
+    Collected,
     check_document,
+    collect,
+    dump_registry,
     format_statuses,
     load_arch_registry,
     read_document,
@@ -1555,6 +1559,164 @@ def arch_validate(
         )
         return
     typer.echo(f"{path}: реестр в порядке, версия {registry.version}. Записей — {listed}.")
+
+
+def _adapter_specs(settings: DocpipeConfig) -> list[AdapterSpec]:
+    return [
+        AdapterSpec(id=item.id, adapter=item.adapter, options=dict(item.options))
+        for item in settings.arch_adapters
+    ]
+
+
+def _collect_records(
+    arch: Path | None, settings: DocpipeConfig, config: Path | None, root: Path
+) -> Collected:
+    """Снимок плюс адаптеры. Путь к реестру необязателен: реестра может не быть."""
+    path: Path | None
+    if arch is not None:
+        path = arch
+    elif settings.arch:
+        path = resolve_input(settings.arch, config)
+    else:
+        path = None
+    return collect(
+        path,
+        _adapter_specs(settings),
+        root,
+        resolve=lambda value: resolve_input(value, config),
+    )
+
+
+@arch_app.command("records")
+def arch_records(
+    arch: Annotated[
+        Path | None, typer.Argument(help="Файл реестра. Без аргумента — ключ `arch`.")
+    ] = None,
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория: пути источников от него.")
+    ] = Path("."),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Машиночитаемый вывод вместо текста.")
+    ] = False,
+) -> None:
+    """Показать все записи: и снимок, и то, что читают адаптеры.
+
+    Отдельная команда, а не флаг `status`, потому что вопросы разные:
+    `status` спрашивает «не отстал ли снимок», `records` — «что вообще
+    входит в реестр на этом репозитории».
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    try:
+        collected = _collect_records(arch, settings, config, root)
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    registry = collected.registry
+    if as_json:
+        payload = {
+            "from_file": collected.from_file,
+            "from_adapters": [
+                {"id": name, "records": count} for name, count in collected.from_adapters
+            ],
+            "shadowed_by_file": list(collected.shadowed_by_file),
+            "duplicates": list(collected.duplicates),
+            "errors": list(collected.errors),
+            "records": [record.model_dump(mode="json") for record in registry.records],
+        }
+        typer.echo(stable_json_dumps(payload), nl=False)
+        return
+
+    kinds = ("entry_point", "data", "seam", "layer")
+    listed = ", ".join(f"{kind}: {len(registry.of_kind(kind))}" for kind in kinds)
+    typer.echo(f"Записей всего: {len(registry.records)} — {listed}")
+    typer.echo(f"  из снимка: {collected.from_file}")
+    for name, count in collected.from_adapters:
+        typer.echo(f"  адаптер {name}: {count}")
+    if not collected.from_adapters:
+        typer.echo("  адаптеров не подключено — реестр держится снимком")
+    if collected.shadowed_by_file:
+        typer.echo(
+            f"\nЗапись есть и в снимке, и у адаптера ({len(collected.shadowed_by_file)}); "
+            "оставлена запись снимка — она прошла через человека:"
+        )
+        for line in collected.shadowed_by_file[:10]:
+            typer.echo(f"  {line}")
+    if collected.duplicates:
+        typer.echo(
+            f"\nАдаптер вернул запись, ключ которой уже занят ({len(collected.duplicates)}); "
+            "источник объявляет её дважды или ключу не хватает различителя:"
+        )
+        for line in collected.duplicates[:10]:
+            typer.echo(f"  {line}")
+    if collected.errors:
+        typer.echo(f"\nНаходки чтения ({len(collected.errors)}):")
+        for line in collected.errors[:20]:
+            typer.echo(f"  {line}")
+
+
+@arch_app.command("snapshot")
+def arch_snapshot(
+    out: Annotated[Path, typer.Option("--out", help="Куда записать снимок.")],
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория: пути источников от него.")
+    ] = Path("."),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    adapter: Annotated[
+        list[str] | None,
+        typer.Option("--adapter", help="Снять только этот адаптер. Можно повторять."),
+    ] = None,
+) -> None:
+    """Снять снимок с адаптеров: живое чтение превращается в файл.
+
+    Снимок пишется с хэшами источников, поэтому `arch status` начинает
+    ловить его устаревание сразу, без дописывания сорока строк руками.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    specs = _adapter_specs(settings)
+    if adapter:
+        wanted = set(adapter)
+        specs = [spec for spec in specs if spec.id in wanted]
+        unknown = wanted - {spec.id for spec in specs}
+        if unknown:
+            typer.echo(f"Адаптеры не найдены в конфигурации: {sorted(unknown)}", err=True)
+            raise typer.Exit(code=2)
+    if not specs:
+        typer.echo("Адаптеров не подключено: снимать нечего", err=True)
+        raise typer.Exit(code=2)
+
+    try:
+        collected = collect(None, specs, root, resolve=lambda value: resolve_input(value, config))
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    header = (
+        "# Снимок, снятый адаптерами: "
+        + ", ".join(spec.id for spec in specs)
+        + "\n# Правки руками переживут только до следующего `docpipe arch snapshot`.\n"
+        + "# Проверить: docpipe arch validate; не отстал ли: docpipe arch status.\n"
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(dump_registry(collected.registry, header), encoding="utf-8")
+    typer.echo(f"Снимок записан: {out} — записей {len(collected.registry.records)}")
+    for line in collected.errors[:20]:
+        typer.echo(f"  {line}")
 
 
 @arch_app.command("status")

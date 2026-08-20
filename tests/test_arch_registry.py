@@ -279,6 +279,8 @@ def repo_with_registry(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def test_status_states(repo_with_registry: tuple[Path, Path]) -> None:
+    """Пять состояний, и `provenance: adapter` среди них не выделен: всё,
+    что лежит в файле, — снимок, и стареет одинаково."""
     root, arch = repo_with_registry
     from docpipe.hashing import content_hash
 
@@ -291,7 +293,11 @@ def test_status_states(repo_with_registry: tuple[Path, Path]) -> None:
                 record(key="a", source={"file": "config/jobs.xml", "hash": digest}),
                 record(key="b", source={"file": "config/jobs.xml", "hash": "sha256:0"}),
                 record(key="c", source={"file": "config/jobs.xml"}),
-                record(key="d", source={"file": "config/jobs.xml"}, provenance="adapter"),
+                record(
+                    key="d",
+                    source={"file": "config/jobs.xml", "hash": digest},
+                    provenance="adapter",
+                ),
                 record(key="e", source={"file": "config/ушёл.xml", "hash": digest}),
             ],
         },
@@ -301,7 +307,7 @@ def test_status_states(repo_with_registry: tuple[Path, Path]) -> None:
         "a": "current",
         "b": "stale",
         "c": "no_hash",
-        "d": "live",
+        "d": "current",
         "e": "source_missing",
     }
 

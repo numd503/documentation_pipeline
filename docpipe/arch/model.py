@@ -21,7 +21,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from docpipe.keys import (
     normalize_data_name,
@@ -42,6 +42,11 @@ ARCH_VERSION = "1"
 # выход для случая, которого мы не видели: вид кладётся в `attributes`.
 EntryKind = Literal[
     "workflow",
+    # Шаг объявленного процесса. Общий случай, а не частность платформы:
+    # шаги есть у любого декларативного движка — задачи workflow, задания
+    # конвейера CI, операторы расписания. Проверено на открытом репозитории:
+    # `Task/@name` в 756 файлах workflow — это именно шаги.
+    "workflow_step",
     "job",
     "event_handler",
     "http_endpoint",
@@ -137,10 +142,26 @@ class EntryPointRecord(_RecordBase):
 
     kind: Literal["entry_point"] = "entry_point"
     entry_kind: EntryKind
-    # Подсказка на код: FQN, имя класса, путь. Именно подсказка — связь
+    # Подсказки на код: FQN, имена классов, пути. Именно подсказки — связь
     # «запись → узел кода» делает граф (G03), и её отсутствие не дефект:
     # корень существует в графе независимо от того, нашёлся ли под него код.
-    impl: str = ""
+    #
+    # Список, а не строка, потому что у одного якоря бывает несколько
+    # реализаций, и это не экзотика: на паре «список + EventType» в реальном
+    # реестре сидят два обработчика — аудит и запуск процесса, — и оба
+    # срабатывают. Одна строка потеряла бы второй молча, а «молча потерянный
+    # корень» — это ветка графа, которой в ответе просто нет.
+    #
+    # В файле пишется и строкой, и списком: у большинства записей реализация
+    # одна, и заставлять человека писать список ради единственного значения
+    # — плата без выигрыша.
+    impl: tuple[str, ...] = ()
+
+    @field_validator("impl", mode="before")
+    @classmethod
+    def _impl_as_tuple(cls, value: object) -> object:
+        return (value,) if isinstance(value, str) and value else value
+
     route: str = ""
     http_method: str = ""
     # Ключи записей `data`, на которых точка входа сидит по декларации.

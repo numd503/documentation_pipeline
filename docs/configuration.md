@@ -13,7 +13,7 @@
 | База | Ключи |
 |---|---|
 | **`--root`** (корень репозитория) | `docs_root`, `modules_dir`, `business_root`, `cache_dir`, `roots`, `web.roots` |
-| **входы**: текущий каталог, затем каталог `docpipe.yaml` | `rules`, `web.rules`, `web.pages`, `templates`, `ownership`, `registries`, `arch` |
+| **входы**: текущий каталог, затем каталог `docpipe.yaml` | `rules`, `web.rules`, `web.pages`, `templates`, `ownership`, `registries`, `arch`, `arch_adapters[].options.spec` |
 | **цели записи**: только текущий каталог | `out`, `worklist`, `web.out`, `web.link_out` |
 | ни то ни другое (глобы и значения) | `enrolled`, `exclude`, `domains`, `doc_layout`, `docs_scan_exclude`, `web.url_rewrite`, `web.registry_calls` |
 
@@ -78,6 +78,7 @@
 | `ownership` | | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `registries` | | ○ | ○ | ○ | ✓ | ✓ | |
 | `arch` | | | | | | | ✓ |
+| `arch_adapters` | | | | | | | ✓ |
 | `business_root` | | ○ | ○ | ○ | ✓ | | |
 | `worklist` | | | ✓ | | | |
 | `web.roots` | | | | | | |
