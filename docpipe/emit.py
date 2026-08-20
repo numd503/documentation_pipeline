@@ -24,6 +24,7 @@ from docpipe.config import DocpipeConfig
 from docpipe.discovery import discover, in_scope, map_files_to_modules, normalize_scope
 from docpipe.dotnet.csproj import parse_csproj, resolve_references
 from docpipe.dotnet.endpoints import extract_endpoints
+from docpipe.dotnet.facts import SQL_METHODS
 from docpipe.dotnet.parser import parse_source
 from docpipe.dotnet.resolve import build_symbol_index, compute_closures
 from docpipe.hashing import content_hash, stable_json_dumps
@@ -37,9 +38,12 @@ from docpipe.model import (
     Module,
     ParserVersions,
     RunMeta,
+    SqlObject,
+    SqlUsage,
     Symbol,
     TableLiteral,
 )
+from docpipe.sql import read as read_sql
 from docpipe.stats import Stats, collect_stats, kind_counts
 from docpipe.tree import build_nodes
 
@@ -317,6 +321,69 @@ def collect_sends(
     return sorted(found, key=lambda item: (item.file, item.line, item.request_type))
 
 
+def collect_sql_usages(
+    results: list[FileParseResult], file_to_module: dict[str, str]
+) -> list[SqlUsage]:
+    """SQL из литералов в коде: какие имена в нём участвуют.
+
+    Текст запроса в манифест не идёт — только имена: манифест читают в ревью,
+    и мегабайты SQL сделали бы его нечитаемым ради данных, которые всё равно
+    используются как имена.
+    """
+    found: list[SqlUsage] = []
+    for result in results:
+        for call in result.literal_calls:
+            if call.method not in SQL_METHODS or not call.arguments:
+                continue
+            facts = read_sql(" ".join(call.arguments))
+            if not (facts.reads or facts.writes or facts.calls or facts.dynamic):
+                continue
+            found.append(
+                SqlUsage(
+                    member=call.member,
+                    module=file_to_module.get(result.path, ""),
+                    file=result.path,
+                    line=call.line,
+                    reads=list(facts.reads),
+                    writes=list(facts.writes),
+                    calls=list(facts.calls),
+                    dynamic=facts.dynamic,
+                )
+            )
+    return sorted(found, key=lambda item: (item.file, item.line))
+
+
+def collect_sql_objects(root: Path, files: list[str]) -> list[SqlObject]:
+    """Объекты, объявленные в исходниках SQL.
+
+    Пустой список — законный исход: на репозитории, где процедуры живут
+    только в базе, читать нечего, и это не пробел разбора. Отличить одно
+    от другого можно по числу самих файлов.
+    """
+    found: list[SqlObject] = []
+    for relative in files:
+        path = root / relative
+        try:
+            text = path.read_bytes().decode("utf-8-sig", errors="replace")
+        except OSError:
+            continue
+        facts = read_sql(text)
+        for name, kind in facts.defines:
+            found.append(
+                SqlObject(
+                    name=name,
+                    kind=kind,
+                    file=relative,
+                    line=1,
+                    reads=list(facts.reads),
+                    writes=list(facts.writes),
+                    calls=list(facts.calls),
+                    dynamic=facts.dynamic,
+                )
+            )
+    return sorted(found, key=lambda item: (item.file, item.name))
+
+
 def collect_tables(
     results: list[FileParseResult], file_to_module: dict[str, str]
 ) -> list[TableLiteral]:
@@ -417,6 +484,8 @@ def run(
         dispatch_handlers=handlers,
         dispatch_sends=collect_sends(all_results, handlers, file_to_module),
         table_literals=collect_tables(all_results, file_to_module),
+        sql_usages=collect_sql_usages(all_results, file_to_module),
+        sql_objects=collect_sql_objects(root, found.sql_files),
         # Явная сортировка, а не порядок обхода: список идёт в манифест,
         # а манифест обязан быть байт-в-байт воспроизводимым.
         di_registrations=sorted(

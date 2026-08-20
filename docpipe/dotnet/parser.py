@@ -17,7 +17,12 @@ import tree_sitter_c_sharp as tscs
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
 from docpipe.dotnet.di import extract_registrations
-from docpipe.dotnet.facts import TABLE_METHODS, extract_constructions, extract_literal_calls
+from docpipe.dotnet.facts import (
+    SQL_METHODS,
+    TABLE_METHODS,
+    extract_constructions,
+    extract_literal_calls,
+)
 from docpipe.hashing import content_hash
 from docpipe.model import (
     Attribute,
@@ -520,7 +525,7 @@ def parse_source(source: bytes, path: str) -> FileParseResult:
         # Те же узлы вызовов, что и у DI: второй проход по дереву ради
         # тех же самых `invocation_expression` был бы чистой платой.
         constructions=extract_constructions(creations),
-        literal_calls=extract_literal_calls(di_calls, TABLE_METHODS),
+        literal_calls=extract_literal_calls(di_calls, TABLE_METHODS | SQL_METHODS),
         parse_errors=_count_errors(tree.root_node),
     )
 

@@ -24,6 +24,7 @@ from docpipe.graph.binding import BindingReport, binds, complete, dispatch
 from docpipe.graph.data import DataReport
 from docpipe.graph.data import collect as collect_data
 from docpipe.graph.data import from_registry as data_from_registry
+from docpipe.graph.data import from_sql as data_from_sql
 from docpipe.graph.data import merge as merge_data
 from docpipe.graph.engine import Engine, EngineGraph, EngineNode, EngineRun
 from docpipe.graph.entrypoints import EntryPointReport, from_manifest, from_registry, link
@@ -335,6 +336,15 @@ def build(
             nodes=index.nodes + tuple(data_nodes), edges=index.edges + tuple(data_edges)
         )
         report.update(data_report.as_counts())
+    if manifest is not None and (manifest.sql_objects or manifest.sql_usages):
+        say("читаю SQL: процедуры и обращения к таблицам")
+        sql_nodes, sql_edges, sql_report = data_from_sql(manifest, index.nodes)
+        merged_sql, joined_sql = merge_data(index.nodes, sql_nodes)
+        index = GraphIndex(nodes=tuple(merged_sql), edges=index.edges + tuple(sql_edges))
+        report.update(sql_report)
+        if joined_sql:
+            report["узлов данных сведено с SQL"] = joined_sql
+
     if arch is not None:
         roots = tuple(node for node in index.nodes if node.kind == "entry_point")
         registry_nodes, registry_edges, registry_report = data_from_registry(arch, roots)

@@ -198,6 +198,39 @@ class TableLiteral(_Base):
     line: int
 
 
+class SqlUsage(_Base):
+    """SQL, записанный литералом в коде: что он читает, пишет и зовёт.
+
+    Хранятся **имена**, а не текст запроса: манифест читают в ревью, и класть
+    туда мегабайты SQL значило бы сделать его нечитаемым ради данных, которые
+    всё равно используются только как имена.
+    """
+
+    member: str
+    module: str
+    file: str
+    line: int
+    reads: list[str] = Field(default_factory=list)
+    writes: list[str] = Field(default_factory=list)
+    calls: list[str] = Field(default_factory=list)
+    # Динамика: строка собирается и исполняется. Это НЕ «не разобрали»:
+    # имени нет вовсе до момента исполнения, и категория отдельная.
+    dynamic: bool = False
+
+
+class SqlObject(_Base):
+    """Объект, объявленный в исходнике SQL: процедура, функция, представление."""
+
+    name: str
+    kind: str
+    file: str
+    line: int
+    reads: list[str] = Field(default_factory=list)
+    writes: list[str] = Field(default_factory=list)
+    calls: list[str] = Field(default_factory=list)
+    dynamic: bool = False
+
+
 class DispatchDeclaration(_Base):
     """Объявленная диспетчеризация по типу: «этот тип обслуживает такой запрос».
 
@@ -546,6 +579,12 @@ class Manifest(_Base):
     # проходом, и второй разбор ради них был бы удвоенной работой.
     dispatch_sends: list[DispatchSend] = Field(default_factory=list)
     table_literals: list[TableLiteral] = Field(default_factory=list)
+
+    # SQL: из литералов в коде и из исходников процедур. Второй список пуст
+    # на репозитории, где процедуры живут только в базе, — и это нормальный
+    # исход, а не пробел разбора.
+    sql_usages: list[SqlUsage] = Field(default_factory=list)
+    sql_objects: list[SqlObject] = Field(default_factory=list)
 
 
 class RunMeta(_Base):

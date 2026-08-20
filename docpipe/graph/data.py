@@ -374,3 +374,134 @@ def merge(existing: tuple[GraphNode, ...], added: list[GraphNode]) -> tuple[list
             }
         )
     return sorted(by_key.values(), key=lambda node: node.key), merged
+
+
+def from_sql(
+    manifest: Manifest, nodes: tuple[GraphNode, ...]
+) -> tuple[list[GraphNode], list[GraphEdge], dict[str, int]]:
+    """Узлы и рёбра из SQL: процедуры и обращения к таблицам (G05c).
+
+    Две половины, и вторая существует только там, где исходники процедур
+    лежат в репозитории:
+
+    - **из кода** — SQL, записанный литералом: `FromSqlRaw("SELECT … FROM T")`.
+      Даёт рёбра от члена к таблицам и к процедурам;
+    - **из исходников** — тело процедуры. Даёт саму процедуру узлом и её
+      обращения к таблицам. Без этой половины цепочка обрывается на «позвали
+      процедуру X», и всё, что за ней, невидимо.
+
+    **Процедура, вызванная из кода и не найденная среди исходников, не
+    исчезает**: она остаётся узлом с пометкой «тело не найдено». На
+    репозитории, где процедуры живут только в базе, таких будет сто процентов
+    — и это нормальный исход, а не пробел разбора.
+    """
+    members_by_place: dict[tuple[str, str], str] = {}
+    for node in nodes:
+        if node.kind == "member" and node.file:
+            members_by_place.setdefault((node.file, normalize_identifier(node.name)), node.key)
+
+    produced: dict[str, GraphNode] = {}
+    edges: list[GraphEdge] = []
+    report: dict[str, int] = {}
+    defined: set[str] = set()
+
+    def count(name: str, delta: int = 1) -> None:
+        report[name] = report.get(name, 0) + delta
+
+    def node_for(name: str, kind: str, origin: str, file: str = "") -> str:
+        key = data_key(name)
+        if key not in produced:
+            produced[key] = GraphNode(
+                key=key,
+                kind="data",
+                name=name,
+                file=file,
+                source="sql",
+                attributes={"origin": origin, "data_kind": kind},
+            )
+        return key
+
+    for obj in manifest.sql_objects:
+        key = node_for(obj.name, obj.kind, "sql:source", obj.file)
+        defined.add(key)
+        for table in obj.reads:
+            edges.append(
+                GraphEdge(
+                    kind="reads",
+                    source=key,
+                    target=node_for(table, "table", "sql:source"),
+                    via="sql:body",
+                )
+            )
+        for table in obj.writes:
+            edges.append(
+                GraphEdge(
+                    kind="writes",
+                    source=key,
+                    target=node_for(table, "table", "sql:source"),
+                    via="sql:body",
+                )
+            )
+        for called in obj.calls:
+            # Вызов процедуры из процедуры: цепочка внутри SQL не обрывается
+            # на первом уровне.
+            edges.append(
+                GraphEdge(
+                    kind="calls",
+                    source=key,
+                    target=node_for(called, "procedure", "sql:called"),
+                    via="sql:exec",
+                )
+            )
+        if obj.dynamic:
+            count("динамический SQL в процедуре")
+
+    for usage in manifest.sql_usages:
+        source = members_by_place.get((usage.file, normalize_identifier(usage.member)))
+        if source is None:
+            count("SQL из кода без узла-члена")
+            continue
+        for table in usage.reads:
+            edges.append(
+                GraphEdge(
+                    kind="reads",
+                    source=source,
+                    target=node_for(table, "table", "sql:literal"),
+                    via="sql:literal",
+                )
+            )
+        for table in usage.writes:
+            edges.append(
+                GraphEdge(
+                    kind="writes",
+                    source=source,
+                    target=node_for(table, "table", "sql:literal"),
+                    via="sql:literal",
+                )
+            )
+        for called in usage.calls:
+            edges.append(
+                GraphEdge(
+                    kind="calls",
+                    source=source,
+                    target=node_for(called, "procedure", "sql:called"),
+                    via="sql:literal",
+                )
+            )
+        if usage.dynamic:
+            count("динамический SQL в коде")
+
+    without_body = [
+        key
+        for key, node in produced.items()
+        if node.attributes.get("data_kind") == "procedure" and key not in defined
+    ]
+    if without_body:
+        count("процедур вызвано, тело не найдено", len(without_body))
+
+    report["процедур с телом"] = len(defined)
+    return (
+        sorted(produced.values(), key=lambda node: node.key),
+        sorted(edges, key=lambda edge: (edge.kind, edge.source, edge.target)),
+        report,
+    )

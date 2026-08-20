@@ -46,6 +46,28 @@ TABLE_METHODS: Final[frozenset[str]] = frozenset(
     {"ToTable", "CreateTable", "DropTable", "RenameTable", "ToView", "ToSqlQuery"}
 )
 
+# Методы, у которых строковый аргумент — это SQL. Тот же приём и тот же
+# положительный список: строка, переданная в `LogInformation`, запросом
+# не является, и отличить её можно только по тому, куда она передана.
+SQL_METHODS: Final[frozenset[str]] = frozenset(
+    {
+        "ExecuteSqlRaw",
+        "ExecuteSqlRawAsync",
+        "ExecuteSqlInterpolated",
+        "FromSqlRaw",
+        "FromSqlInterpolated",
+        "ExecuteScalar",
+        "ExecuteReader",
+        "ExecuteNonQuery",
+        "Query",
+        "QueryAsync",
+        "QueryFirstOrDefault",
+        "QuerySingleOrDefault",
+        "Execute",
+        "ExecuteAsync",
+    }
+)
+
 
 def _text(node: Node | None) -> str:
     if node is None or node.text is None:
