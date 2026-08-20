@@ -114,3 +114,33 @@ def test_cli_fails_only_when_a_threshold_is_given(tmp_path: Path) -> None:
         ],
     )
     assert strict.exit_code == 1
+
+
+# ------------------------------------------------------------------------------------------
+# Спецификации (G17 п. 3)
+# ------------------------------------------------------------------------------------------
+
+
+def test_specification_id_lives_on_the_technical_side() -> None:
+    """Идентификатор чужой спецификации — атрибут записи реестра.
+
+    Стрелка та же, что у бизнес-слоя: техника ссылается на чужую систему,
+    а не наоборот. Обратная сломала бы спецификацию при переименовании класса.
+    """
+    with_id = entry("job", "Ночная переоценка")
+    nodes = (
+        with_id.model_copy(update={"attributes": {**with_id.attributes, "spec": "CF-SPEC-42"}}),
+        entry("job", "Дневная сверка"),
+    )
+    report = coverage(nodes, Catalog(docs=[]))
+
+    assert report.with_spec == 1
+    assert report.specs == ("CF-SPEC-42",)
+    assert report.without_spec_examples == ("job: Дневная сверка",)
+
+
+def test_no_specifications_is_a_legal_state_and_says_so() -> None:
+    """Ноль спецификаций — состояние репозитория, а не пустая строка отчёта."""
+    report = coverage((entry("job", "Ночная переоценка"),), Catalog(docs=[]))
+    assert report.with_spec == 0
+    assert "Это законно" in format_coverage(report)

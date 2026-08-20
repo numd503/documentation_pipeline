@@ -56,15 +56,28 @@ records:
   # Шов между языками: маршрут, который знают обе стороны. Литерал приходит
   # сюда из разведки, потому что на зовущей стороне он собирается из кусков
   # и статическим поиском не находится (Р2).
+  # Питоновский сервис: объявлен реестром в виде кода, класса-«хоста» у него
+  # нет. Без корня на этой стороне вопрос «кого задену, правя контроллер»
+  # не имеет ответа: клиент есть в графе, но его никто не запускает.
+  - kind: entry_point
+    key: price-sync
+    entry_kind: service
+    name: Синхронизация цен
+    impl: PriceClient
+    source:
+      file: clients/price_client.py
+      record: PriceClient
+    provenance: manual
+
   - kind: seam
-    key: api/prices/{id}
+    key: api/ml/innerdebts/state/byclient
     seam_kind: http_route
     http_method: GET
-    literal: /api/prices/{id}
-    name: Цена по идентификатору
+    literal: /api/ml/innerdebts/state/byclient
+    name: Состояние по клиенту
     sides: ["python", "dotnet"]
     source:
-      file: tools/price_client.py
+      file: clients/price_client.py
       record: PriceClient.load
     provenance: manual
 
@@ -77,6 +90,6 @@ records:
     name: Пересчёт цен
     sides: ["dotnet", "python"]
     source:
-      file: tools/price_client.py
+      file: clients/price_client.py
       record: PriceClient.publish
     provenance: manual

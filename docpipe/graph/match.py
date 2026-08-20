@@ -23,6 +23,7 @@
 from dataclasses import dataclass, field
 from typing import Final
 
+from docpipe.graph.engine import in_skipped_directory
 from docpipe.graph.identity import symbol_member_key, symbol_type_key
 from docpipe.graph.model import GraphNode
 from docpipe.model import Manifest
@@ -36,6 +37,10 @@ class MatchReport:
 
     matched: int = 0
     only_manifest: int = 0
+    # Из них — те, чей файл лежит под каталогом, который разборщик пропускает.
+    # Без этой строки причина не видна: число «есть в манифесте — нет в графе»
+    # выглядит шумом разбора, а на деле это целый каталог, выпавший молча.
+    skipped_directory: int = 0
     only_graph: int = 0
     ambiguous: int = 0
     examples: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -44,6 +49,7 @@ class MatchReport:
         return {
             "сопоставлено с манифестом": self.matched,
             "есть в манифесте — нет в графе": self.only_manifest,
+            "из них: файл в каталоге, который разборщик пропускает": self.skipped_directory,
             "есть в графе — нет в манифесте": self.only_graph,
             "узлов графа на несколько объявлений манифеста": self.ambiguous,
         }
@@ -181,14 +187,27 @@ def match(
     only_manifest = sorted(
         {entry["symbol_key"] for entries in types.values() for entry in entries} - used
     )
+    # Файлы объявлений: нужны, чтобы назвать причину пропажи, а не только число.
+    files_of: dict[str, set[str]] = {}
+    for (path, _name), entries in types.items():
+        for entry in entries:
+            files_of.setdefault(entry["symbol_key"], set()).add(path)
+    skipped = sorted(
+        key
+        for key in only_manifest
+        if files_of.get(key) and all(in_skipped_directory(path) for path in files_of[key])
+    )
+
     report = MatchReport(
         matched=matched,
         only_manifest=len(only_manifest),
+        skipped_directory=len(skipped),
         only_graph=len(unmatched),
         ambiguous=ambiguous,
         examples={
             "есть в манифесте — нет в графе": tuple(only_manifest[:EXAMPLES]),
             "есть в графе — нет в манифесте": tuple(sorted(unmatched)[:EXAMPLES]),
+            "пропущено вместе с каталогом": tuple(skipped[:EXAMPLES]),
         },
     )
     return attributes, report

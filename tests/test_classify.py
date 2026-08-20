@@ -864,3 +864,31 @@ def test_errors_name_the_section(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=r"rules\.yaml:web"):
         load_ruleset(path, "web")
+
+
+def test_web_section_does_not_inherit_require_public_from_dotnet(tmp_path: Path) -> None:
+    """G13 п. 3. `require_public` из `dotnet` не доезжает до `web`.
+
+    У TypeScript модификатора `public` на уровне объявления нет вовсе:
+    видимость задаётся словом `export`. Значение, унаследованное из соседней
+    секции, отсеяло бы **весь** фронт — и без единого сообщения об ошибке.
+    """
+    path = tmp_path / "rules.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "version": "1",
+                "dotnet": {
+                    "ruleset_version": "net.1",
+                    "exclude": {"require_public": True},
+                    "rules": [],
+                },
+                "web": {"ruleset_version": "web.1", "rules": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_ruleset(path, "dotnet").exclude is not None
+    web = load_ruleset(path, "web")
+    assert web.exclude is None or not web.exclude.require_public

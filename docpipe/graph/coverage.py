@@ -35,6 +35,13 @@ class CoverageReport:
     anchors: int = 0
     anchors_without_entry_point: tuple[str, ...] = ()
     uncovered_examples: tuple[str, ...] = ()
+    # Спецификации (G17 п. 3): идентификатор живёт **на технической стороне**,
+    # в атрибуте записи реестра. Стрелка та же, что у бизнес-слоя: техника
+    # ссылается на чужую систему, а не чужая система на наши ключи, — иначе
+    # переименование класса ломало бы спецификацию.
+    with_spec: int = 0
+    specs: tuple[str, ...] = ()
+    without_spec_examples: tuple[str, ...] = ()
 
     def as_counts(self) -> dict[str, int]:
         counts = {
@@ -43,6 +50,8 @@ class CoverageReport:
             "бизнес-документов": self.documents,
             "якорей в документах": self.anchors,
             "якорей без точки входа": len(self.anchors_without_entry_point),
+            "точек входа со спецификацией": self.with_spec,
+            "спецификаций названо": len(self.specs),
         }
         for kind, number in sorted(self.uncovered_by_kind.items()):
             counts[f"не описано, вид {kind}"] = number
@@ -91,6 +100,18 @@ def coverage(nodes: tuple[GraphNode, ...], catalog: Catalog) -> CoverageReport:
         if len(examples) < 20:
             examples.append(f"{kind}: {node.name}")
 
+    # Идентификатор спецификации — свободный атрибут записи реестра
+    # (`attributes: {spec: CF-SPEC-42}`). Отдельного поля в схеме нет
+    # намеренно: чужая система именуется по-своему, и поле, придуманное
+    # под одну из них, второй не подойдёт.
+    spec_of = {node.key: node.attributes.get("spec", "") for node in roots}
+    specs = sorted({value for value in spec_of.values() if value})
+    without_spec = [
+        f"{node.attributes.get('entry_kind', '—')}: {node.name}"
+        for node in roots
+        if not spec_of.get(node.key)
+    ]
+
     return CoverageReport(
         entry_points=len(roots),
         covered=len(covered),
@@ -99,6 +120,9 @@ def coverage(nodes: tuple[GraphNode, ...], catalog: Catalog) -> CoverageReport:
         anchors=anchors,
         anchors_without_entry_point=tuple(sorted(dangling)[:20]),
         uncovered_examples=tuple(examples),
+        with_spec=sum(1 for value in spec_of.values() if value),
+        specs=tuple(specs),
+        without_spec_examples=tuple(sorted(without_spec)[:20]),
     )
 
 
@@ -108,8 +132,18 @@ def format_coverage(report: CoverageReport) -> str:
     lines = [
         f"Точек входа: {report.entry_points}, описано документом: {report.covered} ({share:.0%})",
         f"Бизнес-документов: {report.documents}, якорей в них: {report.anchors}",
+        f"Со спецификацией: {report.with_spec}, названо спецификаций: {len(report.specs)}",
         "",
     ]
+    if report.entry_points and not report.specs:
+        # Ноль спецификаций — законное состояние, а не пустая строка отчёта:
+        # на репозитории, где спецификаций нет, их не должно быть и здесь.
+        lines.append(
+            "Спецификаций не названо ни у одной точки входа. Это законно: "
+            "идентификатор ставится атрибутом `spec` у записи реестра, "
+            "и репозиторий без внешних спецификаций его не заполняет."
+        )
+        lines.append("")
     if report.uncovered_by_kind:
         lines.append("Не описано, по видам:")
         for kind, number in sorted(

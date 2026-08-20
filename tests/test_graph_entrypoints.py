@@ -142,7 +142,7 @@ def test_root_without_code_does_not_fail_the_run() -> None:
     registry = load_arch_registry(ARCH_FIXTURE)
     entries = from_registry(registry)
     _, report = link(entries, (), None)
-    assert report.linked[LINK_NONE] == 3
+    assert report.linked[LINK_NONE] == 4
     assert report.unlinked_examples
 
 
@@ -233,13 +233,13 @@ def test_cli_lists_roots_with_link_state(index_with_roots: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "связан" in result.output
     assert "НЕ СВЯЗАН" in result.output
-    assert "Всего корней: 3" in result.output
+    assert "Всего корней: 4" in result.output
 
 
 def test_cli_can_show_only_unlinked(index_with_roots: Path) -> None:
     result = runner.invoke(app, ["graph", "entrypoints", str(index_with_roots), "--unlinked"])
     assert result.exit_code == 0, result.output
-    assert "Всего корней: 2" in result.output
+    assert "Всего корней: 3" in result.output
 
 
 def test_cli_says_where_it_looked_when_there_are_no_roots(tmp_path: Path) -> None:

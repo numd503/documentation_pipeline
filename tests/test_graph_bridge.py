@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from docpipe.graph import build, logical_hash, project
-from docpipe.graph.engine import EXPECTED_VERSION, Engine, EngineError
+from docpipe.graph.engine import EXPECTED_VERSION, SKIPPED_DIRECTORIES, Engine, EngineError
 
 ENGINE_PATH = Path(
     os.environ.get("DOCPIPE_ENGINE_PATH", "~/.local/bin/codebase-memory-mcp")
@@ -279,3 +279,28 @@ def test_registry_written_in_python_becomes_a_root(engine: Engine, tmp_path: Pat
     assert [node.attributes["entry_kind"] for node in entries] == ["service"]
     assert edges, "точка входа из реестра не связалась с классом"
     assert report.linked
+
+
+@engine_required
+def test_engine_skips_whole_directories_without_saying_so(tmp_path: Path) -> None:
+    """Контрактный тест: список пропускаемых каталогов — измеренный факт, а не догадка.
+
+    Если следующая версия разборщика перестанет их пропускать (или начнёт
+    пропускать другие), это обязано упасть здесь, а не проявиться пропавшим
+    интеграционным кодом на боевом репозитории.
+    """
+    for directory in ("tools", "scripts", "build", "vendor", "bin", "src", "clients"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / "sample.py").write_text(
+            f"class Sample_{directory}:\n    def run(self):\n        return 1\n",
+            encoding="utf-8",
+        )
+
+    engine = Engine(binary=ENGINE_PATH, cache_dir=tmp_path / "cache")
+    run = engine.index(tmp_path)
+    rows = engine.query(run.project, "MATCH (n:File) RETURN n.qualified_name, n.file_path")
+    indexed = {row[-1].split("/")[0] for row in rows if row and row[-1]}
+
+    assert indexed == {"src", "clients"}, indexed
+    for directory in SKIPPED_DIRECTORIES:
+        assert directory not in indexed

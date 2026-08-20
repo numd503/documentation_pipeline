@@ -357,3 +357,29 @@ def test_leading_segment_is_named_when_nothing_matches() -> None:
 def test_diagnosis_is_empty_when_there_is_nothing_to_diagnose() -> None:
     """Выдумывать причину хуже, чем не ставить её: у пустой стороны диагноза нет."""
     assert diagnose_roots((), manifest_of(symbol())) == ""
+
+
+def test_symbol_lost_with_a_skipped_directory_is_named_not_counted_as_noise() -> None:
+    """Разборщик 0.6.0 молча пропускает `tools/`, `scripts/`, `build/`,
+    `vendor/`, `bin/` — на любом языке.
+
+    Символ оттуда есть в манифесте и отсутствует в графе. Без отдельной
+    строки это выглядит шумом разбора («в манифесте есть, в графе нет: 2»),
+    а на деле молча выпал целый каталог — и ровно там живёт интеграционный
+    код: клиенты чужих сервисов, выгрузки, скрипты миграции.
+    """
+    manifest = manifest_of(symbol(name="Hidden", fqn="Ns.Hidden", path="tools/Hidden.cs"))
+    _, report = match(graph_nodes(), manifest)
+
+    assert report.only_manifest == 1
+    assert report.skipped_directory == 1
+    assert report.examples["пропущено вместе с каталогом"]
+
+
+def test_symbol_lost_elsewhere_is_not_blamed_on_the_directory() -> None:
+    """Пропажа из обычного каталога — другая находка, и путать их нельзя."""
+    manifest = manifest_of(symbol(name="Lost", fqn="Ns.Lost", path="src/A/Lost.cs"))
+    _, report = match(graph_nodes(), manifest)
+
+    assert report.only_manifest == 1
+    assert report.skipped_directory == 0
