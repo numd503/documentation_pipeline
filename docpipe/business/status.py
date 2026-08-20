@@ -18,7 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from docpipe.business.fingerprint import business_hash, hashed_anchors
 from docpipe.business.model import BusinessDoc, Catalog
 from docpipe.business.resolve import Resolution, ResolveContext, resolve_all
-from docpipe.materialize.document import DocumentError, is_section_empty, read_document
+from docpipe.documents import read_accepted
+from docpipe.documents.zones import DocumentError, is_section_empty, read_document
 
 Status = Literal["broken", "empty", "undeclared", "drifted", "current"]
 Action = Literal["write", "review", "skip"]
@@ -216,8 +217,8 @@ def decide(doc: BusinessDoc, root: Path, ctx: ResolveContext) -> DocumentStatus:
         listed = ", ".join(f"{a.kind} {a.display}" for a in unresolved)
         return verdict("broken", "review", f"точка входа не найдена: {listed}")
 
-    accepted = (parsed.state or {}).get("accepted")
-    if not isinstance(accepted, dict):
+    accepted = read_accepted(parsed)
+    if accepted is None:
         return verdict("undeclared", "review", "приёмки не было: текст не сверялся с реализацией")
 
     current = accepted_state(doc, ctx)

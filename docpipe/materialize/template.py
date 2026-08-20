@@ -13,7 +13,7 @@ from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from docpipe.materialize.document import (
+from docpipe.documents.zones import (
     DocumentError,
     is_section_empty,
     parse_document,

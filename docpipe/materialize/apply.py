@@ -10,10 +10,10 @@
 обновлённым.
 """
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from docpipe.documents import write_atomic
 from docpipe.materialize.plan import MaterializePlan, PlannedDoc
 from docpipe.materialize.template import DEFAULT_TEMPLATE
 
@@ -33,27 +33,6 @@ class ApplyResult:
     @property
     def written(self) -> int:
         return len(self.created) + len(self.updated) + len(self.relocated)
-
-
-def write_atomic(path: Path, content: str) -> None:
-    """Запись через временный файл в том же каталоге и `os.replace`.
-
-    Временный файл называется `.{имя}.md.tmp`: точка в начале и суффикс не `.md`,
-    поэтому обход сирот не подберёт его, если процесс умер между созданием
-    и переименованием.
-
-    `newline="\\n"` — всегда. Сравнение «писать или нет» идёт по нормализованному
-    тексту, а запись обязана быть одинаковой на всех платформах.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / f".{path.name}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(content)
-        os.replace(tmp, path)
-    except OSError:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 def _relocate(root: Path, doc: PlannedDoc, result: ApplyResult) -> bool:

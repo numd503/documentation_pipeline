@@ -11,7 +11,11 @@
    Отступ в четыре пробела — штатный способ показать маркер внутри блока кода,
    не превратив его в маркер.
 
-Модуль не знает ни про .NET, ни про бизнес-слой: формат зон у них общий.
+Модуль не знает ни про .NET, ни про бизнес-слой: формат зон у них общий —
+и живёт он **вне** обоих слоёв намеренно. Пока разбор зон лежал внутри
+`materialize`, бизнес-слой зависел от шага 2 как от модуля, а третий
+потребитель (детекция дрейфа спецификаций) добавил бы к этому третью
+копию правил приёмки.
 """
 
 import re
@@ -20,7 +24,7 @@ from typing import Any
 
 import yaml
 
-from docpipe.materialize.model import ParsedDocument, Segment
+from docpipe.documents.model import ParsedDocument, Segment
 
 MANAGED_START = "<!-- docpipe:generated:start -->"
 MANAGED_END = "<!-- docpipe:generated:end -->"

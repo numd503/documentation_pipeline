@@ -20,14 +20,14 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 from docpipe.discovery import is_excluded, matches_glob
-from docpipe.materialize.build import (
-    BuildContext,
-    build_front_matter,
-    build_generated_block,
-    dump_front_matter,
-    template_refs,
+from docpipe.documents import (
+    RESERVED_KEYS,
+    accepted_block,
+    read_accepted,
+    read_review,
 )
-from docpipe.materialize.document import (
+from docpipe.documents.model import ParsedDocument, Segment
+from docpipe.documents.zones import (
     MANAGED_END,
     MANAGED_START,
     DocumentError,
@@ -35,7 +35,13 @@ from docpipe.materialize.document import (
     parse_document,
     read_document,
 )
-from docpipe.materialize.model import ParsedDocument, Segment
+from docpipe.materialize.build import (
+    BuildContext,
+    build_front_matter,
+    build_generated_block,
+    dump_front_matter,
+    template_refs,
+)
 from docpipe.materialize.ownership import Ownership, owner_of
 from docpipe.materialize.template import (
     DEFAULT_TEMPLATE,
@@ -110,9 +116,8 @@ class ExistingDoc:
 
     @property
     def accepted(self) -> Accepted | None:
-        state = (self.parsed.state if self.parsed else None) or {}
-        raw = state.get("accepted")
-        if not isinstance(raw, dict):
+        raw = read_accepted(self.parsed) if self.parsed else None
+        if raw is None:
             return None
         members = raw.get("members")
         return Accepted(
@@ -124,9 +129,8 @@ class ExistingDoc:
 
     @property
     def review_reason(self) -> str | None:
-        state = (self.parsed.state if self.parsed else None) or {}
-        raw = state.get("review")
-        return raw.get("reason") if isinstance(raw, dict) else None
+        raw = read_review(self.parsed) if self.parsed else None
+        return raw.get("reason") if raw else None
 
 
 @dataclass(frozen=True)
@@ -415,7 +419,7 @@ def _compose(
         preserved = {
             key: value
             for key, value in (parsed.front_matter or {}).items()
-            if key not in ("docpipe", "docpipe_state")
+            if key not in RESERVED_KEYS
         }
 
     front_matter = dump_front_matter(build_front_matter(node, context, team), state, preserved)
@@ -460,15 +464,14 @@ def accepted_state(node: DocNode) -> dict[str, Any]:
     Времени здесь нет: оно сделало бы приёмку неидемпотентной — два прогона
     подряд меняли бы файл. История правок точнее хранится в git.
     """
-    return {
-        "accepted": {
+    return accepted_block(
+        {
             "signature_hash": node.signature_hash,
             "impl_hash": node.impl_hash,
             "kind": node.kind,
             "members": public_members(node),
-        },
-        "review": None,
-    }
+        }
+    )
 
 
 def decide(

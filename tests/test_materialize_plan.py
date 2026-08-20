@@ -509,7 +509,7 @@ def test_two_files_with_one_node_id_block(manifest, templates, context, tmp_path
 
 
 def _doc(path: str, node_id: str, *, sources: list[str] = (), impl: str = "") -> ExistingDoc:  # type: ignore[assignment]
-    from docpipe.materialize.document import parse_document
+    from docpipe.documents.zones import parse_document
 
     lines = [
         "---",

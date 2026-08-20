@@ -41,6 +41,7 @@ from docpipe.classify import load_ruleset
 from docpipe.config import DocpipeConfig, candidate_inputs, load_config, resolve_input
 from docpipe.diff import diff_manifests, format_changes
 from docpipe.discovery import is_excluded
+from docpipe.documents import accepted_block, write_atomic
 from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.explain import ANY, format_selection, select, selection_json
@@ -61,7 +62,7 @@ from docpipe.graph.report import health as health_report
 from docpipe.graph.report import render as render_report
 from docpipe.graph.search import resolve as resolve_names
 from docpipe.hashing import content_hash, stable_json_dumps
-from docpipe.materialize.apply import apply_plan, format_result, write_atomic
+from docpipe.materialize.apply import apply_plan, format_result
 from docpipe.materialize.build import BuildContext, build_context
 from docpipe.materialize.explain import format_explain_document, zone_diff
 from docpipe.materialize.ownership import (
@@ -2980,7 +2981,7 @@ def business_accept(
             loaded.ctx,
             path.read_bytes().decode("utf-8-sig"),
             loaded.ownership,
-            state={"accepted": business_accepted_state(doc, loaded.ctx), "review": None},
+            state=accepted_block(business_accepted_state(doc, loaded.ctx)),
         )
         if not dry_run:
             write_atomic(path, text)
