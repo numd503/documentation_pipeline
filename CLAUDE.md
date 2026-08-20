@@ -92,6 +92,8 @@ uv run docpipe graph reaches "имя точки входа"               # чт
 uv run docpipe graph affects ИМЯ_УЗЛА                        # какие точки входа затронет
 uv run docpipe graph path ОТКУДА КУДА                        # как связаны две сущности
 uv run docpipe graph health               # отчёт о неполноте: что не разрешилось
+uv run docpipe graph coverage             # какие точки входа описаны бизнес-документами
+uv run docpipe graph pr-check --root ПУТЬ # что предсказал affects на влитых правках
 
 # полная проверка перед коммитом
 uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv run pytest -q
