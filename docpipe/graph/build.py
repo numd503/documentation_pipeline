@@ -242,19 +242,15 @@ def build(
     # Связывание идёт ПОСЛЕ сопоставления и ДО корней: довершённые рёбра
     # вызова участвуют в достижимости так же, как чужие, а корни связываются
     # уже с полным набором узлов.
-    # Диспетчеризация по типу запроса: объявления берутся из манифеста,
-    # места отправки — из обращений члена к типу. Обращения в индекс
-    # не проецируются: это не рёбра вызова.
+    # Диспетчеризация по типу запроса: обе половины приходят из манифеста —
+    # объявление из базового типа обработчика, место отправки из тела
+    # (создание объекта запроса). Сторонний разбор здесь не участвует:
+    # создание объекта он обращением не считает, и первая редакция,
+    # опиравшаяся на его обращения, давала только петли.
     if manifest is not None and manifest.dispatch_handlers:
         say("собираю диспетчеризацию по типу запроса")
-        usages = tuple((edge.source, edge.target) for edge in graph.usages)
-        resolved_usages = tuple(
-            (node_key(_by_name[source]), node_key(_by_name[target]))
-            for source, target in usages
-            if source in _by_name and target in _by_name
-        )
         dispatch_edges, dispatch_report = dispatch(
-            index.nodes, resolved_usages, list(manifest.dispatch_handlers)
+            index.nodes, tuple(manifest.dispatch_sends), list(manifest.dispatch_handlers)
         )
         index = GraphIndex(nodes=index.nodes, edges=index.edges + tuple(dispatch_edges))
         report.update(dispatch_report)

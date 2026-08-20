@@ -26,7 +26,7 @@ from typing import Final
 from docpipe.discovery import map_files_to_modules
 from docpipe.graph.model import GraphEdge, GraphNode
 from docpipe.keys import normalize_identifier
-from docpipe.model import DiRegistration, DispatchDeclaration, Manifest
+from docpipe.model import DiRegistration, DispatchDeclaration, DispatchSend, Manifest
 from docpipe.symbols import strip_generics
 
 VIA_REGISTRATION: Final[str] = "di:registration"
@@ -399,7 +399,7 @@ def complete(
 
 def dispatch(
     nodes: tuple[GraphNode, ...],
-    usages: tuple[tuple[str, str], ...],
+    sends: tuple[DispatchSend, ...],
     handlers: list[DispatchDeclaration],
 ) -> tuple[list[GraphEdge], dict[str, int]]:
     """Диспетчеризация по типу запроса: `Send(new X())` → обработчик X.
@@ -409,9 +409,11 @@ def dispatch(
     - **объявление** («этот тип обслуживает такой запрос») приходит из разбора
       объявлений: это базовый тип с аргументом дженерика, и аргумент есть
       только там;
-    - **место отправки** («вот здесь создают X») приходит из обращений члена
-      к типу. Вызова с именем обработчика в коде нет вовсе — есть создание
-      объекта запроса и вызов диспетчера.
+    - **место отправки** («вот здесь создают X») приходит из разбора тела:
+      это создание объекта запроса. Вызова с именем обработчика в коде нет
+      вовсе. Первая редакция брала место отправки из обращений члена к типу
+      у стороннего разбора — и получала только петли «обработчик
+      диспетчеризует сам себя»: создание объекта он обращением не считает.
 
     Тип запроса живёт **на ребре**, а не на вызове: тот же метод обработчика
     зовут и диспетчер, и код напрямую, и различить их можно только так.
@@ -424,22 +426,28 @@ def dispatch(
     edges: list[GraphEdge] = []
     report: dict[str, int] = {
         "объявленных обработчиков по типу запроса": len(handlers),
+        "мест отправки запроса": len(sends),
         "рёбер диспетчеризации по типу запроса": 0,
         "обработчиков без места отправки": 0,
     }
     used: set[str] = set()
 
-    for source, target in usages:
-        target_node = index.by_key.get(target)
-        if target_node is None or target_node.kind != "type":
+    members_by_place: dict[tuple[str, str], str] = {}
+    for node in nodes:
+        if node.kind == "member" and node.file:
+            members_by_place.setdefault((node.file, normalize_identifier(node.name)), node.key)
+
+    for send in sends:
+        source = members_by_place.get((send.file, normalize_identifier(send.member)))
+        if source is None:
+            report["мест отправки без узла кода"] = report.get("мест отправки без узла кода", 0) + 1
             continue
-        for handler in by_request.get(normalize_identifier(target_node.name), []):
+        for handler in by_request.get(normalize_identifier(send.request_type), []):
             targets = index.types(handler.handler_fqn)
             if not targets:
                 continue
-            # Обработчик обращается к типу запроса сам — это его параметр,
-            # а не место отправки. Без этой проверки получается петля
-            # «обработчик диспетчеризует сам себя».
+            # Обработчик создаёт свой же запрос — это не отправка, а, например,
+            # тест или фабрика внутри самого обработчика.
             if index.owner_type(source) in targets:
                 continue
             used.add(handler.handler_fqn)

@@ -13,6 +13,7 @@ from docpipe.graph.model import GraphEdge, GraphNode
 from docpipe.model import (
     DiRegistration,
     DispatchDeclaration,
+    DispatchSend,
     Manifest,
     Module,
     ParserVersions,
@@ -396,14 +397,23 @@ def dispatch_nodes() -> tuple[GraphNode, ...]:
     )
 
 
+def send(member: str = "MyOrders", file: str = "src/App/Controller.cs") -> DispatchSend:
+    return DispatchSend(
+        request_type="GetOrders",
+        member=member,
+        module="src/App/App.csproj",
+        file=file,
+        line=12,
+    )
+
+
 def test_dispatch_puts_the_request_type_on_the_edge() -> None:
     """Тип запроса живёт на ребре, а не на вызове: тот же метод обработчика
     зовут и диспетчер, и код напрямую."""
     from docpipe.graph.binding import dispatch
 
     nodes = dispatch_nodes()
-    usages = (("src/App/Controller.cs#Controller.MyOrders", "src/App/GetOrders.cs#GetOrders"),)
-    edges, report = dispatch(nodes, usages, [handler_declaration()])
+    edges, report = dispatch(nodes, (send(),), [handler_declaration()])
     assert len(edges) == 1
     assert edges[0].kind == "dispatches"
     assert edges[0].target == "src/App/GetOrdersHandler.cs#GetOrdersHandler.Handle"
@@ -411,19 +421,25 @@ def test_dispatch_puts_the_request_type_on_the_edge() -> None:
     assert report["обработчиков без места отправки"] == 0
 
 
-def test_handler_using_its_own_request_type_is_not_a_send_site() -> None:
-    """Обработчик обращается к типу запроса сам — это его параметр.
-
-    Без проверки получается петля «обработчик диспетчеризует сам себя»,
-    и на открытом репозитории это были ровно все найденные рёбра.
-    """
+def test_handler_creating_its_own_request_is_not_a_send_site() -> None:
+    """Создание запроса внутри самого обработчика — не отправка: так пишут
+    тест или фабрику. Без проверки получается петля «обработчик
+    диспетчеризует сам себя»."""
     from docpipe.graph.binding import dispatch
 
     nodes = dispatch_nodes()
-    usages = (
-        ("src/App/GetOrdersHandler.cs#GetOrdersHandler.Handle", "src/App/GetOrders.cs#GetOrders"),
-    )
-    edges, report = dispatch(nodes, usages, [handler_declaration()])
+    inside = send(member="Handle", file="src/App/GetOrdersHandler.cs")
+    edges, report = dispatch(nodes, (inside,), [handler_declaration()])
     assert edges == []
     # Объявление есть, места отправки нет — это измеренное число, а не тишина.
     assert report["обработчиков без места отправки"] == 1
+
+
+def test_send_site_without_a_code_node_is_counted() -> None:
+    from docpipe.graph.binding import dispatch
+
+    edges, report = dispatch(
+        dispatch_nodes(), (send(file="src/App/Нет.cs"),), [handler_declaration()]
+    )
+    assert edges == []
+    assert report["мест отправки без узла кода"] == 1

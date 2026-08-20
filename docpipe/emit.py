@@ -30,6 +30,7 @@ from docpipe.hashing import content_hash, stable_json_dumps
 from docpipe.merge import merge_manifests, node_in_scope
 from docpipe.model import (
     DispatchDeclaration,
+    DispatchSend,
     DocNode,
     FileParseResult,
     Manifest,
@@ -37,6 +38,7 @@ from docpipe.model import (
     ParserVersions,
     RunMeta,
     Symbol,
+    TableLiteral,
 )
 from docpipe.stats import Stats, collect_stats, kind_counts
 from docpipe.tree import build_nodes
@@ -283,6 +285,65 @@ def split_type_arguments(text: str) -> list[str]:
     return [part for part in parts if part]
 
 
+def collect_sends(
+    results: list[FileParseResult],
+    handlers: list[DispatchDeclaration],
+    file_to_module: dict[str, str],
+) -> list[DispatchSend]:
+    """Места отправки запросов, у которых есть объявленный обработчик.
+
+    Фильтр по объявленным обработчикам — не экономия, а смысл: создание
+    объекта само по себе ничего не значит, значимо только создание того,
+    что кто-то обслуживает. Без фильтра в манифест уехали бы все `new`
+    репозитория.
+    """
+    wanted = {handler.request_type for handler in handlers}
+    if not wanted:
+        return []
+    found: list[DispatchSend] = []
+    for result in results:
+        for construction in result.constructions:
+            if construction.type_name not in wanted:
+                continue
+            found.append(
+                DispatchSend(
+                    request_type=construction.type_name,
+                    member=construction.member,
+                    module=file_to_module.get(result.path, ""),
+                    file=result.path,
+                    line=construction.line,
+                )
+            )
+    return sorted(found, key=lambda item: (item.file, item.line, item.request_type))
+
+
+def collect_tables(
+    results: list[FileParseResult], file_to_module: dict[str, str]
+) -> list[TableLiteral]:
+    """Имена таблиц из литералов — и вызовы, где имени не оказалось.
+
+    Второе хранится наравне с первым: «неразрешённых нет» и «мы их не искали»
+    обязаны различаться.
+    """
+    found: list[TableLiteral] = []
+    for result in results:
+        for call in result.literal_calls:
+            arguments = list(call.arguments)
+            found.append(
+                TableLiteral(
+                    name=arguments[0] if arguments else "",
+                    schema_name=arguments[1] if len(arguments) > 1 else "",
+                    entity=call.entity,
+                    method=call.method,
+                    member=call.member,
+                    module=file_to_module.get(result.path, ""),
+                    file=result.path,
+                    line=call.line,
+                )
+            )
+    return sorted(found, key=lambda item: (item.file, item.line, item.method, item.name))
+
+
 def run(
     root: Path,
     config: DocpipeConfig | None = None,
@@ -338,6 +399,7 @@ def run(
     registrations = [
         registration for result in all_results for registration in result.di_registrations
     ]
+    handlers = collect_dispatch(index, config.dispatch_interfaces)
     configured, nodes = build_nodes(
         index,
         modules,
@@ -352,7 +414,9 @@ def run(
         parser=versions,
         modules=configured,
         nodes=nodes,
-        dispatch_handlers=collect_dispatch(index, config.dispatch_interfaces),
+        dispatch_handlers=handlers,
+        dispatch_sends=collect_sends(all_results, handlers, file_to_module),
+        table_literals=collect_tables(all_results, file_to_module),
         # Явная сортировка, а не порядок обхода: список идёт в манифест,
         # а манифест обязан быть байт-в-байт воспроизводимым.
         di_registrations=sorted(

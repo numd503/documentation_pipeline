@@ -39,6 +39,7 @@ DEFAULT_CARRIERS: Final[tuple[str, ...]] = ("DbSet", "IRepository", "IReadReposi
 
 VIA_TABLE_ATTRIBUTE: Final[str] = "declaration:table-attribute"
 VIA_CARRIER: Final[str] = "declaration:carrier"
+VIA_LITERAL: Final[str] = "literal:configuration"
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,9 @@ class DataReport:
     tables: int = 0
     references: int = 0
     by_convention: int = 0
+    # Имена, ПРОЧИТАННЫЕ литералом, а не выведенные. Число рядом с числом
+    # «по соглашению» отвечает на вопрос «сколько здесь достоверного».
+    from_literal: int = 0
     unresolved: dict[str, int] = field(default_factory=dict)
     examples: tuple[str, ...] = ()
 
@@ -54,6 +58,7 @@ class DataReport:
             "узлов данных из объявлений": self.tables,
             "обращений к данным из объявлений": self.references,
             "имён таблиц по соглашению (не по литералу)": self.by_convention,
+            "имён таблиц прочитано литералом": self.from_literal,
         }
         for reason, number in sorted(self.unresolved.items()):
             counts[f"обращений к данным не разрешено: {reason}"] = number
@@ -124,14 +129,27 @@ def collect(
     """Собрать узлы данных и рёбра обращения из объявлений."""
     symbols = [node.symbol for node in manifest.nodes if node.symbol is not None]
 
-    # Сущность → таблица. Атрибут сильнее соглашения: он написан человеком
-    # ровно затем, чтобы соглашение не действовало.
+    # Сущность → таблица. Порядок силы: литерал в конфигурации модели сильнее
+    # атрибута, атрибут сильнее соглашения. Литерал сильнее не по старшинству,
+    # а по факту: `ToTable("Catalog")` переопределяет и соглашение, и атрибут,
+    # и именно он исполняется.
     tables: dict[str, tuple[str, str]] = {}
     for symbol in symbols:
         found = table_of(symbol)
         if found:
             tables[normalize_identifier(symbol.name)] = found
             tables[normalize_identifier(symbol.fqn)] = found
+
+    unnamed = 0
+    for literal in manifest.table_literals:
+        if not literal.name:
+            # Метод позвали, а имя пришло из константы или переменной.
+            # Это неразрешённое обращение, и считать его обязан отчёт.
+            unnamed += 1
+            continue
+        full = f"{literal.schema_name}.{literal.name}" if literal.schema_name else literal.name
+        if literal.entity:
+            tables[normalize_identifier(literal.entity)] = (full, VIA_LITERAL)
 
     types_by_fqn = {
         node.attributes["fqn"]: node.key
@@ -194,6 +212,15 @@ def collect(
         if found:
             data_node(found[0], found[1])
 
+    # Имя, прочитанное литералом, даёт узел данных само по себе — даже если
+    # сущности рядом не нашлось. Так выглядят миграции: имя таблицы там есть,
+    # а сущность записана строкой. Терять прочитанное имя из-за отсутствия
+    # связи значит терять единственное, что здесь достоверно.
+    for literal in manifest.table_literals:
+        if literal.name:
+            full = f"{literal.schema_name}.{literal.name}" if literal.schema_name else literal.name
+            data_node(full, VIA_LITERAL)
+
     if not tables and not edges:
         unresolved["объявлений с именами таблиц не найдено"] = 1
         examples.append(
@@ -201,10 +228,14 @@ def collect(
             "в телах методов (конфигурация модели, миграции, SQL-литералы)"
         )
 
+    if unnamed:
+        unresolved["имя таблицы не литерал (константа или переменная)"] = unnamed
+
     report = DataReport(
         tables=len(data_nodes),
         references=len(edges),
         by_convention=by_convention,
+        from_literal=sum(1 for literal in manifest.table_literals if literal.name),
         unresolved=unresolved,
         examples=tuple(examples),
     )
