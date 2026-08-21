@@ -1,5 +1,6 @@
 """Точка входа командной строки."""
 
+import sys
 from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -47,6 +48,7 @@ from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.explain import ANY, format_selection, select, selection_json
 from docpipe.graph import build as build_graph
 from docpipe.graph import read_index, read_meta, read_reach, write_index
+from docpipe.graph.api import affects
 from docpipe.graph.coverage import coverage as coverage_of
 from docpipe.graph.coverage import format_coverage
 from docpipe.graph.engine import Engine, EngineError
@@ -2170,7 +2172,12 @@ def graph_reaches(
 
 @graph_app.command("affects")
 def graph_affects(
-    node: Annotated[str, typer.Argument(help="Ключ узла или часть его имени.")],
+    nodes: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help=("Ключи узлов, пути файлов (как в `git diff --name-only`) или часть имени.")
+        ),
+    ] = None,
     index: Annotated[
         Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
     ] = None,
@@ -2180,44 +2187,83 @@ def graph_affects(
     threshold: Annotated[
         int, typer.Option("--fanout", help="Порог веерности: выше него анализ не сужает.")
     ] = DEFAULT_FANOUT_THRESHOLD,
+    from_stdin: Annotated[
+        bool,
+        typer.Option("--stdin", help="Читать пути из stdin: `git diff --name-only | …`."),
+    ] = False,
 ) -> None:
-    """Какие точки входа затронет изменение этого узла.
+    """Какие точки входа затронет изменение этих узлов или файлов.
 
-    Узел выше порога веерности — это не «затронуто триста процессов»,
-    а «общий компонент, анализ не сужает». Инструмент, который всегда
-    что-то отвечает, теряет доверие целиком.
+    Основной сценарий — список изменённых файлов из PR, поэтому команда
+    принимает пути наравне с ключами: требовать от вызывающего перевода
+    путей в ключи значит требовать знания, которого у него нет.
+
+    Ответ собирает та же функция, что отвечает агенту через MCP. Отдельная
+    реализация здесь была бы вторым правилом: объяснение нуля, признание
+    общего компонента и признак неполноты живут в ней, и копия отстала бы
+    от неё молча — что однажды и произошло.
     """
+    asked = list(nodes or [])
+    if from_stdin:
+        asked += [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
+    if not asked:
+        typer.echo(
+            "Нечего спрашивать: назовите узел, путь файла или передайте "
+            "`git diff --name-only | docpipe graph affects --stdin`.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
     path, _ = _open_index(index, config)
     loaded = read_index(path)
+    meta = read_meta(path)
     reachability = read_reach(path)
-    nodes = {item.key: item for item in loaded.nodes}
 
-    matches = [
-        item
-        for item in loaded.nodes
-        if item.key == node or node.lower() in (item.name or "").lower()
-    ]
-    if not matches:
-        typer.echo(f"Узел {node!r} не найден. Проверьте `docpipe graph entrypoints` и имена узлов.")
-        raise typer.Exit(code=1)
+    known = {item.key for item in loaded.nodes}
+    files = {item.file for item in loaded.nodes if item.file}
+    resolved: list[str] = []
+    for value in asked:
+        if value in known or value in files or "/" in value:
+            # Пути **всегда** проходят насквозь, даже если узлов в файле нет.
+            # Отсев здесь был бы вторым правилом: у `Program.cs` на top-level
+            # statements узлов нет вовсе, и именно про него ответ обязан
+            # сказать «здесь собирается приложение», а не «не найдено».
+            resolved.append(value)
+            continue
+        # Приблизительное имя — законный вход: человек помнит «ORDERS»,
+        # а не ключ узла. Не совпало — тоже отдаём: разбираться, что это
+        # было, — работа одной функции, а не двух.
+        matched = [item.key for item in loaded.nodes if value.lower() in (item.name or "").lower()]
+        resolved.extend(sorted(matched)[:5] if matched else [value])
 
-    for item in sorted(matches, key=lambda value: value.key)[:5]:
-        fanout = reachability.fanout(item.key)
-        typer.echo(f"{item.key}")
-        if fanout > threshold:
-            typer.echo(
-                f"  ОБЩИЙ КОМПОНЕНТ: достижим от {fanout} корней при пороге {threshold}. "
-                "Анализ влияния здесь не сужает — список точек входа не печатается "
-                "намеренно."
-            )
-            continue
-        roots = [nodes[key].name for key in reachability.roots_of(item.key) if key in nodes]
-        if not roots:
-            typer.echo("  не достижим ни от одной точки входа")
-            continue
-        typer.echo(f"  точек входа: {len(roots)}")
-        for name in sorted(roots)[:20]:
-            typer.echo(f"    {name}")
+    answer = affects(loaded, meta, reachability, resolved, threshold, limit=1_000_000)
+    unknown = [str(value) for value in answer.get("unknown", [])]
+    if unknown:
+        typer.echo(f"Не найдено в индексе: {', '.join(sorted(unknown))}")
+
+    if not answer.get("found"):
+        typer.echo(f"  {answer.get('note', '')}")
+        raise typer.Exit(code=0 if answer.get("composition_roots") else 1)
+
+    typer.echo(f"Узлов и файлов на входе: {answer.get('nodes_considered', len(resolved))}")
+
+    for shared in answer.get("shared_components", []):
+        typer.echo(
+            f"  ОБЩИЙ КОМПОНЕНТ: {shared['node']} достижим от {shared['fanout']} корней "
+            f"при пороге {threshold}. Анализ влияния здесь не сужает — "
+            "список точек входа не печатается намеренно."
+        )
+
+    entry_points = answer.get("entry_points", {})
+    items = entry_points.get("items", []) if isinstance(entry_points, dict) else []
+    if items:
+        typer.echo(f"  точек входа: {entry_points.get('total', len(items))}")
+        for item in items[:40]:
+            kind = f" ({item['kind']})" if item.get("kind") else ""
+            typer.echo(f"    {item['name']}{kind}")
+    note = answer.get("note", "")
+    if note and not items:
+        typer.echo(f"  {note}")
 
 
 @graph_app.command("path")

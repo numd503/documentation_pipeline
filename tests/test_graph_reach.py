@@ -291,3 +291,81 @@ def test_cli_path_prints_the_chain(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "-->" in result.output
+
+
+def test_cli_affects_takes_file_paths_like_a_diff(tmp_path: Path) -> None:
+    """Основной сценарий в PR — список изменённых файлов, а не ключей узлов.
+
+    Требовать от вызывающего перевода путей в ключи значит требовать знания,
+    которого у него нет: `git diff --name-only` отдаёт пути.
+    """
+    target = prepared_index(tmp_path)
+    result = runner.invoke(app, ["graph", "affects", "src/Service.cs", "--index", str(target)])
+    assert result.exit_code == 0, result.output
+    assert "ночная" in result.output
+
+
+def test_cli_affects_reads_a_diff_from_stdin(tmp_path: Path) -> None:
+    target = prepared_index(tmp_path)
+    result = runner.invoke(
+        app,
+        ["graph", "affects", "--stdin", "--index", str(target)],
+        input="src/Service.cs\n\nsrc/Service.cs\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "ночная" in result.output
+
+
+def test_cli_affects_without_input_says_what_to_pass(tmp_path: Path) -> None:
+    """Пустой вход — отказ с примером команды, а не пустой ответ."""
+    target = prepared_index(tmp_path)
+    result = runner.invoke(app, ["graph", "affects", "--index", str(target)])
+    assert result.exit_code == 2
+    assert "--stdin" in result.output
+
+
+def test_cli_affects_explains_a_zero_instead_of_printing_nothing(tmp_path: Path) -> None:
+    """Ноль точек входа обязан быть объяснён (Р7).
+
+    Раньше командная строка считала влияние сама и печатала «не достижим
+    ни от одной точки входа» — без причины. Причина живёт в общей функции,
+    и копия отстала от неё молча: объяснение композиционного корня, добавленное
+    в неё, из командной строки было не видно вовсе.
+    """
+    index = chain_index()
+    lonely = GraphNode(key="src/Lonely.cs#Lonely", kind="type", name="Lonely", file="src/Lonely.cs")
+    index = GraphIndex(nodes=index.nodes + (lonely,), edges=index.edges)
+    reachability = compute(index)
+    target = tmp_path / "graph.db"
+    write_index(target, index, GraphMeta(generation="", roots=reachability.roots), reachability)
+
+    result = runner.invoke(app, ["graph", "affects", "src/Lonely.cs", "--index", str(target)])
+    assert result.exit_code == 0, result.output
+    assert "ни одна точка входа" in result.output
+
+
+def test_cli_affects_answers_for_a_file_without_nodes(tmp_path: Path) -> None:
+    """`Program.cs` на top-level statements узлов не даёт вовсе.
+
+    Командная строка не имеет права отсеять такой путь до ответа: именно про
+    него ответ обязан сказать «здесь собирается приложение», а не «не найдено».
+    Отсев на входе был бы вторым правилом поверх того, что уже решает общая
+    функция.
+    """
+    index = chain_index()
+    reachability = compute(index)
+    target = tmp_path / "graph.db"
+    write_index(
+        target,
+        index,
+        GraphMeta(
+            generation="",
+            roots=reachability.roots,
+            composition_roots=("src/Program.cs",),
+        ),
+        reachability,
+    )
+
+    result = runner.invoke(app, ["graph", "affects", "src/Program.cs", "--index", str(target)])
+    assert result.exit_code == 0, result.output
+    assert "собирается приложение" in result.output
