@@ -35,6 +35,9 @@ from docpipe.graph.model import GraphIndex, GraphMeta, GraphNode
 from docpipe.graph.reach import DEFAULT_FANOUT_THRESHOLD, Reachability
 from docpipe.graph.reach import path as walk
 from docpipe.graph.search import resolve as resolve_names
+from docpipe.recon import DEFAULT_MONTHS as RECON_MONTHS
+from docpipe.recon import DEFAULT_TOP as RECON_TOP
+from docpipe.recon import build_report as build_recon_report
 
 # Ответ ограничен по размеру, и усечение **восстановимо**: маркер несёт
 # команду, которой усечённое разворачивается. «Показано 20 из 300» без
@@ -345,43 +348,32 @@ def path(index: GraphIndex, source: str, target: str, depth: int = 12) -> dict[s
     }
 
 
-def overview(root: Path, recon: Path | None = None, script: Path | None = None) -> dict[str, Any]:
+def overview(root: Path, recon: Path | None = None) -> dict[str, Any]:
     """Что это за репозиторий: чем собран, что читать первым, где центр.
 
     Считается **без графа** — из разведки. Доступна на репозитории, где индекс
     ещё не собран, и является первым, что инструмент может сказать о коде.
+
+    Разведка зовётся **в процессе**, а не подпроцессом. Раньше здесь запускался
+    `python3 tools/recon.py` по пути относительно ТЕКУЩЕГО каталога — то есть
+    скрипт искался в документируемом репозитории, где его нет и не будет.
+    Ответ получался «скрипт не найден, запустите tools/recon.py»: совет
+    запустить то, чего нет. Дефект не проявлялся ровно потому, что разведка
+    в поставку не входила, а тесты гоняются из репозитория разработки.
+
+    Готовый отчёт (`recon`) остаётся первым по приоритету: разведка на большом
+    репозитории занимает секунды, и повторять её на каждый вопрос незачем.
     """
     if recon is not None and recon.is_file():
         return {"source": str(recon), **_recon_summary(json.loads(recon.read_text("utf-8")))}
 
-    candidate = script or Path("tools/recon.py")
-    if not candidate.is_file():
-        return {
-            "available": False,
-            "note": (
-                "разведка не запускалась и скрипт не найден. Запустите "
-                "`python3 tools/recon.py --root <репозиторий> --json recon.json` "
-                "и передайте файл"
-            ),
-        }
-    proc = subprocess.run(
-        [
-            "python3",
-            str(candidate),
-            "--root",
-            str(root),
-            "--json",
-            "/dev/stdout",
-            "--text",
-            "/dev/null",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    if proc.returncode != 0:
-        return {"available": False, "note": f"разведка завершилась с ошибкой: {proc.stderr[:200]}"}
-    return {"source": "разведка на лету", **_recon_summary(json.loads(proc.stdout))}
+    if not root.is_dir():
+        return {"available": False, "note": f"нет такого каталога: {root}"}
+    try:
+        report = build_recon_report(root, RECON_MONTHS, RECON_TOP, [])
+    except OSError as error:
+        return {"available": False, "note": f"разведка не удалась: {error}"}
+    return {"source": "разведка на лету", **_recon_summary(report)}
 
 
 def _recon_summary(report: dict[str, Any]) -> dict[str, Any]:

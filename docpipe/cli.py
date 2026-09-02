@@ -1,5 +1,6 @@
 """Точка входа командной строки."""
 
+import json
 import sys
 from collections import Counter
 from dataclasses import dataclass, replace
@@ -103,6 +104,10 @@ from docpipe.materialize.worklist import (
     select_documents,
 )
 from docpipe.model import DocNode, Manifest, RunMeta
+from docpipe.recon import DEFAULT_MONTHS as RECON_MONTHS
+from docpipe.recon import DEFAULT_TOP as RECON_TOP
+from docpipe.recon import build_report as build_recon_report
+from docpipe.recon import render_text as render_recon_text
 from docpipe.registry import load_registries, read_registry
 from docpipe.registry.anchors import (
     ResolvedAnchor,
@@ -3222,6 +3227,56 @@ def business_lint(
 
     if report.failing(selected):
         raise typer.Exit(code=1)
+
+
+@app.command()
+def recon(
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория, который разведываем.")
+    ] = Path("."),
+    json_out: Annotated[
+        Path | None, typer.Option("--json", help="Куда записать машиночитаемую форму.")
+    ] = None,
+    text_out: Annotated[
+        Path | None,
+        typer.Option("--text", help="Куда записать человекочитаемую форму; без флага — на stdout."),
+    ] = None,
+    months: Annotated[
+        int, typer.Option("--months", help="Окно археологии от даты HEAD; 0 — вся история.")
+    ] = RECON_MONTHS,
+    top: Annotated[int, typer.Option("--top", help="Длина списков в отчёте.")] = RECON_TOP,
+    exclude: Annotated[
+        list[str] | None,
+        typer.Option("--exclude", help="Доотсеять сегмент пути, префикс или суффикс."),
+    ] = None,
+) -> None:
+    """Разведка репозитория, который видишь впервые (R01).
+
+    Отвечает на пять вопросов и больше ни на что: чем собран репозиторий, что
+    читать первым, где его центр, чем он заякорен и как языки говорят между
+    собой. Графа не требует и собирается раньше него — это первое, что
+    инструмент может сказать о незнакомом коде.
+
+    Репозиторий только читается: `git ls-files`, `git log`, чтение файлов.
+    Рабочее дерево не трогается, сети нет.
+    """
+    if not root.is_dir():
+        typer.echo(f"нет такого каталога: {root}", err=True)
+        raise typer.Exit(code=2)
+
+    report = build_recon_report(root, months, top, list(exclude or []))
+
+    if json_out is not None:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    text = render_recon_text(report)
+    if text_out is not None:
+        text_out.parent.mkdir(parents=True, exist_ok=True)
+        text_out.write_text(text, encoding="utf-8")
+    else:
+        typer.echo(text, nl=False)
 
 
 config_app = typer.Typer(

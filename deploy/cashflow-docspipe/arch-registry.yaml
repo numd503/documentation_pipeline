@@ -18,7 +18,7 @@
 #
 # КАК ЗАПОЛНЯТЬ. Из клона инструмента:
 #
-#     python3 tools/recon.py --root <корень> --json recon.json --text recon.txt
+#     docpipe recon --root <корень> --json recon.json --text recon.txt
 #
 # прочитать блоки 4 и 5 — «чем система заякорена» и «как языки говорят между
 # собой» — и перенести подтверждённое сюда. Скилл `recon` готовит черновик

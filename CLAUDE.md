@@ -84,7 +84,7 @@ uv run docpipe materialize /tmp/dt.json --root /tmp/docs
 uv run docpipe docs status /tmp/dt.json --root /tmp/docs
 
 # разведка репозитория, который видишь впервые (R01); скилл поверх неё — `.claude/skills/recon`
-python3 tools/recon.py --root ПУТЬ --json recon.json --text recon.txt
+docpipe recon --root ПУТЬ --json recon.json --text recon.txt
 
 # нормализованный реестр архитектурных элементов (R03, R04)
 uv run docpipe arch validate arch-registry.yaml       # черновик скилла — с `--draft`

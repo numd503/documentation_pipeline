@@ -79,13 +79,18 @@ def test_skill_example_draft_actually_validates() -> None:
 
 
 def test_skill_points_at_the_recon_script_and_the_format_reference() -> None:
-    """Скилл зовёт скрипты R01 и ссылается на справочник формата.
+    """Скилл зовёт разведку R01 и ссылается на справочник формата.
 
     Инструкция, повторяющая формат своими словами, разойдётся со справочником
     на первой же правке — и разойдётся молча.
+
+    Обе формы запуска названы намеренно: подкоманда работает там, где инструмент
+    установлен, а файл — на машине, где не установлено ничего, и это первое,
+    что делают с незнакомым репозиторием.
     """
     _, body = frontmatter_and_body()
-    assert "tools/recon.py" in body
+    assert "docpipe recon" in body
+    assert "docpipe/recon.py" in body
     assert "docs/arch-registry.md" in body
-    assert Path("tools/recon.py").is_file()
+    assert Path("docpipe/recon.py").is_file()
     assert Path("docs/arch-registry.md").is_file()

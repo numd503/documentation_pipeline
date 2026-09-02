@@ -9,6 +9,8 @@
 import ast
 from pathlib import Path
 
+import pytest
+
 from docpipe.graph import GraphEdge, GraphIndex, GraphMeta, GraphNode, compute, write_index
 from docpipe.graph.api import affects, card, overview, path, reaches, resolve, why
 from docpipe.graph.search import entries
@@ -174,19 +176,38 @@ def test_path_returns_the_chain(tmp_path: Path) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def test_overview_works_without_an_index(tmp_path: Path) -> None:
+def test_overview_works_without_an_index() -> None:
     """`overview` — первое, что инструмент вообще может сказать о незнакомом
     репозитории: он считается из разведки, а не из графа."""
-    answer = overview(Path("."), script=Path("tools/recon.py"))
+    answer = overview(Path("."))
     assert answer["available"] is True
     assert answer["stacks"]
     assert "разведка" in answer["note"]
 
 
-def test_overview_says_what_to_run_when_there_is_nothing(tmp_path: Path) -> None:
-    answer = overview(tmp_path, script=tmp_path / "нет-скрипта.py")
+def test_overview_needs_no_script_on_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Разведка зовётся в процессе, и текущий каталог на это не влияет.
+
+    Раньше здесь запускался `python3 tools/recon.py` по пути от ТЕКУЩЕГО
+    каталога, то есть скрипт искался в документируемом репозитории, где его
+    нет и не будет: на целевой машине ответ был «скрипт не найден, запустите
+    tools/recon.py». Дефект не проявлялся только потому, что разведка
+    не входила в поставку, а тесты гоняются из репозитория разработки.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def main():\n    pass\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    answer = overview(tmp_path)
+
+    assert answer["available"] is True
+    assert answer["source"] == "разведка на лету"
+
+
+def test_overview_refuses_a_missing_directory(tmp_path: Path) -> None:
+    answer = overview(tmp_path / "нет-такого")
     assert answer["available"] is False
-    assert "recon.py" in answer["note"]
+    assert "нет такого каталога" in answer["note"]
 
 
 def test_why_works_without_an_index() -> None:

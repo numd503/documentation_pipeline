@@ -760,20 +760,21 @@ docpipe/                  пакет шага 1
     ├── resolve.py        файлы -> индекс символов: FQN, partial, наследование
     └── queries/*.scm     declarations.scm, members.scm, usings.scm, di.scm
 
+docpipe/recon.py          разведка незнакомого репозитория (R01): только stdlib и git,
+                          работает и подкомандой, и скопированным одним файлом
 rules/rules.yaml          правила классификации: секции dotnet и web, данные, а не код
 templates/                семь скелетов документов и четыре заполненных образца
 docpipe.example.yaml      пример конфигурации под свой репозиторий
 ownership.example.yaml    правила владения — кому принадлежит документ
 registries.example.yaml   реестры точек входа АС CF — тоже данные
-deploy/                   поставка внутрь репозитория АС CF: без тестов и dev-зависимостей
-├── install.sh            установка в <репозиторий>/docs/ml/docspipe
-├── pyproject.toml        runtime-зависимости без dev-группы
-├── uv.lock               17 пакетов вместо 40
+deploy/                   раскладка на целевой машине: инструмент отдельно, настройка отдельно
+├── install.sh            uv tool install + настройка в <репозиторий>/<--config-dir>
 ├── uv.toml.example       зеркало пакетов и сертификаты для закрытого контура
 ├── OFFLINE.md            сборка окружения там, где зеркало отдаёт не всё
-└── cashflow-docspipe/    настройка под АС CF: docpipe.yaml, rules.yaml
+└── cashflow-docspipe/    настройка под АС CF: шесть yaml и шаблоны
 tools/
-└── recon-frontend.sh     разведка фронтенда на боевом репозитории: только чтение
+├── recon-frontend.sh     разведка фронтенда на боевом репозитории: только чтение
+└── migrate_rules.py      перенос плоского rules.yaml в секционный
 docs/                     проектная документация (см. ниже)
 schema/                   JSON Schema манифеста, генерируется из моделей
 tests/fixtures/

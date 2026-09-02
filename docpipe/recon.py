@@ -751,16 +751,17 @@ def block_composition(facts: list[FileFacts], files: list[str]) -> dict[str, Any
         by_lang[item.lang or "прочее"].append(item)
 
     total_lines = sum(item.lines for item in facts) or 1
+    language_rows: list[dict[str, Any]] = [
+        {
+            "language": lang,
+            "files": len(items),
+            "lines": sum(item.lines for item in items),
+            "share_lines": round(sum(item.lines for item in items) / total_lines, 4),
+        }
+        for lang, items in by_lang.items()
+    ]
     languages = sorted(
-        (
-            {
-                "language": lang,
-                "files": len(items),
-                "lines": sum(item.lines for item in items),
-                "share_lines": round(sum(item.lines for item in items) / total_lines, 4),
-            }
-            for lang, items in by_lang.items()
-        ),
+        language_rows,
         key=lambda row: (-int(row["lines"]), str(row["language"])),
     )
 
@@ -894,17 +895,18 @@ def block_archaeology(
         if current_is_fix:
             fixes[path] += 1
 
+    hotspot_rows: list[dict[str, Any]] = [
+        {
+            "path": path,
+            "commits": count,
+            "lines": known[path].lines,
+            "score": count * known[path].lines,
+        }
+        for path, count in churn.items()
+        if known[path].lang in CODE_LANGS
+    ]
     hotspots = sorted(
-        (
-            {
-                "path": path,
-                "commits": count,
-                "lines": known[path].lines,
-                "score": count * known[path].lines,
-            }
-            for path, count in churn.items()
-            if known[path].lang in CODE_LANGS
-        ),
+        hotspot_rows,
         key=lambda row: (-int(row["score"]), str(row["path"])),
     )[:top]
 
@@ -912,8 +914,8 @@ def block_archaeology(
     # человек» — норма, «этот каталог писал один человек» — риск.
     dir_authors: dict[str, Counter[str]] = defaultdict(Counter)
     for path, counter in authors.items():
-        parts = PurePosixPath(path).parts
-        directory = "/".join(parts[: min(2, max(len(parts) - 1, 1))])
+        segments = PurePosixPath(path).parts
+        directory = "/".join(segments[: min(2, max(len(segments) - 1, 1))])
         dir_authors[directory].update(counter)
     bus: list[dict[str, Any]] = []
     for directory, counter in dir_authors.items():
@@ -1065,12 +1067,12 @@ def pagerank(nodes: list[str], edges: dict[str, set[str]]) -> dict[str, float]:
     for _ in range(PAGERANK_ITERATIONS):
         nxt = [(1.0 - damping) / count] * count
         dangling = 0.0
-        for position, targets in enumerate(outgoing):
-            if not targets:
+        for position, reachable in enumerate(outgoing):
+            if not reachable:
                 dangling += rank[position]
                 continue
-            share = damping * rank[position] / len(targets)
-            for target in targets:
+            share = damping * rank[position] / len(reachable)
+            for target in reachable:
                 nxt[target] += share
         if dangling:
             spread = damping * dangling / count
@@ -1090,16 +1092,17 @@ def block_structure(facts: list[FileFacts], top: int) -> dict[str, Any]:
             incoming[target] += 1
 
     by_path = {item.path: item for item in facts}
+    center_rows: list[dict[str, Any]] = [
+        {
+            "path": path,
+            "pagerank": round(value * len(nodes), 4),
+            "incoming": incoming.get(path, 0),
+            "lines": by_path[path].lines,
+        }
+        for path, value in ranks.items()
+    ]
     center = sorted(
-        (
-            {
-                "path": path,
-                "pagerank": round(value * len(nodes), 4),
-                "incoming": incoming.get(path, 0),
-                "lines": by_path[path].lines,
-            }
-            for path, value in ranks.items()
-        ),
+        center_rows,
         key=lambda row: (-float(row["pagerank"]), str(row["path"])),
     )[:top]
 
@@ -1120,7 +1123,7 @@ def block_structure(facts: list[FileFacts], top: int) -> dict[str, Any]:
     # одинаковый вес: на abp первые четыре строки списка — 135.456 у каждой.
     # По каталогам такой ничьей не бывает, и ответ на «где центр» читается
     # с первого взгляда.
-    per_dir: Counter[str] = Counter()
+    per_dir: defaultdict[str, float] = defaultdict(float)
     per_dir_files: Counter[str] = Counter()
     for path, value in ranks.items():
         directory = PurePosixPath(path).parent.as_posix() or "."

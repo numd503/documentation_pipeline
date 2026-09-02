@@ -1,10 +1,16 @@
-"""Разведочный скрипт R01: `tools/recon.py`.
+"""Разведка R01: `docpipe/recon.py`.
 
-Скрипт стои́т снаружи пакета `docpipe` намеренно — его запускают там, где
-`pip install` не проходит, поэтому у него не может быть ни одной зависимости,
-кроме стандартной библиотеки и `git`. Тесты держат ровно это свойство, а не
-только поведение: зависимость, добавленная «на минутку», ломает не тест,
-а единственную среду, ради которой скрипт написан.
+Модуль лежит **внутри** пакета, но не имеет ни одной зависимости, кроме
+стандартной библиотеки и `git`, — и это свойство теперь держится только
+тестами. Пока файл стоял в `tools/`, оно держалось само: `import yaml` там
+упал бы на первом же запуске. Внутри пакета `yaml`, `pydantic` и `typer`
+установлены, и такая строка заработает — а среда, ради которой разведка
+и написана, отвалится молча.
+
+Среда эта — машина, где `pip install` не проходит и `docpipe` ещё не стоит:
+разведка первое, что делают с незнакомым репозиторием, и запускают её файлом
+(`python3 путь/docpipe/recon.py`), а не подкомандой. Отсюда два теста ниже:
+про импорты и про отсутствие сети.
 """
 
 import ast
@@ -17,7 +23,7 @@ from types import ModuleType
 
 import pytest
 
-RECON_PATH = Path(__file__).resolve().parent.parent / "tools" / "recon.py"
+RECON_PATH = Path(__file__).resolve().parent.parent / "docpipe" / "recon.py"
 
 
 @pytest.fixture(scope="module")
@@ -63,7 +69,12 @@ def make_repo(root: Path, files: dict[str, str]) -> Path:
 
 
 def test_imports_only_stdlib() -> None:
-    """Сверх `git` и `python` ставить нечего — критерий приёмки R01 п. 4."""
+    """Сверх `git` и `python` ставить нечего — критерий приёмки R01 п. 4.
+
+    Проверка ловит и `from docpipe…`: пакет не входит в стандартную библиотеку,
+    поэтому попытка позвать отсюда что-нибудь из `docpipe` провалит тест.
+    Это намеренно — модуль обязан запускаться копией одного файла.
+    """
     tree = ast.parse(RECON_PATH.read_text(encoding="utf-8"))
     imported: set[str] = set()
     for node in ast.walk(tree):
@@ -419,3 +430,27 @@ def test_import_specifier_is_not_a_seam(recon: ModuleType, tmp_path: Path) -> No
     report = recon.build_report(tmp_path, 12, 10, [])
     seams = next(b for b in report["blocks"] if b["id"] == "seams")["data"]
     assert all(row["literal"] != "@angular/core" for row in seams["candidates"])
+
+
+def test_runs_as_a_single_copied_file(tmp_path: Path) -> None:
+    """Скопированный файл обязан работать сам по себе, без пакета рядом.
+
+    Это и есть сценарий, ради которого держится отсутствие зависимостей:
+    машина, где `docpipe` не установлен, а посмотреть на репозиторий надо.
+    Запуск идёт из каталога, где нет ни `docpipe/`, ни его окружения.
+    """
+    copied = tmp_path / "recon.py"
+    copied.write_text(RECON_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "app.py").write_text("def main():\n    pass\n", encoding="utf-8")
+
+    proc = subprocess.run(
+        [sys.executable, str(copied), "--root", str(repo), "--json", str(tmp_path / "r.json")],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["blocks"]

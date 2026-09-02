@@ -278,10 +278,10 @@ docpipe graph affects --stdin --config $CFG < <(git diff --name-only)
 в C# не существует **структурно** — без реестра эти 45 точек входа граф
 не увидит вовсе.
 
-Заполняется разведкой из клона инструмента:
+Заполняется разведкой — она едет вместе с инструментом:
 
 ```bash
-python3 <клон>/tools/recon.py --root $CF_ROOT --json recon.json --text recon.txt
+docpipe recon --root $CF_ROOT --json recon.json --text recon.txt
 ```
 
 Блоки 4 и 5 отчёта — «чем система заякорена» и «как языки говорят между собой».
