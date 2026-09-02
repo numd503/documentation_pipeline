@@ -284,14 +284,33 @@ class DocpipeConfig(BaseModel):
     # и умолчания дают рабочий прогон на репозитории, где фронт один.
     web: WebConfig = Field(default_factory=lambda: WebConfig())
 
-    # `cache_dir` здесь же, хотя в `doc_path` он не попадает: он единственный
-    # из «путей прогона», который склеивается с `--root`, а не с текущим
-    # каталогом. Без проверки абсолютное значение молча выигрывало бы склейку
-    # (`Path(root) / "/tmp/x"` == `/tmp/x`), и кэш уезжал бы за пределы репозитория.
-    @field_validator("docs_root", "modules_dir", "business_root", "cache_dir")
+    @field_validator("docs_root", "modules_dir", "business_root")
     @classmethod
     def _check_repo_relative(cls, value: str, info: Any) -> str:
         return _repo_relative(value, str(info.field_name))
+
+    # `cache_dir` проверяется мягче остальных, и это не послабление, а разные
+    # вопросы. У трёх ключей выше значение попадает в `doc_path` каждого узла,
+    # и абсолютный путь там делает манифест непереносимым между машинами.
+    # Кэш разбора в `doc_path` не попадает вообще: он склеивается с `--root`
+    # (`Path(root) / value`), и абсолютное значение эту склейку выигрывает.
+    #
+    # Запрещено это было ради того, чтобы кэш не уезжал за пределы репозитория
+    # **молча**. Но на закрытом контуре его туда надо унести намеренно: дерево
+    # продукта не место для гигабайта машинного кэша, а каталог инструмента
+    # лежит вне репозитория. Написанный руками абсолютный путь — не молчаливый
+    # побег, а решение, и отличается оно тем, что видно в конфигурации.
+    #
+    # `..` остаётся запрещённым и в этом случае: он даёт непредсказуемое место
+    # в зависимости от `--root`, то есть ровно тот побег, от которого правило
+    # и заводилось. Кэш при этом можно делить между репозиториями безопасно:
+    # запись адресуется хэшем содержимого файла, а не его путём.
+    @field_validator("cache_dir")
+    @classmethod
+    def _check_cache_dir(cls, value: str) -> str:
+        if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute():
+            return value
+        return _repo_relative(value, "cache_dir")
 
     @field_validator("roots")
     @classmethod

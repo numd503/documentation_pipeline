@@ -411,14 +411,35 @@ def test_config_rejects_non_mapping(tmp_path: Path) -> None:
         load_config(path)
 
 
-def test_config_rejects_absolute_cache_dir() -> None:
-    """`cache_dir` склеивается с `--root`, и абсолютное значение выигрывает склейку.
+def test_config_allows_an_absolute_cache_dir() -> None:
+    """Абсолютный `cache_dir` — намеренный вынос кэша, а не молчаливый побег.
 
-    `Path("/repo") / "/tmp/x"` == `/tmp/x`: без проверки кэш молча уезжает
-    за пределы репозитория, и об этом не сообщает ничто.
+    `cache_dir` склеивается с `--root`, и абсолютное значение эту склейку
+    выигрывает (`Path("/repo") / "/tmp/x"` == `/tmp/x`). Запрещено это было
+    ради того, чтобы кэш не уезжал за пределы репозитория НЕЗАМЕТНО. Но на
+    закрытом контуре его туда уносят намеренно: дерево продукта не место для
+    гигабайта машинного кэша, а инструмент лежит вне репозитория. Написанный
+    руками абсолютный путь виден в конфигурации — этим он и отличается.
+
+    Делить такой кэш между репозиториями безопасно: запись адресуется хэшем
+    содержимого файла, а не путём.
     """
+    assert DocpipeConfig(cache_dir="/work/.docpipe/cache").cache_dir == "/work/.docpipe/cache"
+
+
+def test_config_rejects_a_cache_dir_that_escapes_upwards() -> None:
+    """`..` остаётся запрещённым: он даёт непредсказуемое место в зависимости
+    от `--root`, то есть ровно тот побег, от которого правило и заводилось."""
     with pytest.raises(ValueError, match="cache_dir"):
-        DocpipeConfig(cache_dir="/tmp/elsewhere")
+        DocpipeConfig(cache_dir="../elsewhere")
+
+
+def test_config_still_rejects_absolute_paths_that_reach_doc_path() -> None:
+    """У трёх ключей значение попадает в `doc_path` каждого узла манифеста,
+    и абсолютный путь там делает манифест непереносимым между машинами."""
+    for field in ("docs_root", "modules_dir", "business_root"):
+        with pytest.raises(ValueError, match=field):
+            DocpipeConfig(**{field: "/abs/where"})
 
 
 def test_config_rejects_absolute_roots() -> None:

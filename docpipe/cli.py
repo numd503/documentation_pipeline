@@ -3224,5 +3224,141 @@ def business_lint(
         raise typer.Exit(code=1)
 
 
+config_app = typer.Typer(
+    help="Проверка конфигурации: что и откуда прочитается на этой машине.",
+    no_args_is_help=True,
+)
+app.add_typer(config_app, name="config")
+
+
+# Ключи и их база отсчёта. Список положительный и жёсткий: ключ, забытый здесь,
+# сделает отчёт неполным, а неполный отчёт хуже отсутствующего — по нему решат,
+# что настройка проверена.
+_INPUT_KEYS: Final[tuple[str, ...]] = (
+    "rules",
+    "templates",
+    "ownership",
+    "registries",
+    "arch",
+    "web.rules",
+    "web.pages",
+)
+_TARGET_KEYS: Final[tuple[str, ...]] = (
+    "out",
+    "worklist",
+    "web.out",
+    "web.link_out",
+    "graph.out",
+    "graph.cache_dir",
+)
+# `modules_dir` и `web.modules_dir` сюда не входят: они не пути, а сегменты
+# внутри `docs_root`, и показанные складкой с корнем читались бы как каталоги,
+# которых нет. Собранные из них префиксы печатаются отдельной строкой.
+_ROOT_KEYS: Final[tuple[str, ...]] = (
+    "docs_root",
+    "business_root",
+    "cache_dir",
+)
+
+
+def _key_value(settings: DocpipeConfig, key: str) -> object:
+    section, _, name = key.partition(".")
+    holder: object = settings if not name else getattr(settings, section)
+    return getattr(holder, name or section)
+
+
+@config_app.command("check")
+def config_check(
+    config: Annotated[Path, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")],
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория, которым будут звать команды.")
+    ] = Path("."),
+) -> None:
+    """Показать, во что разрешается каждый путь конфигурации, и что из этого есть.
+
+    Команда отвечает на вопрос, который иначе задают отладкой прогона: пути
+    разрешаются от трёх разных баз, и по имени ключа базу не угадать. Пока
+    этого было нечем проверить, половина настроечных проблем выглядела как
+    «инструмент не видит документы» — и разбиралась часами на полном прогоне.
+
+    Проверяется настройка ровно в том виде, в каком её увидит команда: от того
+    же текущего каталога и того же `--root`. Поэтому звать её надо оттуда же,
+    откуда зовут `scan`, — иначе она подтвердит настройку, которой в работе
+    не будет.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Конфигурация не читается: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    typer.echo(f"Конфигурация: {config}")
+    typer.echo(f"Текущий каталог: {Path.cwd()}")
+    typer.echo(f"Корень (--root): {root}\n")
+
+    missing: list[str] = []
+
+    typer.echo("Входы — от текущего каталога, затем от каталога конфигурации:")
+    for key in _INPUT_KEYS:
+        value = _key_value(settings, key)
+        if not value:
+            typer.echo(f"  {key:16} не задан")
+            continue
+        candidates = candidate_inputs(str(value), config)
+        found = next((path for path in candidates if path.exists()), None)
+        if found is None:
+            # Называется ПЕРВЫЙ кандидат: человек написал в конфигурации его,
+            # и искать глазами он будет тоже его.
+            typer.echo(f"  {key:16} {value}  → НЕ НАЙДЕН: {candidates[0]}")
+            missing.append(key)
+        else:
+            step = "рядом с конфигурацией" if found != candidates[0] else "от текущего каталога"
+            typer.echo(f"  {key:16} {value}  → {found} ({step})")
+
+    typer.echo("\nЦели записи — только от текущего каталога:")
+    for key in _TARGET_KEYS:
+        value = _key_value(settings, key)
+        target = Path(str(value))
+        # Существование самой цели ничего не значит: её ещё не писали. Значит
+        # ли что-нибудь каталог — да: писать в несуществующее дерево прогон
+        # не станет, и узнается это в конце длинной работы.
+        state = "каталог есть" if target.parent.is_dir() else "КАТАЛОГА НЕТ"
+        typer.echo(f"  {key:16} {value}  → {target.resolve()} ({state})")
+
+    typer.echo("\nОт корня репозитория:")
+    for key in _ROOT_KEYS:
+        value = str(_key_value(settings, key))
+        # Абсолютное значение выигрывает склейку — и для `cache_dir` это
+        # законно и намеренно. Показать надо результат, а не слагаемые.
+        resolved = root / value
+        typer.echo(f"  {key:16} {value}  → {resolved}")
+
+    if settings.graph.engine_path:
+        engine = Path(settings.graph.engine_path).expanduser()
+        state = "есть" if engine.is_file() else "НЕ НАЙДЕН"
+        typer.echo(f"\nДвижок разбора: {engine} ({state})")
+    else:
+        typer.echo(
+            "\nДвижок разбора не задан (`graph.engine_path`): команды `graph *` "
+            "откажутся работать. Для шагов 1, 2 и бизнес-слоя это законно."
+        )
+
+    prefix = settings.modules_root
+    typer.echo(f"\nПрефикс doc_path технических документов: {prefix}")
+    if settings.web.modules_dir:
+        typer.echo(f"Префикс doc_path документов фронта:    {settings.web_modules_root}")
+
+    if missing:
+        typer.echo(
+            "\nНе найдено: " + ", ".join(missing) + ".\n"
+            "Путь входа пишут относительно каталога конфигурации — тогда он "
+            "не зависит от того, откуда зовут команду.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    typer.echo("\nВсё, что настроено, на месте.")
+
+
 if __name__ == "__main__":
     app()
