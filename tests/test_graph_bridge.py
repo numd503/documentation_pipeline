@@ -48,20 +48,49 @@ def test_missing_binary_is_a_readable_refusal(tmp_path: Path) -> None:
         absent.check()
 
 
-def test_checksum_mismatch_refuses_before_launch(tmp_path: Path) -> None:
-    """Чек-сумма проверяется ДО запуска, и расхождение — отказ, а не
-    предупреждение (G01 п. 4).
+@engine_required
+def test_checksum_mismatch_warns_but_does_not_refuse() -> None:
+    """Расхождение чек-суммы — предупреждение, а не отказ.
 
-    Запустить то, что нашлось, и разбираться потом — значит получить числа
-    от другой версии движка и не иметь способа это заметить.
+    Чек-сумма различает **сборки**, а не версии: бинарь не воспроизводим
+    бит в бит, и на закрытом контуре стои́т своя сборка того же 0.6.0 — это
+    измерено. Отказ по ней останавливал бы работу там, где всё в порядке,
+    а инструмент, который нельзя запустить на целевой машине, там и не нужен.
+
+    Проверяется на настоящем бинаре с заведомо чужой закреплённой суммой:
+    так же, как это выглядит на контуре.
+    """
+    engine = Engine(
+        binary=ENGINE_PATH,
+        cache_dir=Path("/tmp/нет-такого-кэша"),
+        expected_sha256="sha256:00",
+    )
+    identity = engine.check()
+
+    assert identity.version == EXPECTED_VERSION
+    assert not identity.matches_pin
+    assert identity.warning is not None
+    assert "ожидалась" in identity.warning
+    assert "получена" in identity.warning
+    # Фактическая, а не закреплённая: паспорт индекса берёт её отсюда.
+    assert identity.checksum != identity.expected
+
+
+def test_wrong_version_still_refuses(tmp_path: Path) -> None:
+    """Версия осталась отказом, и это то, ради чего снят отказ по сумме.
+
+    Сняв блокирующей и её, мы получили бы движок, не проверяемый ничем:
+    правило «не запускать то, что нашлось» держится теперь здесь одно.
     """
     fake = tmp_path / "движок"
-    fake.write_text("не тот бинарь", encoding="utf-8")
-    wrong = Engine(binary=fake, cache_dir=tmp_path / "cache", expected_sha256="sha256:00")
+    fake.write_text("#!/bin/sh\necho 'codebase-memory-mcp 0.10.8'\n", encoding="utf-8")
+    fake.chmod(0o755)
+    wrong = Engine(binary=fake, cache_dir=tmp_path / "cache", expected_sha256="")
+
     with pytest.raises(EngineError) as error:
         wrong.check()
-    assert "ожидалась" in str(error.value)
-    assert "получена" in str(error.value)
+    assert "0.10.8" in str(error.value)
+    assert EXPECTED_VERSION in str(error.value)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -71,8 +100,16 @@ def test_checksum_mismatch_refuses_before_launch(tmp_path: Path) -> None:
 
 @engine_required
 def test_version_and_checksum_match_the_pin(engine: Engine) -> None:
-    """Версия, на которой ведётся разработка, — та, что прошла в контур."""
-    assert engine.check() == EXPECTED_VERSION
+    """Версия, на которой ведётся разработка, — та, что прошла в контур.
+
+    Чек-сумма здесь тоже обязана сойтись: это машина разработки, и на ней
+    закреплённое значение описывает реальный файл. Расходится оно законно
+    только на другой сборке — там и предупреждение.
+    """
+    identity = engine.check()
+    assert identity.version == EXPECTED_VERSION
+    assert identity.matches_pin
+    assert identity.warning is None
 
 
 @engine_required

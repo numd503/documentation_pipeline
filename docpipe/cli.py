@@ -1898,6 +1898,7 @@ def graph_build(
             arch=arch_registry,
             web=web_manifest,
             progress=lambda message: typer.echo(f"  … {message}"),
+            warn=lambda message: typer.echo(f"\nВНИМАНИЕ: {message}\n", err=True),
         )
     except EngineError as exc:
         typer.echo(f"Разбор не состоялся: {exc}", err=True)
@@ -2525,6 +2526,12 @@ def graph_info(
     typer.echo(f"Индекс: {path}")
     typer.echo(f"  схема: {meta.schema_version}, поколение: {meta.generation}")
     typer.echo(f"  репозиторий: {meta.repo}, разборщик: {meta.engine_version}")
+    # Фактическая сумма бинаря, которым собран ЭТОТ индекс. Нужна потому, что
+    # расхождение с закреплённой — предупреждение, живущее один прогон:
+    # без записи в паспорте «чем собран» остался бы без ответа у любого,
+    # кто читает индекс позже.
+    if meta.engine_checksum:
+        typer.echo(f"  чек-сумма разборщика: {meta.engine_checksum}")
     for name, number in sorted(meta.counts.items()):
         typer.echo(f"  {name}: {number}")
     if meta.report:

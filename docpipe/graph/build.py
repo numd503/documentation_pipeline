@@ -215,17 +215,28 @@ def build(
     arch: ArchRegistry | None = None,
     web: Manifest | None = None,
     progress: Callable[[str], None] | None = None,
+    warn: Callable[[str], None] | None = None,
 ) -> BuildResult:
     """Полный цикл: проверка бинаря, индексация, чтение, проекция, сопоставление.
 
     `progress` вызывается на границах этапов. Это не украшение: пользователь,
     ждущий минуты без единого сообщения, решит, что инструмент завис,
     и прервёт прогон — а прерванный прогон выглядит как сломанный инструмент.
+
+    `warn` — отдельный канал, а не тот же `progress`, и разделение здесь
+    смысловое: ход работы читают мельком, предупреждение адресовано человеку
+    и обязано пережить перенаправление вывода в файл. Зовётся сразу после
+    проверки движка: узнать о подмене бинаря через двадцать минут разбора
+    поздно.
     """
     say = progress or (lambda _message: None)
+    complain = warn or (lambda _message: None)
 
     say("проверяю разборщик")
-    version = engine.check()
+    identity = engine.check()
+    version = identity.version
+    if identity.warning is not None:
+        complain(identity.warning)
     say("индексирую репозиторий")
     run = engine.index(root)
     say(f"читаю граф: узлов {run.nodes}, рёбер {run.edges}")
@@ -399,7 +410,11 @@ def build(
         roots=reachability.roots,
         composition_roots=composition_roots,
         engine_version=version,
-        engine_checksum=engine.expected_sha256,
+        # Фактическая сумма, а не ожидаемая. Пока расхождение было отказом,
+        # разницы не существовало; со снятием отказа паспорт с ожидаемым
+        # значением врал бы про каждый прогон на контуре — и врал бы
+        # убедительно, поскольку поле называется «чем собран».
+        engine_checksum=identity.checksum,
         repo=root.resolve().name,
         counts={
             "nodes": len(index.nodes),
