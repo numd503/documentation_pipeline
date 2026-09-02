@@ -326,3 +326,100 @@ def test_business_build_is_silent_when_there_is_no_frontend_at_all(
     )
 
     assert "Манифест фронта" not in result.output
+
+
+# --------------------------------------------------------------------------------------
+# `docpipe config check`
+# --------------------------------------------------------------------------------------
+
+
+def test_config_check_names_the_step_that_found_each_input(nested: Path) -> None:
+    """Ради этого команда и заводилась: базу отсчёта по имени ключа не угадать.
+
+    Пока проверить это было нечем, половина настроечных проблем выглядела как
+    «инструмент не видит документы» и разбиралась на полном прогоне.
+    """
+    result = runner.invoke(
+        app,
+        ["config", "check", "--config", "docs/ml/cashflow-docpipe/docpipe.yaml", "--root", "."],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "рядом с конфигурацией" in result.output
+    assert "docs/ml/cashflow-docpipe/rules.yaml" in result.output
+    assert "docs/ml/cashflow-docpipe/templates" in result.output
+
+
+def test_config_check_fails_when_an_input_is_missing(nested: Path) -> None:
+    """Ненайденный вход — код возврата, а не строка в выводе.
+
+    Иначе проверку нельзя поставить в установщик и в CI, а сама она превращается
+    в текст, который читают по диагонали.
+    """
+    (nested / "docs/ml/cashflow-docpipe/rules.yaml").unlink()
+
+    result = runner.invoke(
+        app,
+        ["config", "check", "--config", "docs/ml/cashflow-docpipe/docpipe.yaml", "--root", "."],
+    )
+
+    assert result.exit_code == 1
+    assert "НЕ НАЙДЕН" in result.output
+    assert "rules" in result.output
+
+
+def test_config_check_names_what_the_author_wrote_not_the_last_candidate(
+    nested: Path,
+) -> None:
+    """Отказ обязан называть ПЕРВЫЙ кандидат — то, что человек написал
+    в конфигурации, а не последнее из перебранного инструментом."""
+    (nested / "docs/ml/cashflow-docpipe/rules.yaml").unlink()
+
+    result = runner.invoke(
+        app,
+        ["config", "check", "--config", "docs/ml/cashflow-docpipe/docpipe.yaml", "--root", "."],
+    )
+
+    assert "НЕ НАЙДЕН: rules.yaml" in result.output
+
+
+def test_config_check_separates_write_targets_from_inputs(nested: Path) -> None:
+    """Цели записи второй ступени не получают, и отчёт обязан это показывать:
+    «первый существующий» для них не значит ничего."""
+    result = runner.invoke(
+        app,
+        ["config", "check", "--config", "docs/ml/cashflow-docpipe/docpipe.yaml", "--root", "."],
+    )
+
+    assert "Цели записи — только от текущего каталога" in result.output
+    assert "out" in result.output
+
+
+def test_config_check_reports_a_missing_engine(nested: Path) -> None:
+    """Движок задаётся явно и не ищется в PATH; «не найден» обязано быть видно
+    до сборки графа, а не на ней."""
+    config = nested / "docs/ml/cashflow-docpipe/docpipe.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + 'graph:\n  engine_path: "/нет/такого"\n',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        ["config", "check", "--config", str(config), "--root", "."],
+    )
+
+    assert "НЕ НАЙДЕН" in result.output
+    assert "/нет/такого" in result.output
+
+
+def test_config_check_refuses_an_unreadable_configuration(tmp_path: Path) -> None:
+    """Конфигурация, которая не читается, хуже отсутствующей: она выглядит
+    настроенной. Код 2 — отказ инструмента, а не находка проверки."""
+    broken = tmp_path / "docpipe.yaml"
+    broken.write_text("rootz: [1]\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["config", "check", "--config", str(broken)])
+
+    assert result.exit_code == 2
+    assert "не читается" in result.output

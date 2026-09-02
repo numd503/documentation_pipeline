@@ -23,7 +23,8 @@ from docpipe.business.resolve import (
     ResolveContext,
     resolve_all,
 )
-from docpipe.materialize.document import MANAGED_END, MANAGED_START, parse_document
+from docpipe.documents import RESERVED_KEYS, STATE_KEY, accepted_block
+from docpipe.documents.zones import MANAGED_END, MANAGED_START, parse_document
 from docpipe.materialize.ownership import Ownership, owner_of
 from docpipe.registry.anchors import AnchorMatch
 
@@ -96,7 +97,7 @@ def front_matter(
         projection["contracts"] = [item.model_dump(mode="json") for item in doc.contracts]
 
     mapping: dict[str, Any] = {"docpipe": projection}
-    mapping["docpipe_state"] = state if state is not None else {"accepted": None, "review": None}
+    mapping[STATE_KEY] = state if state is not None else accepted_block(None)
     for key in sorted(preserved or {}):
         mapping[key] = (preserved or {})[key]
 
@@ -346,9 +347,7 @@ def compose(
     ]
 
     preserved = {
-        key: value
-        for key, value in (parsed.front_matter or {}).items()
-        if key not in ("docpipe", "docpipe_state")
+        key: value for key, value in (parsed.front_matter or {}).items() if key not in RESERVED_KEYS
     }
 
     # Приёмка идёт через ту же запись, что и обычная пересборка. Отдельный путь

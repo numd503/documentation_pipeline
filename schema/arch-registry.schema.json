@@ -1,0 +1,445 @@
+{
+  "$defs": {
+    "DataField": {
+      "additionalProperties": false,
+      "description": "Поле узла данных: внутреннее имя, вид и человеческое название.\n\n`kind` — свободная строка, а не словарь: перечень видов полей у платформы\nзаведомо неполон (G05b п. 4 требует читать их по префиксу, а не по белому\nсписку). Ошибиться здесь дешевле, чем потерять поле.",
+      "properties": {
+        "display_name": {
+          "default": "",
+          "title": "Display Name",
+          "type": "string"
+        },
+        "kind": {
+          "default": "",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "references": {
+          "default": "",
+          "title": "References",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "DataField",
+      "type": "object"
+    },
+    "DataRecord": {
+      "additionalProperties": false,
+      "description": "Узел данных, объявленный в реестре, а не выведенный из кода.",
+      "properties": {
+        "attributes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Attributes",
+          "type": "object"
+        },
+        "data_kind": {
+          "default": "table",
+          "enum": [
+            "table",
+            "view",
+            "procedure",
+            "other"
+          ],
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "fields": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DataField"
+          },
+          "title": "Fields",
+          "type": "array"
+        },
+        "key": {
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "kind": {
+          "const": "data",
+          "default": "data",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "title": "Name",
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "provenance": {
+          "enum": [
+            "manual",
+            "skill_proposed",
+            "skill_confirmed",
+            "adapter"
+          ],
+          "title": "Provenance",
+          "type": "string"
+        },
+        "references": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "References",
+          "type": "array"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "table": {
+          "default": "",
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "source",
+        "provenance"
+      ],
+      "title": "DataRecord",
+      "type": "object"
+    },
+    "EntryPointRecord": {
+      "additionalProperties": false,
+      "description": "Корень графа: то, что запускают.\n\nКлюч — то, что обязан знать вызывающий: идентификатор workflow, имя джоба,\nимя грид-сервиса, маршрут. **Не** имя класса и не путь: они меняются\nот вещей без бизнес-смысла.",
+      "properties": {
+        "attributes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Attributes",
+          "type": "object"
+        },
+        "entry_kind": {
+          "enum": [
+            "workflow",
+            "job",
+            "event_handler",
+            "http_endpoint",
+            "grid_service",
+            "page",
+            "service",
+            "cli",
+            "other"
+          ],
+          "title": "Entry Kind",
+          "type": "string"
+        },
+        "http_method": {
+          "default": "",
+          "title": "Http Method",
+          "type": "string"
+        },
+        "impl": {
+          "default": "",
+          "title": "Impl",
+          "type": "string"
+        },
+        "key": {
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "kind": {
+          "const": "entry_point",
+          "default": "entry_point",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "title": "Name",
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "provenance": {
+          "enum": [
+            "manual",
+            "skill_proposed",
+            "skill_confirmed",
+            "adapter"
+          ],
+          "title": "Provenance",
+          "type": "string"
+        },
+        "route": {
+          "default": "",
+          "title": "Route",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "touches": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Touches",
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "source",
+        "provenance",
+        "entry_kind"
+      ],
+      "title": "EntryPointRecord",
+      "type": "object"
+    },
+    "LayerRecord": {
+      "additionalProperties": false,
+      "description": "Модуль и его роль: из чего репозиторий состоит.",
+      "properties": {
+        "attributes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Attributes",
+          "type": "object"
+        },
+        "key": {
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "kind": {
+          "const": "layer",
+          "default": "layer",
+          "title": "Kind",
+          "type": "string"
+        },
+        "language": {
+          "default": "",
+          "title": "Language",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "title": "Name",
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "path": {
+          "default": "",
+          "title": "Path",
+          "type": "string"
+        },
+        "provenance": {
+          "enum": [
+            "manual",
+            "skill_proposed",
+            "skill_confirmed",
+            "adapter"
+          ],
+          "title": "Provenance",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "host",
+            "service",
+            "library",
+            "frontend",
+            "tests",
+            "generated",
+            "tooling",
+            "other"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        }
+      },
+      "required": [
+        "key",
+        "source",
+        "provenance",
+        "role"
+      ],
+      "title": "LayerRecord",
+      "type": "object"
+    },
+    "SeamRecord": {
+      "additionalProperties": false,
+      "description": "Шов: строка, которую знают обе стороны.\n\nМежду языками вызовов нет — есть сообщение по литералу, и другой\nреализуемой архитектуры связи не существует (Р2).",
+      "properties": {
+        "attributes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Attributes",
+          "type": "object"
+        },
+        "http_method": {
+          "default": "",
+          "title": "Http Method",
+          "type": "string"
+        },
+        "key": {
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "kind": {
+          "const": "seam",
+          "default": "seam",
+          "title": "Kind",
+          "type": "string"
+        },
+        "literal": {
+          "default": "",
+          "title": "Literal",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "title": "Name",
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "provenance": {
+          "enum": [
+            "manual",
+            "skill_proposed",
+            "skill_confirmed",
+            "adapter"
+          ],
+          "title": "Provenance",
+          "type": "string"
+        },
+        "seam_kind": {
+          "enum": [
+            "http_route",
+            "grid_service",
+            "queue",
+            "topic",
+            "file",
+            "other"
+          ],
+          "title": "Seam Kind",
+          "type": "string"
+        },
+        "sides": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Sides",
+          "type": "array"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        }
+      },
+      "required": [
+        "key",
+        "source",
+        "provenance",
+        "seam_kind"
+      ],
+      "title": "SeamRecord",
+      "type": "object"
+    },
+    "Source": {
+      "additionalProperties": false,
+      "description": "Откуда взята запись: файл и место в нём.\n\nЗапись без источника не принимается на уровне загрузки. Причина та же,\nпо которой в правилах отсева обязателен `reason`: безымянная запись через\nмесяц неотличима от выдумки, а выдумка в реестре становится уверенно\nневерным ребром графа — худшим видом ошибки (Р6).",
+      "properties": {
+        "file": {
+          "minLength": 1,
+          "title": "File",
+          "type": "string"
+        },
+        "hash": {
+          "default": "",
+          "title": "Hash",
+          "type": "string"
+        },
+        "record": {
+          "default": "",
+          "title": "Record",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file"
+      ],
+      "title": "Source",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Содержимое `arch-registry.yaml`.\n\nПустой реестр — валидное состояние, а не ошибка: на репозитории без\nреестров граф строится и без него, и «реестров здесь нет» — успешный\nисход разведки, а не пустой.",
+  "properties": {
+    "records": {
+      "default": [],
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "data": "#/$defs/DataRecord",
+            "entry_point": "#/$defs/EntryPointRecord",
+            "layer": "#/$defs/LayerRecord",
+            "seam": "#/$defs/SeamRecord"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/EntryPointRecord"
+          },
+          {
+            "$ref": "#/$defs/DataRecord"
+          },
+          {
+            "$ref": "#/$defs/SeamRecord"
+          },
+          {
+            "$ref": "#/$defs/LayerRecord"
+          }
+        ]
+      },
+      "title": "Records",
+      "type": "array"
+    },
+    "version": {
+      "default": "1",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "title": "ArchRegistry",
+  "type": "object"
+}

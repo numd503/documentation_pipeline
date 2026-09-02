@@ -827,7 +827,7 @@ def doc_path_for(doc_id: str, business_root: str) -> str: ...
 уехал бы не в тот каталог. Соответствие префикса и объявленного `kind` проверяется
 отдельно.
 
-Разбор документа — `materialize/document.py` из шага 2 без изменений: формат зон
+Разбор документа — общий (`docpipe/documents/zones.py`; до выделения 20.08.2026 лежал в `materialize/document.py`): формат зон
 общий. Бизнес-документом считается файл, у которого во front matter
 `docpipe.schema` начинается с `business/`.
 

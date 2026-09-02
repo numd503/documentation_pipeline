@@ -1,5 +1,7 @@
 """Точка входа командной строки."""
 
+import json
+import sys
 from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -9,6 +11,19 @@ import typer
 from pydantic import BaseModel
 
 from docpipe import __version__
+from docpipe.arch import (
+    AdapterSpec,
+    ArchRegistry,
+    Collected,
+    check_document,
+    collect,
+    dump_registry,
+    format_statuses,
+    load_arch_registry,
+    read_document,
+    source_statuses,
+    statuses_json,
+)
 from docpipe.business import Catalog, doc_path_for, load_catalog, resolve_all
 from docpipe.business import build_context as build_resolve_context
 from docpipe.business.build import backlinks, compose, entry_snippet, link_warnings
@@ -27,11 +42,30 @@ from docpipe.business.status import statuses as business_statuses
 from docpipe.classify import load_ruleset
 from docpipe.config import DocpipeConfig, candidate_inputs, load_config, resolve_input
 from docpipe.diff import diff_manifests, format_changes
+from docpipe.discovery import is_excluded
+from docpipe.documents import accepted_block, write_atomic
 from docpipe.emit import run as run_scan
 from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.explain import ANY, format_selection, select, selection_json
+from docpipe.graph import build as build_graph
+from docpipe.graph import read_index, read_meta, read_reach, write_index
+from docpipe.graph.api import affects
+from docpipe.graph.coverage import coverage as coverage_of
+from docpipe.graph.coverage import format_coverage
+from docpipe.graph.engine import Engine, EngineError
+from docpipe.graph.evaluate import check_requests, format_requests, format_score, merged_requests
+from docpipe.graph.evaluate import load as load_questions
+from docpipe.graph.evaluate import run as run_questions
+from docpipe.graph.match import RootMismatchError
+from docpipe.graph.mcp import Server as McpServer
+from docpipe.graph.mcp import serve as serve_mcp
+from docpipe.graph.reach import DEFAULT_FANOUT_THRESHOLD
+from docpipe.graph.reach import path as graph_path
+from docpipe.graph.report import health as health_report
+from docpipe.graph.report import render as render_report
+from docpipe.graph.search import resolve as resolve_names
 from docpipe.hashing import content_hash, stable_json_dumps
-from docpipe.materialize.apply import apply_plan, format_result, write_atomic
+from docpipe.materialize.apply import apply_plan, format_result
 from docpipe.materialize.build import BuildContext, build_context
 from docpipe.materialize.explain import format_explain_document, zone_diff
 from docpipe.materialize.ownership import (
@@ -70,6 +104,10 @@ from docpipe.materialize.worklist import (
     select_documents,
 )
 from docpipe.model import DocNode, Manifest, RunMeta
+from docpipe.recon import DEFAULT_MONTHS as RECON_MONTHS
+from docpipe.recon import DEFAULT_TOP as RECON_TOP
+from docpipe.recon import build_report as build_recon_report
+from docpipe.recon import render_text as render_recon_text
 from docpipe.registry import load_registries, read_registry
 from docpipe.registry.anchors import (
     ResolvedAnchor,
@@ -131,6 +169,7 @@ def version() -> None:
 SCHEMA_MODELS: Final[dict[str, tuple[type[BaseModel], str]]] = {
     "doc-tree": (Manifest, "schema/doc-tree.schema.json"),
     "worklist": (Worklist, "schema/doc-worklist.schema.json"),
+    "arch": (ArchRegistry, "schema/arch-registry.schema.json"),
 }
 
 
@@ -675,6 +714,11 @@ def web_scan(
         f"Вызовов: восстановлено {stats['calls_resolved']}, "
         f"не восстановлено {stats['calls_unresolved']}; "
         f"обращений к реестру без различителя {stats['registry_unresolved']}."
+    )
+    typer.echo(
+        f"Шаблонов прочитано: {stats.get('templates', 0)}; из разметки зовут "
+        f"чужие узлы {stats.get('template_usages', 0)} раз, свои члены "
+        f"{stats.get('template_own_members', 0)} раз."
     )
     typer.echo(
         f"Страниц: {stats['routes']}, из них маршрут не собран у {stats['routes_unresolved']}."
@@ -1465,6 +1509,1042 @@ def docs_owners(
     typer.echo("\n".join(f"{name:<{width}}  {count:>5}" for name, count in sorted(counted.items())))
 
 
+arch_app = typer.Typer(
+    help="Нормализованный реестр архитектурных элементов: точки входа, данные, швы, слои.",
+    no_args_is_help=True,
+)
+app.add_typer(arch_app, name="arch")
+
+
+def _arch_path(arch: Path | None, settings: DocpipeConfig, config: Path | None) -> Path:
+    """Путь к реестру: флаг важнее конфигурации, но конфигурация читается.
+
+    Реестр — вход инструмента, поэтому путь разрешается двумя ступенями
+    (`resolve_input`): сначала от текущего каталога, потом от каталога
+    `docpipe.yaml`. Конфигурация лежит не в корне, и путь внутри неё пишут
+    относительно неё же.
+    """
+    if arch is not None:
+        return arch
+    if settings.arch:
+        return resolve_input(settings.arch, config)
+    typer.echo(
+        "Реестр не задан: укажите путь аргументом или ключом `arch` в docpipe.yaml",
+        err=True,
+    )
+    raise typer.Exit(code=2)
+
+
+@arch_app.command("validate")
+def arch_validate(
+    arch: Annotated[
+        Path | None, typer.Argument(help="Файл реестра. Без аргумента — ключ `arch`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    draft: Annotated[
+        bool,
+        typer.Option(
+            "--draft",
+            help="Проверять черновик скилла: разрешён провенанс `skill_proposed`.",
+        ),
+    ] = False,
+) -> None:
+    """Проверить реестр целиком и назвать все находки сразу.
+
+    Все, а не первую: файл заполняет человек, и второй заход ради второй
+    ошибки — способ отучить его заполнять файл.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    path = _arch_path(arch, settings, config)
+    if not path.exists():
+        typer.echo(f"Реестр не найден: {path}", err=True)
+        raise typer.Exit(code=2)
+
+    try:
+        raw = read_document(path)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Не удалось прочитать реестр: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    registry, problems = check_document(raw, draft=draft)
+    if registry is None:
+        typer.echo(f"{path}: реестр не прошёл проверку", err=True)
+        for problem in problems:
+            typer.echo(f"  {problem.where}: {problem.message}", err=True)
+        raise typer.Exit(code=1)
+
+    kinds = ("entry_point", "data", "seam", "layer")
+    counts = {kind: len(registry.of_kind(kind)) for kind in kinds}
+    listed = ", ".join(f"{kind}: {count}" for kind, count in counts.items())
+    if not registry.records:
+        typer.echo(
+            f"{path}: реестр пуст и это валидное состояние — "
+            "на репозитории без реестров граф строится и без него."
+        )
+        return
+    typer.echo(f"{path}: реестр в порядке, версия {registry.version}. Записей — {listed}.")
+
+
+def _adapter_specs(settings: DocpipeConfig) -> list[AdapterSpec]:
+    return [
+        AdapterSpec(id=item.id, adapter=item.adapter, options=dict(item.options))
+        for item in settings.arch_adapters
+    ]
+
+
+def _collect_records(
+    arch: Path | None, settings: DocpipeConfig, config: Path | None, root: Path
+) -> Collected:
+    """Снимок плюс адаптеры. Путь к реестру необязателен: реестра может не быть."""
+    path: Path | None
+    if arch is not None:
+        path = arch
+    elif settings.arch:
+        path = resolve_input(settings.arch, config)
+    else:
+        path = None
+    return collect(
+        path,
+        _adapter_specs(settings),
+        root,
+        resolve=lambda value: resolve_input(value, config),
+    )
+
+
+@arch_app.command("records")
+def arch_records(
+    arch: Annotated[
+        Path | None, typer.Argument(help="Файл реестра. Без аргумента — ключ `arch`.")
+    ] = None,
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория: пути источников от него.")
+    ] = Path("."),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Машиночитаемый вывод вместо текста.")
+    ] = False,
+) -> None:
+    """Показать все записи: и снимок, и то, что читают адаптеры.
+
+    Отдельная команда, а не флаг `status`, потому что вопросы разные:
+    `status` спрашивает «не отстал ли снимок», `records` — «что вообще
+    входит в реестр на этом репозитории».
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    try:
+        collected = _collect_records(arch, settings, config, root)
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    registry = collected.registry
+    if as_json:
+        payload = {
+            "from_file": collected.from_file,
+            "from_adapters": [
+                {"id": name, "records": count} for name, count in collected.from_adapters
+            ],
+            "shadowed_by_file": list(collected.shadowed_by_file),
+            "duplicates": list(collected.duplicates),
+            "errors": list(collected.errors),
+            "records": [record.model_dump(mode="json") for record in registry.records],
+        }
+        typer.echo(stable_json_dumps(payload), nl=False)
+        return
+
+    kinds = ("entry_point", "data", "seam", "layer")
+    listed = ", ".join(f"{kind}: {len(registry.of_kind(kind))}" for kind in kinds)
+    typer.echo(f"Записей всего: {len(registry.records)} — {listed}")
+    typer.echo(f"  из снимка: {collected.from_file}")
+    for name, count in collected.from_adapters:
+        typer.echo(f"  адаптер {name}: {count}")
+    if not collected.from_adapters:
+        typer.echo("  адаптеров не подключено — реестр держится снимком")
+    if collected.shadowed_by_file:
+        typer.echo(
+            f"\nЗапись есть и в снимке, и у адаптера ({len(collected.shadowed_by_file)}); "
+            "оставлена запись снимка — она прошла через человека:"
+        )
+        for line in collected.shadowed_by_file[:10]:
+            typer.echo(f"  {line}")
+    if collected.duplicates:
+        typer.echo(
+            f"\nАдаптер вернул запись, ключ которой уже занят ({len(collected.duplicates)}); "
+            "источник объявляет её дважды или ключу не хватает различителя:"
+        )
+        for line in collected.duplicates[:10]:
+            typer.echo(f"  {line}")
+    if collected.errors:
+        typer.echo(f"\nНаходки чтения ({len(collected.errors)}):")
+        for line in collected.errors[:20]:
+            typer.echo(f"  {line}")
+
+
+@arch_app.command("snapshot")
+def arch_snapshot(
+    out: Annotated[Path, typer.Option("--out", help="Куда записать снимок.")],
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория: пути источников от него.")
+    ] = Path("."),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    adapter: Annotated[
+        list[str] | None,
+        typer.Option("--adapter", help="Снять только этот адаптер. Можно повторять."),
+    ] = None,
+) -> None:
+    """Снять снимок с адаптеров: живое чтение превращается в файл.
+
+    Снимок пишется с хэшами источников, поэтому `arch status` начинает
+    ловить его устаревание сразу, без дописывания сорока строк руками.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    specs = _adapter_specs(settings)
+    if adapter:
+        wanted = set(adapter)
+        specs = [spec for spec in specs if spec.id in wanted]
+        unknown = wanted - {spec.id for spec in specs}
+        if unknown:
+            typer.echo(f"Адаптеры не найдены в конфигурации: {sorted(unknown)}", err=True)
+            raise typer.Exit(code=2)
+    if not specs:
+        typer.echo("Адаптеров не подключено: снимать нечего", err=True)
+        raise typer.Exit(code=2)
+
+    try:
+        collected = collect(None, specs, root, resolve=lambda value: resolve_input(value, config))
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    header = (
+        "# Снимок, снятый адаптерами: "
+        + ", ".join(spec.id for spec in specs)
+        + "\n# Правки руками переживут только до следующего `docpipe arch snapshot`.\n"
+        + "# Проверить: docpipe arch validate; не отстал ли: docpipe arch status.\n"
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(dump_registry(collected.registry, header), encoding="utf-8")
+    typer.echo(f"Снимок записан: {out} — записей {len(collected.registry.records)}")
+    for line in collected.errors[:20]:
+        typer.echo(f"  {line}")
+
+
+@arch_app.command("status")
+def arch_status(
+    arch: Annotated[
+        Path | None, typer.Argument(help="Файл реестра. Без аргумента — ключ `arch`.")
+    ] = None,
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория: пути источников от него.")
+    ] = Path("."),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Машиночитаемый вывод вместо текста.")
+    ] = False,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", help="Печатать все записи, а не первые пять в категории.")
+    ] = False,
+    fail_on_stale: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-stale",
+            help="Вернуть ненулевой код, если снимок отстал от источника.",
+        ),
+    ] = False,
+) -> None:
+    """Показать записи, у которых снимок разошёлся с источником.
+
+    Красным по умолчанию отчёт не бывает: устаревший снимок — состояние
+    работы, а не дефект, и линт, красный с первого дня, выключают на второй.
+    Порог задаёт вызывающий флагом.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    path = _arch_path(arch, settings, config)
+    try:
+        registry = load_arch_registry(path)
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    statuses = source_statuses(registry, root)
+    if as_json:
+        typer.echo(stable_json_dumps(statuses_json(statuses)), nl=False)
+    else:
+        typer.echo(format_statuses(statuses, verbose=verbose), nl=False)
+
+    stale = [item for item in statuses if item.state in ("stale", "source_missing")]
+    if stale and fail_on_stale:
+        raise typer.Exit(code=1)
+
+
+graph_app = typer.Typer(
+    help="Индекс связей: точки входа, вызовы, данные и швы.",
+    no_args_is_help=True,
+)
+app.add_typer(graph_app, name="graph")
+
+
+@graph_app.command("build")
+def graph_build(
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория с исходниками.")],
+    manifest_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--manifest",
+            help="Манифест шага 1: даёт узлам модуль, FQN и связь с документом.",
+        ),
+    ] = None,
+    web_manifest_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--web-manifest",
+            help="Манифест шага `web`: страницы, цепочка фронта и швы с бэкендом.",
+        ),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Куда записать индекс. Без флага — `graph.out`."),
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+) -> None:
+    """Собрать индекс связей: разбор, чтение, проекция, запись.
+
+    Один вход — один выход: хэш логического содержимого совпадает между двумя
+    прогонами на одном входе. Времени в индексе нет вовсе, поколение выводится
+    из содержимого.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    if not settings.graph.engine_path:
+        typer.echo(
+            "Не задан путь к разборщику: ключ `graph.engine_path` в docpipe.yaml. "
+            "Умолчания у него нет намеренно — запускать то, что нашлось в PATH, "
+            "значит получить числа от другой версии и не заметить этого.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    ruleset_excludes = list(settings.exclude)
+    engine = Engine(
+        binary=Path(settings.graph.engine_path).expanduser(),
+        cache_dir=Path(settings.graph.cache_dir),
+        mode=settings.graph.mode,
+        expected_sha256=settings.graph.engine_sha256 or Engine.expected_sha256,
+    )
+
+    def excluded(path: str) -> bool:
+        return is_excluded(path, ruleset_excludes)
+
+    arch_registry = None
+    if settings.arch or settings.arch_adapters:
+        try:
+            arch_registry = _collect_records(None, settings, config, root).registry
+        except (OSError, ValueError) as exc:
+            typer.echo(f"Не удалось прочитать реестр: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+
+    manifest = None
+    if manifest_path is not None:
+        try:
+            manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            typer.echo(f"Не удалось прочитать манифест: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+
+    web_manifest = None
+    if web_manifest_path is not None:
+        try:
+            web_manifest = Manifest.model_validate_json(
+                web_manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as exc:
+            typer.echo(f"Не удалось прочитать манифест фронта: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+
+    typer.echo(f"Разбор репозитория {root}…")
+    try:
+        result = build_graph(
+            engine,
+            root,
+            is_excluded=excluded,
+            manifest=manifest,
+            arch=arch_registry,
+            web=web_manifest,
+            progress=lambda message: typer.echo(f"  … {message}"),
+            warn=lambda message: typer.echo(f"\nВНИМАНИЕ: {message}\n", err=True),
+        )
+    except EngineError as exc:
+        typer.echo(f"Разбор не состоялся: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except RootMismatchError as exc:
+        typer.echo(f"Манифест и разбор сняты с разных корней: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    target = out or Path(settings.graph.out)
+    meta = write_index(target, result.index, result.meta, result.reachability, result.searchable)
+
+    typer.echo(
+        f"Индекс записан: {target}\n"
+        f"  узлов: {meta.counts.get('nodes', 0)}, рёбер: {meta.counts.get('edges', 0)}\n"
+        f"  у разборщика было: узлов {meta.counts.get('engine_nodes', 0)}, "
+        f"рёбер {meta.counts.get('engine_edges', 0)}\n"
+        f"  корней: {meta.counts.get('roots', 0)}\n"
+        f"  поколение: {meta.generation}"
+    )
+    if meta.report:
+        typer.echo("Что не вошло в индекс:")
+        for category, number in sorted(meta.report.items()):
+            typer.echo(f"  {category}: {number}")
+
+    if result.entry_points is not None and not result.entry_points.registry_present:
+        typer.echo(
+            "\nДекларативных источников точек входа нет: корни собраны только "
+            "из кода. Это законное состояние — на репозитории, где точки входа "
+            "объявлены в коде, реестр не нужен."
+        )
+    if result.entry_points is not None and result.entry_points.unlinked_examples:
+        typer.echo("\nКорни без узла кода (состояние работы, не дефект):")
+        for example in result.entry_points.unlinked_examples[:5]:
+            typer.echo(f"  {example}")
+
+    if result.seams is not None and result.seams.declared:
+        typer.echo(
+            f"\nОбъявленные швы: {result.seams.declared}, "
+            f"соединили обе стороны: {result.seams.both_sides}"
+        )
+        # Шов с одной стороной — состояние работы, а не дефект: другой
+        # стороны может не быть в индексе вовсе. Молча потерять его нельзя:
+        # он тогда неотличим от «шва нет».
+        for example in result.seams.examples.get("швы с одной стороной", ())[:5]:
+            typer.echo(f"  {example}")
+
+    if result.binding is not None and result.binding.diverged:
+        # Расхождение выбора с регистрацией — категория, ради которой сверка
+        # и делается: без примеров её число нечем истолковать. Оба смысла
+        # расхождения выглядят одинаково (полезный — декоратор, вредный —
+        # совпадение имён у статического помощника), и различает их человек.
+        typer.echo(
+            f"\nЦель разошлась с регистрацией: {result.binding.diverged}; "
+            f"рёбер поверх расхождения: {result.binding.from_diverged}"
+        )
+        for example in result.binding.examples.get("цель разошлась с регистрацией", ())[:5]:
+            typer.echo(f"  {example}")
+
+    if result.match is not None:
+        typer.echo("\nСопоставление с манифестом:")
+        for category, number in result.match.as_counts().items():
+            typer.echo(f"  {category}: {number}")
+        for category, examples in result.match.examples.items():
+            if examples:
+                typer.echo(f"  {category} — примеры:")
+                for example in examples[:5]:
+                    typer.echo(f"    {example}")
+        typer.echo(
+            "  «есть в графе — нет в манифесте» велико по построению: манифест — "
+            "дерево документации, а не полный список объявлений. Смотреть надо "
+            "на обратное число."
+        )
+
+
+@graph_app.command("entrypoints")
+def graph_entrypoints(
+    index: Annotated[
+        Path | None, typer.Argument(help="Файл индекса. Без аргумента — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    kind: Annotated[str | None, typer.Option("--kind", help="Только корни этого вида.")] = None,
+    unlinked: Annotated[
+        bool, typer.Option("--unlinked", help="Только корни, не связанные с кодом.")
+    ] = False,
+) -> None:
+    """Показать корни графа: вид, источник и связан ли корень с кодом.
+
+    Пустой вывод здесь запрещён так же, как в поиске: «корней нет» говорится
+    словами и со списком того, где искали.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    path = index or Path(settings.graph.out)
+    if not path.is_file():
+        typer.echo(
+            f"Индекса нет: {path}. Соберите: docpipe graph build --root <репозиторий>",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    try:
+        loaded = read_index(path)
+    except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    linked = {edge.source for edge in loaded.edges if edge.kind == "dispatches"}
+    roots = [node for node in loaded.nodes if node.kind == "entry_point"]
+    if kind:
+        roots = [node for node in roots if node.attributes.get("entry_kind") == kind]
+    if unlinked:
+        roots = [node for node in roots if node.key not in linked]
+
+    if not roots:
+        typer.echo(
+            "Корней не найдено. Искали в реестре (ключ `arch`, адаптеры "
+            "`arch_adapters`) и в манифесте (эндпоинты контроллеров). "
+            "Если реестра нет — это законное состояние; если он есть, "
+            "проверьте `docpipe arch records`."
+        )
+        return
+
+    by_source = {"registry": "реестр", "manifest": "код"}
+    for node in sorted(roots, key=lambda item: item.key):
+        mark = "связан" if node.key in linked else "НЕ СВЯЗАН"
+        entry_kind = node.attributes.get("entry_kind", "—")
+        where = node.attributes.get("source_record") or node.attributes.get("member") or ""
+        typer.echo(
+            f"{entry_kind:<16} {node.name:<44} {by_source.get(node.source, node.source):<8} "
+            f"{mark:<10} {node.file}{(' → ' + where) if where else ''}"
+        )
+    typer.echo(
+        f"\nВсего корней: {len(roots)}, из них связано с кодом: "
+        f"{sum(1 for node in roots if node.key in linked)}"
+    )
+
+
+def _open_index(index: Path | None, config: Path | None) -> tuple[Path, DocpipeConfig]:
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    path = index or Path(settings.graph.out)
+    if not path.is_file():
+        typer.echo(
+            f"Индекса нет: {path}. Соберите: docpipe graph build --root <репозиторий>",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    return path, settings
+
+
+@graph_app.command("report")
+def graph_report(
+    index: Annotated[
+        Path | None, typer.Argument(help="Файл индекса. Без аргумента — `graph.out`.")
+    ] = None,
+    out: Annotated[
+        Path | None, typer.Option("--out", help="Куда записать markdown. Без флага — на экран.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    threshold: Annotated[
+        int,
+        typer.Option("--fanout", help="Порог веерности: выше него узел считается общим."),
+    ] = DEFAULT_FANOUT_THRESHOLD,
+) -> None:
+    """Таблица точек входа: что достигается, какие таблицы, где обрывается.
+
+    Одна команда, а не сумма трёх, которые надо догадаться позвать.
+    Формат детерминированный: отчёт кладут в ревью и сравнивают между
+    прогонами.
+    """
+    path, _ = _open_index(index, config)
+    try:
+        loaded = read_index(path)
+        meta = read_meta(path)
+        reachability = read_reach(path)
+    except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    text = render_report(loaded, meta, reachability, threshold)
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+        typer.echo(f"Отчёт записан: {out}")
+        return
+    typer.echo(text)
+
+
+@graph_app.command("health")
+def graph_health(
+    index: Annotated[
+        Path | None, typer.Argument(help="Файл индекса. Без аргумента — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+) -> None:
+    """Отчёт о неполноте: что не разрешилось и в каком количестве.
+
+    Красным по умолчанию отчёт не бывает: линт, красный с первого дня,
+    выключают на второй.
+    """
+    path, _ = _open_index(index, config)
+    try:
+        typer.echo(health_report(read_meta(path)), nl=False)
+    except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+
+@graph_app.command("reaches")
+def graph_reaches(
+    root: Annotated[str, typer.Argument(help="Ключ или имя точки входа.")],
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    kind: Annotated[
+        str | None, typer.Option("--kind", help="Только узлы этого вида: member, type, data.")
+    ] = None,
+) -> None:
+    """Что достигает эта точка входа: код, таблицы, швы."""
+    path, _ = _open_index(index, config)
+    loaded = read_index(path)
+    reachability = read_reach(path)
+
+    nodes = {node.key: node for node in loaded.nodes}
+    candidates = [
+        node
+        for node in loaded.nodes
+        if node.kind == "entry_point" and (node.key == root or root.lower() in node.name.lower())
+    ]
+    if not candidates:
+        # Пустой ответ запрещён: называется, что искали и что рядом.
+        known = sorted(node.name for node in loaded.nodes if node.kind == "entry_point")[:10]
+        typer.echo(f"Точка входа {root!r} не найдена. Известные корни (первые): {known}")
+        raise typer.Exit(code=1)
+    if len(candidates) > 1:
+        typer.echo(f"Под {root!r} подходит несколько корней — уточните:")
+        for node in candidates[:10]:
+            typer.echo(f"  {node.key}  {node.name}")
+        raise typer.Exit(code=1)
+
+    found = candidates[0]
+    reached = [nodes[key] for key in reachability.reached_by(found.key) if key in nodes]
+    if kind:
+        reached = [node for node in reached if node.kind == kind]
+    typer.echo(f"{found.name} ({found.attributes.get('entry_kind', '—')})")
+    for group in ("data", "member", "type", "seam"):
+        selected = sorted(node.name or node.key for node in reached if node.kind == group)
+        if selected:
+            typer.echo(f"  {group}: {len(selected)}")
+            for name in selected[:15]:
+                typer.echo(f"    {name}")
+    if not reached:
+        typer.echo(
+            "  ничего не достигается: у корня нет узла кода либо из него не видно ни одного вызова"
+        )
+
+
+@graph_app.command("affects")
+def graph_affects(
+    nodes: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help=("Ключи узлов, пути файлов (как в `git diff --name-only`) или часть имени.")
+        ),
+    ] = None,
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    threshold: Annotated[
+        int, typer.Option("--fanout", help="Порог веерности: выше него анализ не сужает.")
+    ] = DEFAULT_FANOUT_THRESHOLD,
+    from_stdin: Annotated[
+        bool,
+        typer.Option("--stdin", help="Читать пути из stdin: `git diff --name-only | …`."),
+    ] = False,
+) -> None:
+    """Какие точки входа затронет изменение этих узлов или файлов.
+
+    Основной сценарий — список изменённых файлов из PR, поэтому команда
+    принимает пути наравне с ключами: требовать от вызывающего перевода
+    путей в ключи значит требовать знания, которого у него нет.
+
+    Ответ собирает та же функция, что отвечает агенту через MCP. Отдельная
+    реализация здесь была бы вторым правилом: объяснение нуля, признание
+    общего компонента и признак неполноты живут в ней, и копия отстала бы
+    от неё молча — что однажды и произошло.
+    """
+    asked = list(nodes or [])
+    if from_stdin:
+        asked += [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
+    if not asked:
+        typer.echo(
+            "Нечего спрашивать: назовите узел, путь файла или передайте "
+            "`git diff --name-only | docpipe graph affects --stdin`.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    path, _ = _open_index(index, config)
+    loaded = read_index(path)
+    meta = read_meta(path)
+    reachability = read_reach(path)
+
+    known = {item.key for item in loaded.nodes}
+    files = {item.file for item in loaded.nodes if item.file}
+    resolved: list[str] = []
+    for value in asked:
+        if value in known or value in files or "/" in value:
+            # Пути **всегда** проходят насквозь, даже если узлов в файле нет.
+            # Отсев здесь был бы вторым правилом: у `Program.cs` на top-level
+            # statements узлов нет вовсе, и именно про него ответ обязан
+            # сказать «здесь собирается приложение», а не «не найдено».
+            resolved.append(value)
+            continue
+        # Приблизительное имя — законный вход: человек помнит «ORDERS»,
+        # а не ключ узла. Не совпало — тоже отдаём: разбираться, что это
+        # было, — работа одной функции, а не двух.
+        matched = [item.key for item in loaded.nodes if value.lower() in (item.name or "").lower()]
+        resolved.extend(sorted(matched)[:5] if matched else [value])
+
+    answer = affects(loaded, meta, reachability, resolved, threshold, limit=1_000_000)
+    unknown = [str(value) for value in answer.get("unknown", [])]
+    if unknown:
+        typer.echo(f"Не найдено в индексе: {', '.join(sorted(unknown))}")
+
+    if not answer.get("found"):
+        typer.echo(f"  {answer.get('note', '')}")
+        raise typer.Exit(code=0 if answer.get("composition_roots") else 1)
+
+    typer.echo(f"Узлов и файлов на входе: {answer.get('nodes_considered', len(resolved))}")
+
+    for shared in answer.get("shared_components", []):
+        typer.echo(
+            f"  ОБЩИЙ КОМПОНЕНТ: {shared['node']} достижим от {shared['fanout']} корней "
+            f"при пороге {threshold}. Анализ влияния здесь не сужает — "
+            "список точек входа не печатается намеренно."
+        )
+
+    entry_points = answer.get("entry_points", {})
+    items = entry_points.get("items", []) if isinstance(entry_points, dict) else []
+    if items:
+        typer.echo(f"  точек входа: {entry_points.get('total', len(items))}")
+        for item in items[:40]:
+            kind = f" ({item['kind']})" if item.get("kind") else ""
+            typer.echo(f"    {item['name']}{kind}")
+    note = answer.get("note", "")
+    if note and not items:
+        typer.echo(f"  {note}")
+
+
+@graph_app.command("path")
+def graph_path_command(
+    source: Annotated[str, typer.Argument(help="Откуда: ключ узла.")],
+    target: Annotated[str, typer.Argument(help="Куда: ключ узла.")],
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    depth: Annotated[int, typer.Option("--depth", help="Предел глубины обхода.")] = 12,
+) -> None:
+    """Как связаны две сущности. Единственная команда, которая обходит граф."""
+    path, _ = _open_index(index, config)
+    loaded = read_index(path)
+    found = graph_path(loaded, source, target, depth)
+    if not found:
+        typer.echo(
+            f"Пути от {source} до {target} не нашлось при глубине {depth}. "
+            "Это может значить и «связи нет», и «цепочка длиннее предела» — "
+            "попробуйте --depth."
+        )
+        raise typer.Exit(code=1)
+    typer.echo(source)
+    for edge in found:
+        typer.echo(f"  --{edge.kind}({edge.via})--> {edge.target}")
+
+
+@graph_app.command("resolve")
+def graph_resolve(
+    query: Annotated[str, typer.Argument(help="Свободный текст: имя, маршрут, таблица.")],
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Сколько кандидатов показать.")] = 10,
+) -> None:
+    """Что это такое, если известно только приблизительное имя.
+
+    Ответ называет, **чем совпало**: без этого вызывающий не знает, стоит ли
+    переформулировать запрос и как именно. Пустого ответа не бывает —
+    при отсутствии точного совпадения печатаются ближайшие по триграммам.
+    """
+    path, _ = _open_index(index, config)
+    loaded = read_index(path)
+    nodes = {node.key: node for node in loaded.nodes}
+    matches, inexact = resolve_names(path, query, nodes, limit)
+
+    if not matches:
+        # Пустота — худший из возможных ответов: она неотличима от факта
+        # и не даёт зацепки для второй попытки. Поэтому говорится, где
+        # искали и что вообще есть в индексе.
+        counts: dict[str, int] = {}
+        for node in loaded.nodes:
+            counts[node.kind] = counts.get(node.kind, 0) + 1
+        inventory = ", ".join(f"{kind} — {number}" for kind, number in sorted(counts.items()))
+        typer.echo(
+            f"По запросу {query!r} не нашлось ничего, даже похожего.\n"
+            "Искали среди имён узлов, ключей, маршрутов, названий полей "
+            "и заголовков документов.\n"
+            f"В индексе: {inventory}."
+        )
+        examples = sorted(
+            node.name for node in loaded.nodes if node.kind == "entry_point" and node.name
+        )[:5]
+        if examples:
+            typer.echo(f"Точки входа, например: {', '.join(examples)}")
+        raise typer.Exit(code=1)
+    if inexact:
+        typer.echo("Точного совпадения нет; ниже — ближайшее по тому, чем совпало.")
+    for match in matches:
+        module = f"  [{match.module}]" if match.module else ""
+        typer.echo(
+            f"{match.kind:<12} {match.name:<40} {match.how} по полю «{match.field}»"
+            f"{module}\n    {match.node}"
+        )
+
+
+@graph_app.command("serve")
+def graph_serve(
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория: нужен формам без графа.")
+    ] = Path("."),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+) -> None:
+    """Запустить MCP-сервер на stdio: формы вопроса становятся инструментами агента.
+
+    Сервер не собирает граф сам: отсутствие индекса — внятная ошибка с командой
+    сборки. Отсутствие реестра ошибкой не является — `overview`, `why` и `card`
+    работают и без него.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    server = McpServer(index or Path(settings.graph.out), root)
+    serve_mcp(server)
+
+
+@graph_app.command("eval")
+def graph_eval(
+    questions: Annotated[Path, typer.Argument(help="Файл оценочного набора.")],
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    fail_under: Annotated[
+        float,
+        typer.Option("--fail-under", help="Вернуть ненулевой код, если полнота ниже."),
+    ] = 0.0,
+) -> None:
+    """Прогнать оценочный набор: полнота и точность ответов.
+
+    Числа идут в журнал при каждом релизе — в том числе при смене версии
+    разборщика: обновление бинаря без прогона набора запрещено, это
+    и есть регрессионный тест на чужой код.
+    """
+    path, _ = _open_index(index, config)
+    try:
+        set_of_questions = load_questions(questions)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Набор не прочитан: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    score = run_questions(
+        set_of_questions, path, read_index(path), read_meta(path), read_reach(path)
+    )
+    typer.echo(format_score(score), nl=False)
+    if score.recall < fail_under:
+        typer.echo(f"Полнота {score.recall} ниже порога {fail_under}", err=True)
+        raise typer.Exit(code=1)
+
+
+@graph_app.command("coverage")
+def graph_coverage(
+    index: Annotated[
+        Path | None, typer.Argument(help="Файл индекса. Без аргумента — `graph.out`.")
+    ] = None,
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория: от него ищется каталог.")
+    ] = Path("."),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    fail_under: Annotated[
+        float,
+        typer.Option("--fail-under", help="Ненулевой код, если описано меньше этой доли."),
+    ] = 0.0,
+) -> None:
+    """Какие точки входа описаны бизнес-документами, а какие нет.
+
+    Непокрытые точки входа — состояние работы, а не дефект: отчёт печатается
+    всегда и кода возврата не меняет, пока порог не задан явно. Линт, красный
+    с первого дня, выключают на второй.
+    """
+    path, settings = _open_index(index, config)
+    catalog_root = root / settings.business_root
+    if not catalog_root.is_dir():
+        typer.echo(
+            f"Каталога бизнес-документов нет: {catalog_root}. "
+            "Ключ `business_root` в docpipe.yaml задаёт, где его искать.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    catalog = load_catalog(root, settings.business_root)
+    report = coverage_of(read_index(path).nodes, catalog)
+    typer.echo(format_coverage(report), nl=False)
+    share = report.covered / report.entry_points if report.entry_points else 1.0
+    if share < fail_under:
+        typer.echo(f"Описано {share:.0%}, порог {fail_under:.0%}", err=True)
+        raise typer.Exit(code=1)
+
+
+@graph_app.command("pr-check")
+def graph_pr_check(
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория с историей git.")],
+    index: Annotated[
+        Path | None, typer.Option("--index", help="Файл индекса. Без флага — `graph.out`.")
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    count: Annotated[int, typer.Option("--count", help="Сколько влитых правок взять.")] = 10,
+    scan: Annotated[
+        int, typer.Option("--scan", help="Сколько последних правок просмотреть в поиске кода.")
+    ] = 100,
+    fail_on_missed: Annotated[
+        bool,
+        typer.Option("--fail-on-missed", help="Ненулевой код, если точка входа пропущена."),
+    ] = False,
+) -> None:
+    """Что предсказал `affects` на уже влитых правках.
+
+    Настоящая истина — «что реально затрагивалось в ревью» — есть только там,
+    где есть ревью. Проверяемая её часть есть везде: если правка меняла файл
+    точки входа, `affects` обязан эту точку входа назвать. Пропуск здесь —
+    ложное отрицание, самый опасный вид ошибки, потому что он тихий.
+    """
+    path, _ = _open_index(index, config)
+    requests = merged_requests(root, count, scan)
+    if not requests:
+        typer.echo(
+            f"В {root} не нашлось истории git — брать нечего. "
+            "Проверка работает на репозитории с историей, а не на выгрузке.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    outcomes = check_requests(requests, read_index(path), read_meta(path), read_reach(path))
+    typer.echo(format_requests(outcomes), nl=False)
+    if fail_on_missed and any(outcome.missed for outcome in outcomes):
+        raise typer.Exit(code=1)
+
+
+@graph_app.command("info")
+def graph_info(
+    index: Annotated[
+        Path | None,
+        typer.Argument(help="Файл индекса. Без аргумента — `graph.out`."),
+    ] = None,
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+) -> None:
+    """Показать паспорт индекса: чем собран, из чего и что не вошло."""
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    path = index or Path(settings.graph.out)
+    if not path.is_file():
+        typer.echo(
+            f"Индекса нет: {path}. Соберите: docpipe graph build --root <репозиторий>",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    try:
+        meta = read_meta(path)
+    except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    typer.echo(f"Индекс: {path}")
+    typer.echo(f"  схема: {meta.schema_version}, поколение: {meta.generation}")
+    typer.echo(f"  репозиторий: {meta.repo}, разборщик: {meta.engine_version}")
+    # Фактическая сумма бинаря, которым собран ЭТОТ индекс. Нужна потому, что
+    # расхождение с закреплённой — предупреждение, живущее один прогон:
+    # без записи в паспорте «чем собран» остался бы без ответа у любого,
+    # кто читает индекс позже.
+    if meta.engine_checksum:
+        typer.echo(f"  чек-сумма разборщика: {meta.engine_checksum}")
+    for name, number in sorted(meta.counts.items()):
+        typer.echo(f"  {name}: {number}")
+    if meta.report:
+        typer.echo("  что не вошло:")
+        for category, number in sorted(meta.report.items()):
+            typer.echo(f"    {category}: {number}")
+
+
 anchors_app = typer.Typer(
     help="Точки входа, объявленные в реестрах платформы.",
     no_args_is_help=True,
@@ -1982,7 +3062,7 @@ def business_accept(
             loaded.ctx,
             path.read_bytes().decode("utf-8-sig"),
             loaded.ownership,
-            state={"accepted": business_accepted_state(doc, loaded.ctx), "review": None},
+            state=accepted_block(business_accepted_state(doc, loaded.ctx)),
         )
         if not dry_run:
             write_atomic(path, text)
@@ -2147,6 +3227,192 @@ def business_lint(
 
     if report.failing(selected):
         raise typer.Exit(code=1)
+
+
+@app.command()
+def recon(
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория, который разведываем.")
+    ] = Path("."),
+    json_out: Annotated[
+        Path | None, typer.Option("--json", help="Куда записать машиночитаемую форму.")
+    ] = None,
+    text_out: Annotated[
+        Path | None,
+        typer.Option("--text", help="Куда записать человекочитаемую форму; без флага — на stdout."),
+    ] = None,
+    months: Annotated[
+        int, typer.Option("--months", help="Окно археологии от даты HEAD; 0 — вся история.")
+    ] = RECON_MONTHS,
+    top: Annotated[int, typer.Option("--top", help="Длина списков в отчёте.")] = RECON_TOP,
+    exclude: Annotated[
+        list[str] | None,
+        typer.Option("--exclude", help="Доотсеять сегмент пути, префикс или суффикс."),
+    ] = None,
+) -> None:
+    """Разведка репозитория, который видишь впервые (R01).
+
+    Отвечает на пять вопросов и больше ни на что: чем собран репозиторий, что
+    читать первым, где его центр, чем он заякорен и как языки говорят между
+    собой. Графа не требует и собирается раньше него — это первое, что
+    инструмент может сказать о незнакомом коде.
+
+    Репозиторий только читается: `git ls-files`, `git log`, чтение файлов.
+    Рабочее дерево не трогается, сети нет.
+    """
+    if not root.is_dir():
+        typer.echo(f"нет такого каталога: {root}", err=True)
+        raise typer.Exit(code=2)
+
+    report = build_recon_report(root, months, top, list(exclude or []))
+
+    if json_out is not None:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    text = render_recon_text(report)
+    if text_out is not None:
+        text_out.parent.mkdir(parents=True, exist_ok=True)
+        text_out.write_text(text, encoding="utf-8")
+    else:
+        typer.echo(text, nl=False)
+
+
+config_app = typer.Typer(
+    help="Проверка конфигурации: что и откуда прочитается на этой машине.",
+    no_args_is_help=True,
+)
+app.add_typer(config_app, name="config")
+
+
+# Ключи и их база отсчёта. Список положительный и жёсткий: ключ, забытый здесь,
+# сделает отчёт неполным, а неполный отчёт хуже отсутствующего — по нему решат,
+# что настройка проверена.
+_INPUT_KEYS: Final[tuple[str, ...]] = (
+    "rules",
+    "templates",
+    "ownership",
+    "registries",
+    "arch",
+    "web.rules",
+    "web.pages",
+)
+_TARGET_KEYS: Final[tuple[str, ...]] = (
+    "out",
+    "worklist",
+    "web.out",
+    "web.link_out",
+    "graph.out",
+    "graph.cache_dir",
+)
+# `modules_dir` и `web.modules_dir` сюда не входят: они не пути, а сегменты
+# внутри `docs_root`, и показанные складкой с корнем читались бы как каталоги,
+# которых нет. Собранные из них префиксы печатаются отдельной строкой.
+_ROOT_KEYS: Final[tuple[str, ...]] = (
+    "docs_root",
+    "business_root",
+    "cache_dir",
+)
+
+
+def _key_value(settings: DocpipeConfig, key: str) -> object:
+    section, _, name = key.partition(".")
+    holder: object = settings if not name else getattr(settings, section)
+    return getattr(holder, name or section)
+
+
+@config_app.command("check")
+def config_check(
+    config: Annotated[Path, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")],
+    root: Annotated[
+        Path, typer.Option("--root", help="Корень репозитория, которым будут звать команды.")
+    ] = Path("."),
+) -> None:
+    """Показать, во что разрешается каждый путь конфигурации, и что из этого есть.
+
+    Команда отвечает на вопрос, который иначе задают отладкой прогона: пути
+    разрешаются от трёх разных баз, и по имени ключа базу не угадать. Пока
+    этого было нечем проверить, половина настроечных проблем выглядела как
+    «инструмент не видит документы» — и разбиралась часами на полном прогоне.
+
+    Проверяется настройка ровно в том виде, в каком её увидит команда: от того
+    же текущего каталога и того же `--root`. Поэтому звать её надо оттуда же,
+    откуда зовут `scan`, — иначе она подтвердит настройку, которой в работе
+    не будет.
+    """
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Конфигурация не читается: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    typer.echo(f"Конфигурация: {config}")
+    typer.echo(f"Текущий каталог: {Path.cwd()}")
+    typer.echo(f"Корень (--root): {root}\n")
+
+    missing: list[str] = []
+
+    typer.echo("Входы — от текущего каталога, затем от каталога конфигурации:")
+    for key in _INPUT_KEYS:
+        value = _key_value(settings, key)
+        if not value:
+            typer.echo(f"  {key:16} не задан")
+            continue
+        candidates = candidate_inputs(str(value), config)
+        found = next((path for path in candidates if path.exists()), None)
+        if found is None:
+            # Называется ПЕРВЫЙ кандидат: человек написал в конфигурации его,
+            # и искать глазами он будет тоже его.
+            typer.echo(f"  {key:16} {value}  → НЕ НАЙДЕН: {candidates[0]}")
+            missing.append(key)
+        else:
+            step = "рядом с конфигурацией" if found != candidates[0] else "от текущего каталога"
+            typer.echo(f"  {key:16} {value}  → {found} ({step})")
+
+    typer.echo("\nЦели записи — только от текущего каталога:")
+    for key in _TARGET_KEYS:
+        value = _key_value(settings, key)
+        target = Path(str(value))
+        # Существование самой цели ничего не значит: её ещё не писали. Значит
+        # ли что-нибудь каталог — да: писать в несуществующее дерево прогон
+        # не станет, и узнается это в конце длинной работы.
+        state = "каталог есть" if target.parent.is_dir() else "КАТАЛОГА НЕТ"
+        typer.echo(f"  {key:16} {value}  → {target.resolve()} ({state})")
+
+    typer.echo("\nОт корня репозитория:")
+    for key in _ROOT_KEYS:
+        value = str(_key_value(settings, key))
+        # Абсолютное значение выигрывает склейку — и для `cache_dir` это
+        # законно и намеренно. Показать надо результат, а не слагаемые.
+        resolved = root / value
+        typer.echo(f"  {key:16} {value}  → {resolved}")
+
+    if settings.graph.engine_path:
+        engine = Path(settings.graph.engine_path).expanduser()
+        state = "есть" if engine.is_file() else "НЕ НАЙДЕН"
+        typer.echo(f"\nДвижок разбора: {engine} ({state})")
+    else:
+        typer.echo(
+            "\nДвижок разбора не задан (`graph.engine_path`): команды `graph *` "
+            "откажутся работать. Для шагов 1, 2 и бизнес-слоя это законно."
+        )
+
+    prefix = settings.modules_root
+    typer.echo(f"\nПрефикс doc_path технических документов: {prefix}")
+    if settings.web.modules_dir:
+        typer.echo(f"Префикс doc_path документов фронта:    {settings.web_modules_root}")
+
+    if missing:
+        typer.echo(
+            "\nНе найдено: " + ", ".join(missing) + ".\n"
+            "Путь входа пишут относительно каталога конфигурации — тогда он "
+            "не зависит от того, откуда зовут команду.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    typer.echo("\nВсё, что настроено, на месте.")
 
 
 if __name__ == "__main__":

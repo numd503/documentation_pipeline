@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from docpipe.classify import load_ruleset
 from docpipe.cli import app
 from docpipe.config import DocpipeConfig
-from docpipe.materialize.document import assemble, is_section_empty, parse_document
+from docpipe.documents.zones import assemble, is_section_empty, parse_document
 from docpipe.materialize.template import load_templates
 from docpipe.model import Manifest
 from docpipe.web.tree import run as run_web

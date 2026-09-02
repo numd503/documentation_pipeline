@@ -21,6 +21,10 @@ _EXTENSIONS: dict[str, tuple[str, ...]] = {
     "sln_files": (".sln", ".slnx"),
     "ts_files": (".ts",),
     "html_files": (".html",),
+    # Исходники SQL: процедуры, функции, представления. Нужны там, где часть
+    # работы с данными живёт в базе, и пустой список — законный ответ,
+    # а не пробел разбора.
+    "sql_files": (".sql",),
 }
 
 # Файлы, объявляющие модуль фронта. Отбираются по ПОЛНОМУ имени, а не по
@@ -44,6 +48,7 @@ class Discovered:
     sln_files: list[str]  # и `.sln`, и `.slnx`
     ts_files: list[str]  # включая `*.spec.ts` и `*.d.ts` — они нужны резолву
     html_files: list[str]
+    sql_files: list[str]
     web_project_files: list[str]  # angular.json, nx.json, project.json, package.json
 
 
@@ -173,5 +178,28 @@ def discover(
         sln_files=sorted(found["sln_files"]),
         ts_files=sorted(found["ts_files"]),
         html_files=sorted(found["html_files"]),
+        sql_files=sorted(found["sql_files"]),
         web_project_files=sorted(found["web_project_files"]),
     )
+
+
+def map_files_to_modules(cs_files: list[str], csproj_files: list[str]) -> dict[str, str]:
+    """Файл -> `.csproj` ближайшего вверх по дереву проекта.
+
+    Файлы, не попавшие ни в один проект, в результат не входят: документировать
+    код вне проектов некуда. Такое встречается — общий код, подключённый через
+    `<Compile Include>`, физически лежит вне каталогов проектов (см. T05b).
+    """
+    directories = {str(Path(c).parent): c for c in csproj_files}
+
+    mapping: dict[str, str] = {}
+    for relative in cs_files:
+        current = Path(relative).parent
+        while True:
+            if str(current) in directories:
+                mapping[relative] = directories[str(current)]
+                break
+            if current == Path("."):
+                break
+            current = current.parent
+    return mapping

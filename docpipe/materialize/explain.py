@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any, Final
 
 from docpipe.discovery import matches_glob
-from docpipe.materialize.document import DocumentError, parse_document, read_document
-from docpipe.materialize.model import ParsedDocument
+from docpipe.documents.model import ParsedDocument
+from docpipe.documents.zones import DocumentError, parse_document, read_document
 from docpipe.materialize.plan import (
     SCHEMA_PREFIX,
     PlannedDoc,

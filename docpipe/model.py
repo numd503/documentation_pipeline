@@ -135,6 +135,124 @@ class DiRegistration(_Base):
     line: int
 
 
+class Construction(_Base):
+    """Создание объекта в теле члена: `new GetOrdersQuery(...)`.
+
+    Нужно ровно для одного — знать, **где отправляют** запрос, у которого есть
+    объявленный обработчик. Обработчик виден из объявления, место отправки
+    живёт в теле, и без этой пары ребро диспетчеризации не существует нигде.
+    """
+
+    type_name: str
+    member: str
+    line: int
+
+
+class LiteralCall(_Base):
+    """Вызов с строковым аргументом: `ToTable("FOO")`, `CreateTable("FOO")`.
+
+    Единственное место, где имя таблицы **прочитано**, а не выведено
+    по соглашению. Вызов того же метода без литерала (имя из константы)
+    сюда не попадает и обязан идти в отчёт как неразрешённое.
+    """
+
+    method: str
+    arguments: list[str] = Field(default_factory=list)
+    # Сущность из получателя: `b.Entity<Contract>().ToTable("FOO")`. Без неё
+    # имя таблицы известно, а чьё оно — нет.
+    entity: str = ""
+    member: str
+    line: int
+
+
+class DispatchSend(_Base):
+    """Место отправки запроса: где создан объект, у которого есть обработчик.
+
+    Вторая половина диспетчеризации по типу. Объявление («этот тип обслуживает
+    такой запрос») видно в базовом типе обработчика, отправка — только в теле,
+    и без обеих половин ребра не существует.
+    """
+
+    request_type: str
+    member: str
+    module: str
+    file: str
+    line: int
+
+
+class TableLiteral(_Base):
+    """Имя таблицы, записанное литералом: `ToTable("FOO", "dbo")`.
+
+    Пустое `name` — законное состояние, а не пропуск: метод позвали, но имя
+    пришло из константы или переменной. Такие считаются отдельно, иначе
+    «неразрешённых нет» неотличимо от «мы их не искали».
+    """
+
+    name: str = ""
+    schema_name: str = ""
+    entity: str = ""
+    method: str
+    member: str
+    module: str
+    file: str
+    line: int
+
+
+class SqlUsage(_Base):
+    """SQL, записанный литералом в коде: что он читает, пишет и зовёт.
+
+    Хранятся **имена**, а не текст запроса: манифест читают в ревью, и класть
+    туда мегабайты SQL значило бы сделать его нечитаемым ради данных, которые
+    всё равно используются только как имена.
+    """
+
+    member: str
+    module: str
+    file: str
+    line: int
+    reads: list[str] = Field(default_factory=list)
+    writes: list[str] = Field(default_factory=list)
+    calls: list[str] = Field(default_factory=list)
+    # Динамика: строка собирается и исполняется. Это НЕ «не разобрали»:
+    # имени нет вовсе до момента исполнения, и категория отдельная.
+    dynamic: bool = False
+
+
+class SqlObject(_Base):
+    """Объект, объявленный в исходнике SQL: процедура, функция, представление."""
+
+    name: str
+    kind: str
+    file: str
+    line: int
+    reads: list[str] = Field(default_factory=list)
+    writes: list[str] = Field(default_factory=list)
+    calls: list[str] = Field(default_factory=list)
+    dynamic: bool = False
+
+
+class DispatchDeclaration(_Base):
+    """Объявленная диспетчеризация по типу: «этот тип обслуживает такой запрос».
+
+    Форма `class Handler : IRequestHandler<GetOrders, Result>` встречается
+    у медиаторов, шин команд и обработчиков сообщений. Извлекается она вместе
+    с остальными объявлениями и **по списку интерфейсов из конфигурации**:
+    зашивать сюда имя конкретной библиотеки нельзя — на другом репозитории
+    интерфейс называется иначе, а механика та же.
+
+    Ключевое здесь то же, что и в цепочке фронта: **тип запроса живёт
+    на ребре, а не на вызове**. Один и тот же метод обработчика зовут
+    и диспетчер, и код напрямую.
+    """
+
+    handler_fqn: str
+    interface: str
+    request_type: str
+    module: str
+    file: str
+    line: int
+
+
 class ImportedName(_Base):
     """Одно имя, пришедшее из другого модуля.
 
@@ -173,6 +291,12 @@ class FileParseResult(_Base):
     imports: list[ModuleImport] = Field(default_factory=list)
     declarations: list[RawDeclaration] = Field(default_factory=list)
     di_registrations: list[DiRegistration] = Field(default_factory=list)
+
+    # Факты из тел, каждый под свой вопрос: где создают объект (место
+    # отправки запроса) и где имя таблицы записано литералом. Это не разбор
+    # тел: тела не строятся в граф и не хранятся.
+    constructions: list[Construction] = Field(default_factory=list)
+    literal_calls: list[LiteralCall] = Field(default_factory=list)
     parse_errors: int = 0
 
 
@@ -436,6 +560,31 @@ class Manifest(_Base):
     partial: PartialInfo | None = None
     modules: list[Module] = Field(default_factory=list)
     nodes: list[DocNode] = Field(default_factory=list)
+
+    # Регистрации контейнера — такой же извлечённый факт о коде, как эндпоинты
+    # контроллеров, и извлекаются они тем же проходом. Раньше они жили внутри
+    # сборки узлов и выбрасывались; теперь остаются в манифесте, потому что
+    # связывание вызовов через интерфейс (G04) без них не делается вовсе,
+    # а второй разбор тех же файлов ради того же факта — это удвоенный проход
+    # по репозиторию.
+    di_registrations: list[DiRegistration] = Field(default_factory=list)
+
+    # Объявленная диспетчеризация по типу запроса. Пусто, пока в конфигурации
+    # не назван ни один интерфейс: механика общая, а имена интерфейсов
+    # у каждого репозитория свои.
+    dispatch_handlers: list[DispatchDeclaration] = Field(default_factory=list)
+
+    # Места отправки запросов и имена таблиц из литералов. Оба списка —
+    # извлечённые факты о коде, как эндпоинты и регистрации: добыты тем же
+    # проходом, и второй разбор ради них был бы удвоенной работой.
+    dispatch_sends: list[DispatchSend] = Field(default_factory=list)
+    table_literals: list[TableLiteral] = Field(default_factory=list)
+
+    # SQL: из литералов в коде и из исходников процедур. Второй список пуст
+    # на репозитории, где процедуры живут только в базе, — и это нормальный
+    # исход, а не пробел разбора.
+    sql_usages: list[SqlUsage] = Field(default_factory=list)
+    sql_objects: list[SqlObject] = Field(default_factory=list)
 
 
 class RunMeta(_Base):

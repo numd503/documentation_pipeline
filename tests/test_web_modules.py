@@ -238,6 +238,7 @@ def test_discover_modules_is_deterministic(web_workspace: Path) -> None:
         sln_files=[],
         ts_files=list(reversed(found.ts_files)),
         html_files=[],
+        sql_files=[],
         web_project_files=list(reversed(found.web_project_files)),
     )
 

@@ -117,8 +117,12 @@ def test_deleted_file_disappears_from_the_manifest(sample_solution: Path, tmp_pa
     full = _bytes(root, tmp_path, "after-full")
 
     assert incremental == full
-    assert b"ValuationWorkflow" not in incremental
-    assert b"ValuationWorkflow" in before
+    # Проверяется исчезновение УЗЛА, а не строки: `Program.cs` никуда не делся
+    # и по-прежнему содержит `services.AddTransient<ValuationWorkflow>()`.
+    # Регистрация на тип, которого больше нет, — законный факт файла
+    # и отдельная находка связывания (G04), а не остаток кэша.
+    assert b'"title": "ValuationWorkflow"' not in incremental
+    assert b'"title": "ValuationWorkflow"' in before
 
 
 # --------------------------------------------------------------------------------------

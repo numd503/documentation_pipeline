@@ -5,7 +5,8 @@
 переиспользует разбор документа целиком.
 """
 
-from docpipe.materialize.document import (
+from docpipe.documents.model import ParsedDocument, Segment
+from docpipe.documents.zones import (
     MANAGED_END,
     MANAGED_START,
     DocumentError,
@@ -14,7 +15,6 @@ from docpipe.materialize.document import (
     parse_document,
     read_document,
 )
-from docpipe.materialize.model import ParsedDocument, Segment
 
 __all__ = [
     "MANAGED_END",

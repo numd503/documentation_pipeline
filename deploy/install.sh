@@ -1,124 +1,143 @@
 #!/usr/bin/env bash
 #
-# Установка docpipe внутрь репозитория АС CF.
+# Раскладка docpipe на целевой машине.
 #
-#     ./deploy/install.sh $WORK/cfml/sbt.cms.cashflow
+# Две ВЕЩИ В РАЗНЫХ МЕСТАХ, и разделение здесь смысловое, а не для порядка:
 #
-# На закрытом контуре, где пакеты приходят из внутреннего зеркала:
+#   инструмент  ставится на машину (`uv tool install`) и в репозитории продукта
+#               не лежит. Обновляется отдельно от продукта, версией не связан
+#               с его историей и не попадает в его diff;
+#   настройка   лежит ВНУТРИ репозитория продукта, в каталоге, который задаёте
+#               вы: правила классификации, владение, реестры, шаблоны. Это
+#               решения о продукте, им место рядом с продуктом.
 #
-#     ./deploy/install.sh $WORK/cfml/sbt.cms.cashflow \
-#         --index https://зеркало/repository/pypi/simple \
-#         --python /usr/bin/python3.12
+#     ./deploy/install.sh --repo $WORK/cfml/sbt.cms.cashflow \
+#                         --config-dir docs/ml/docpipe
 #
-# Кладёт в <репозиторий>/docs/ml/docspipe только то, что нужно для запуска:
-# пакет, манифест зависимостей без dev-группы, лок-файл, настройки под проект
-# и шаблоны документов шага 2. Тесты, фикстуры, план, журнал, ruff и mypy
-# на целевую машину не попадают.
+# На закрытом контуре добавляются --index, --python и --engine.
 #
-# Скрипт идемпотентен: повторный запуск обновляет код, но НЕ трогает уже
-# настроенные `docpipe.yaml`, `rules.yaml`, `uv.toml` и шаблоны документов —
-# они кладутся рядом как `*.new`. Затирать чужую настройку молча — худшее, что может сделать
-# установщик.
+# Скрипт идемпотентен: повторный запуск обновляет инструмент, но НЕ трогает
+# настроенные yaml и правленые шаблоны — новые версии кладутся рядом как
+# `*.new`. Затирать чужую настройку молча — худшее, что может сделать
+# установщик: правка правил классификации это недели работы.
 
 set -euo pipefail
 
 SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SUBDIR="docs/ml/docspipe"
-SYNC=1
-RELOCK=0
-INSTALL_PROJECT=1
+BUNDLE_SRC="$SOURCE/deploy/cashflow-docspipe"
+
+REPO=""
+CONFIG_DIR=""
+CACHE_DIR=""
+ENGINE=""
 INDEX=""
 PYTHON=""
+TOOL=1
 
 usage() {
     cat >&2 <<'EOF'
-Использование: install.sh <путь-к-репозиторию-АС-CF> [опции]
+Использование: install.sh --repo ПУТЬ --config-dir ПУТЬ [опции]
 
-  <путь>                 корень репозитория sbt.cms.cashflow
+  --repo ПУТЬ          корень документируемого репозитория
+  --config-dir ПУТЬ    каталог настройки ВНУТРИ него, например docs/ml/docpipe.
+                       Путь относительный: он попадает в docpipe.yaml и обязан
+                       читаться одинаково на любой машине
 
-  --index URL            адрес внутреннего зеркала пакетов. Записывается
-                         в uv.toml поставки и ВЛЕЧЁТ ПЕРЕСБОРКУ ЛОКА: тот,
-                         что лежит в репозитории, ссылается на файлы
-                         pypi.org поимённо и на закрытом контуре бесполезен
-  --python PATH|ВЕРСИЯ   каким интерпретатором поднимать окружение,
-                         например /usr/bin/python3.12 или 3.12.13
-  --relock               пересобрать лок, не задавая индекс (адрес зеркала
-                         уже прописан глобально в ~/.config/uv/uv.toml)
-  --no-install-project   не собирать сам пакет docpipe (не нужен hatchling).
-                         Тогда команда зовётся только как `python -m docpipe`
-                         с PYTHONPATH на каталог инструмента
-  --skip-sync            только скопировать файлы, окружение не поднимать
+Опции:
+  --cache-dir ПУТЬ     где держать кэши разбора. АБСОЛЮТНЫЙ и вне репозитория:
+                       это гигабайты машинного мусора, дереву продукта они
+                       не нужны. По умолчанию $WORK/.docpipe/cache, а без
+                       $WORK — ~/.cache/docpipe
+  --engine ПУТЬ        путь к codebase-memory-mcp 0.6.0. Без него команды
+                       `graph *` откажутся работать, остальные — нет
+  --index URL          адрес внутреннего зеркала пакетов. Записывается
+                       в uv.toml клона и действует на все вызовы uv оттуда
+  --python ПУТЬ|ВЕРСИЯ каким интерпретатором ставить, например 3.12.13.
+                       Скачивать Python запрещено намеренно, поэтому на
+                       закрытом контуре его надо назвать
+  --no-tool            только разложить настройку, инструмент не ставить
+
+Инструмент ставится в UV_TOOL_DIR (запускалка — в UV_TOOL_BIN_DIR). Если они
+не заданы, uv возьмёт свои умолчания внутри $HOME — на системах, где работа
+идёт вне $HOME, задайте их до запуска:
+
+    export UV_TOOL_DIR=$WORK/.uv     UV_TOOL_BIN_DIR=$WORK/.uv/bin
 EOF
     exit 2
 }
 
-[ $# -ge 1 ] || usage
-TARGET_REPO="$1"
-shift
 while [ $# -gt 0 ]; do
     case "$1" in
-        --index) [ $# -ge 2 ] || usage; INDEX="$2"; RELOCK=1; shift ;;
-        --python) [ $# -ge 2 ] || usage; PYTHON="$2"; shift ;;
-        --relock) RELOCK=1 ;;
-        --no-install-project) INSTALL_PROJECT=0 ;;
-        --skip-sync) SYNC=0 ;;
-        *) usage ;;
+        --repo)       [ $# -ge 2 ] || usage; REPO="$2"; shift ;;
+        --config-dir) [ $# -ge 2 ] || usage; CONFIG_DIR="$2"; shift ;;
+        --cache-dir)  [ $# -ge 2 ] || usage; CACHE_DIR="$2"; shift ;;
+        --engine)     [ $# -ge 2 ] || usage; ENGINE="$2"; shift ;;
+        --index)      [ $# -ge 2 ] || usage; INDEX="$2"; shift ;;
+        --python)     [ $# -ge 2 ] || usage; PYTHON="$2"; shift ;;
+        --no-tool)    TOOL=0 ;;
+        -h|--help)    usage ;;
+        # Прежняя форма — `install.sh <репозиторий>` — клала код инструмента
+        # внутрь репозитория в жёстко зашитый docs/ml/docspipe. Принять её
+        # молча значит разложить поставку не туда, где её будут искать.
+        -*) echo "Неизвестный флаг: $1" >&2; usage ;;
+        *)  echo "Позиционный аргумент больше не принимается: $1" >&2
+            echo "Каталог настройки теперь задаётся явно: --repo ПУТЬ --config-dir ПУТЬ" >&2
+            exit 2 ;;
     esac
     shift
 done
 
-[ -d "$TARGET_REPO" ] || { echo "Каталог не найден: $TARGET_REPO" >&2; exit 1; }
-TARGET_REPO="$(cd "$TARGET_REPO" && pwd)"
-DEST="$TARGET_REPO/$SUBDIR"
+[ -n "$REPO" ] || { echo "Не задан --repo" >&2; usage; }
+[ -n "$CONFIG_DIR" ] || { echo "Не задан --config-dir" >&2; usage; }
+[ -d "$REPO" ] || { echo "Каталог не найден: $REPO" >&2; exit 1; }
+REPO="$(cd "$REPO" && pwd)"
+
+# Каталог настройки обязан лежать внутри репозитория и записываться
+# относительным путём: его значение уходит в docpipe.yaml, который читают
+# и на других машинах. Абсолютный путь там сделал бы конфигурацию личной.
+case "$CONFIG_DIR" in
+    /*|*..*) echo "--config-dir: относительный путь внутри репозитория, дано: $CONFIG_DIR" >&2
+             exit 1 ;;
+esac
+CONFIG_DIR="${CONFIG_DIR%/}"
+DEST="$REPO/$CONFIG_DIR"
+
+# $WORK — каталог, в котором на целевой системе ведётся вся работа, и он
+# лежит ВНЕ $HOME. Умолчание идёт туда, потому что кэш обязан быть там, где
+# у пользователя есть место и права, а не там, где их предполагает uv.
+if [ -z "$CACHE_DIR" ]; then
+    if [ -n "${WORK:-}" ]; then
+        CACHE_DIR="$WORK/.docpipe/cache"
+    else
+        CACHE_DIR="$HOME/.cache/docpipe"
+    fi
+fi
+case "$CACHE_DIR" in
+    /*) ;;
+    # Относительный кэш склеится с --root и уедет в дерево продукта — ровно то,
+    # ради ухода от чего каталог и вынесен.
+    *) echo "--cache-dir обязан быть абсолютным, дано: $CACHE_DIR" >&2; exit 1 ;;
+esac
 
 # Проверка, что это действительно репозиторий с исходниками, а не соседний
-# каталог: установка в неправильное место обнаружилась бы только на прогоне.
-if [ ! -d "$TARGET_REPO/.git" ] && [ -z "$(find "$TARGET_REPO" -maxdepth 2 -name '*.sln' -print -quit)" ]; then
-    echo "Внимание: в $TARGET_REPO нет ни .git, ни .sln — тот ли это репозиторий?" >&2
+# каталог: установка не туда обнаружилась бы только на прогоне.
+if [ ! -d "$REPO/.git" ] && [ -z "$(find "$REPO" -maxdepth 2 -name '*.sln' -print -quit)" ]; then
+    echo "Внимание: в $REPO нет ни .git, ни .sln — тот ли это репозиторий?" >&2
 fi
 
-echo "Источник:   $SOURCE"
-echo "Назначение: $DEST"
-mkdir -p "$DEST/cashflow-docspipe"
+echo "Репозиторий: $REPO"
+echo "Настройка:   $CONFIG_DIR"
+echo "Кэши:        $CACHE_DIR"
+echo
 
-# --- код и зависимости ------------------------------------------------------
-# Пакет копируется целиком, но без следов запуска: .pyc сборки на другой версии
-# Python не переносятся и в поставке только мешают.
-rm -rf "$DEST/docpipe"
-cp -r "$SOURCE/docpipe" "$DEST/docpipe"
-find "$DEST/docpipe" -name '__pycache__' -type d -prune -exec rm -rf {} +
-
-cp "$SOURCE/deploy/uv.toml.example" "$DEST/uv.toml.example"
-
-# Лок из поставки ссылается на файлы pypi.org поимённо. Если на месте уже лежит
-# лок, собранный против внутреннего зеркала, затирать его нельзя: следующий
-# же `uv sync --frozen` пошёл бы в недоступный pypi.org — и обновление
-# инструмента ломало бы рабочую установку.
-#
-# Пересобирать его при этом нужно, только если изменился состав зависимостей.
-# Иначе обновление кода требовало бы связи с зеркалом на ровном месте.
-if [ -f "$DEST/uv.lock" ] && ! grep -q 'registry = "https://pypi.org/simple"' "$DEST/uv.lock"; then
-    if cmp -s "$SOURCE/deploy/pyproject.toml" "$DEST/pyproject.toml"; then
-        echo "  сохранён uv.lock, собранный против внутреннего зеркала"
-    else
-        echo "  зависимости изменились — лок против внутреннего зеркала будет пересобран"
-        RELOCK=1
-    fi
-else
-    cp "$SOURCE/deploy/uv.lock" "$DEST/uv.lock"
-fi
-
-cp "$SOURCE/deploy/pyproject.toml" "$DEST/pyproject.toml"
-cp "$SOURCE/deploy/README.md" "$DEST/README.md"
-cp "$SOURCE/deploy/gitignore" "$DEST/.gitignore"
+mkdir -p "$DEST"
 
 # --- файлы, которые правит человек ------------------------------------------
-# Кладутся только если их ещё нет. Правка правил классификации — это недели
-# работы, и молча заменить её обновлением инструмента недопустимо.
 keep_configured() {
     local from="$1" to="$2" label="$3"
 
     if [ ! -e "$to" ]; then
+        mkdir -p "$(dirname "$to")"
         cp "$from" "$to"
         echo "  установлен: $label"
     elif cmp -s "$from" "$to"; then
@@ -129,189 +148,148 @@ keep_configured() {
     fi
 }
 
-keep_configured "$SOURCE/deploy/cashflow-docspipe/docpipe.yaml" \
-    "$DEST/cashflow-docspipe/docpipe.yaml" "cashflow-docspipe/docpipe.yaml"
-keep_configured "$SOURCE/deploy/cashflow-docspipe/rules.yaml" \
-    "$DEST/cashflow-docspipe/rules.yaml" "cashflow-docspipe/rules.yaml"
+# docpipe.yaml приходит с плейсхолдерами: входы в нём записаны короткими
+# именами и переносимы как есть, а цели записи и пути от --root переносимыми
+# быть не могут — их подставляем здесь. Подстановка идёт во временный файл,
+# и keep_configured дальше сравнивает уже готовый результат: при повторной
+# установке с теми же параметрами он совпадёт с лежащим и не создаст `.new`.
+config_tmp="$(mktemp)"
+sed -e "s|@CONFIG_DIR@|$CONFIG_DIR|g" \
+    -e "s|@CACHE_DIR@|$CACHE_DIR|g" \
+    -e "s|@ENGINE@|$ENGINE|g" \
+    "$BUNDLE_SRC/docpipe.yaml" > "$config_tmp"
+keep_configured "$config_tmp" "$DEST/docpipe.yaml" "docpipe.yaml"
+rm -f "$config_tmp"
+
+for name in rules ownership pages registries arch-registry; do
+    keep_configured "$BUNDLE_SRC/$name.yaml" "$DEST/$name.yaml" "$name.yaml"
+done
 
 # Файл правил стал секционным: `dotnet:` и `web:` в одном файле. Сохранённый
-# набор старого формата после обновления не загрузится — и сказать об этом
-# обязан установщик, а не первый упавший прогон в CI. Скрипт переноса кладётся
-# рядом именно поэтому: сообщение об ошибке зовёт его по имени.
-mkdir -p "$DEST/tools"
-cp "$SOURCE/tools/migrate_rules.py" "$DEST/tools/migrate_rules.py"
-
-if [ -f "$DEST/cashflow-docspipe/rules.yaml" ] &&
-    ! grep -q '^dotnet:' "$DEST/cashflow-docspipe/rules.yaml"; then
+# набор старого формата после обновления не загрузится — сказать об этом обязан
+# установщик, а не первый упавший прогон в CI.
+if [ -f "$DEST/rules.yaml" ] && ! grep -q '^dotnet:' "$DEST/rules.yaml"; then
     cat >&2 <<EOF
 
   ВНИМАНИЕ: ваш rules.yaml в старом плоском формате, прогон его не примет.
-  Перенос сохраняет комментарии и делается одной командой:
+  Перенос сохраняет комментарии и делается одной командой из клона:
 
-      uv run --project $SUBDIR python $SUBDIR/tools/migrate_rules.py \\
-          --dotnet $SUBDIR/cashflow-docspipe/rules.yaml \\
-          --out    $SUBDIR/cashflow-docspipe/rules.yaml
+      python3 $SOURCE/tools/migrate_rules.py \\
+          --dotnet $DEST/rules.yaml --out $DEST/rules.yaml
 
-  Затем допишите в файл секцию \`web:\` — её эталон лежит в rules.yaml.new.
+  Затем допишите секцию \`web:\` — её эталон в rules.yaml.new.
 EOF
 fi
-# Заготовка без команд и правил: работает, но ничего не раздаёт. Приезжает
-# вместе с путём на себя в docpipe.yaml — иначе конфигурация ссылалась бы
-# на файл, которого в поставке нет.
-keep_configured "$SOURCE/deploy/cashflow-docspipe/ownership.yaml" \
-    "$DEST/cashflow-docspipe/ownership.yaml" "cashflow-docspipe/ownership.yaml"
-# Ручной состав страниц фронта. Приезжает пустым и сохраняется при обновлении:
-# в нём решения человека о том, что считать страницей, и потерять их нельзя.
-keep_configured "$SOURCE/deploy/cashflow-docspipe/pages.yaml" \
-    "$DEST/cashflow-docspipe/pages.yaml" "cashflow-docspipe/pages.yaml"
-# Описание реестров платформы: без него `docpipe anchors` и `docpipe business`
-# отказываются работать с «Реестры не заданы», а пути внутри него — первое,
-# что придётся сверить с реальной раскладкой субрепозиториев.
-keep_configured "$SOURCE/deploy/cashflow-docspipe/registries.yaml" \
-    "$DEST/cashflow-docspipe/registries.yaml" "cashflow-docspipe/registries.yaml"
-cp "$SOURCE/deploy/cashflow-docspipe/README.md" "$DEST/cashflow-docspipe/README.md"
 
-# --- шаблоны документов (шаг 2) ---------------------------------------------
-# Без этого каталога `docpipe materialize` падает на «Каталог шаблонов не найден»,
-# и по сообщению не видно, что виноват не путь, а поставка.
+# --- шаблоны документов -----------------------------------------------------
+# Скелет документа — настройка под проект ровно в той же мере, что и rules.yaml:
+# его правят те же люди и под тот же продукт. Отсюда keep_configured.
 #
-# Лежат в cashflow-docspipe, а не рядом с пакетом, потому что скелет документа —
-# настройка под проект ровно в той же мере, что и rules.yaml: его правят те же
-# люди и под тот же продукт. Отсюда и keep_configured — обновление инструмента
-# не имеет права затирать переписанный шаблон.
-#
-# ПУТЬ СЮДА ОБЯЗАН БЫТЬ В docpipe.yaml. Значение `templates` по умолчанию —
-# "templates" относительно ТЕКУЩЕГО каталога (как и `out`), а команды зовутся
-# из корня репозитория АС CF. То есть по умолчанию ищется $CF_ROOT/templates,
-# которого нет и не будет. Вторая ступень поиска — каталог самого docpipe.yaml —
-# спасла бы и короткое значение, но явный путь надёжнее и остаётся.
-mkdir -p "$DEST/cashflow-docspipe/templates/examples"
-for tpl in "$SOURCE"/templates/*.md "$SOURCE"/templates/examples/*.md; do
+# Двумя циклами, потому что обход каталога скелетов шага 2 НЕ рекурсивный:
+# `templates/business` для него подкаталог и в набор шага 2 не попадает, а без
+# этих файлов `docpipe business new` отказывается работать со «Скелет не найден».
+for tpl in "$SOURCE"/templates/*.md "$SOURCE"/templates/examples/*.md \
+           "$SOURCE"/templates/business/*.md "$SOURCE"/templates/business/examples/*.md; do
     rel="${tpl#"$SOURCE"/templates/}"
-    keep_configured "$tpl" "$DEST/cashflow-docspipe/templates/$rel" "templates/$rel"
+    keep_configured "$tpl" "$DEST/templates/$rel" "templates/$rel"
 done
 
-# --- скелеты бизнес-документов ----------------------------------------------
-# Отдельным циклом, потому что обход каталога скелетов шага 2 НЕ рекурсивный:
-# `templates/business` для него подкаталог и в набор шага 2 не попадает.
-# Без этих файлов `docpipe business new` отказывается работать со «Скелет
-# не найден», и по сообщению видно путь, но не видно, что виновата поставка.
-mkdir -p "$DEST/cashflow-docspipe/templates/business/examples"
-for tpl in "$SOURCE"/templates/business/*.md "$SOURCE"/templates/business/examples/*.md; do
-    rel="${tpl#"$SOURCE"/templates/}"
-    keep_configured "$tpl" "$DEST/cashflow-docspipe/templates/$rel" "templates/$rel"
-done
+cp "$BUNDLE_SRC/README.md" "$DEST/README.md"
+cp "$SOURCE/deploy/gitignore" "$DEST/.gitignore"
+mkdir -p "$DEST/artifacts" "$CACHE_DIR"
 
-# --- настройки uv для закрытого контура -------------------------------------
-if [ -n "$INDEX" ]; then
-    # Адрес подставляется в шаблон, а не в сгенерированный с нуля файл:
-    # комментарии в шаблоне объясняют, зачем нужны native-tls
-    # и python-downloads, и терять их при установке незачем.
-    tmp="$(mktemp)"
-    sed "s|https://ЗАПОЛНИТЬ/repository/pypi/simple|$INDEX|" \
-        "$SOURCE/deploy/uv.toml.example" > "$tmp"
-    keep_configured "$tmp" "$DEST/uv.toml" "uv.toml (индекс $INDEX)"
-    rm -f "$tmp"
-elif [ -f "$SOURCE/deploy/uv.toml" ]; then
-    # Настройки, подобранные внутри контура и сохранённые в клоне (см. OFFLINE.md).
-    # Тогда `--index` при установке уже не нужен — ни здесь, ни на других машинах.
-    keep_configured "$SOURCE/deploy/uv.toml" "$DEST/uv.toml" "uv.toml (из клона)"
-fi
-
-# --- окружение --------------------------------------------------------------
-uv_flags=(--project "$DEST")
-[ -n "$PYTHON" ] && uv_flags+=(--python "$PYTHON")
-
-diagnose() {
-    cat >&2 <<EOF
-
-Окружение поднять не удалось. Три причины, по которым это обычно происходит
-на закрытом контуре, — в порядке частоты:
-
-  1. Пакеты тянутся не из внутреннего зеркала. Лок в поставке ссылается на
-     файлы pypi.org поимённо, и с ним uv никуда больше не пойдёт. Лечится
-     пересборкой лока против зеркала:
-
-         $0 $TARGET_REPO --index https://зеркало/repository/pypi/simple
-
-  2. \`invalid peer certificate\` — сертификат TLS-прокси подписан внутренним
-     удостоверяющим центром, которого нет в наборе, вшитом в uv. В uv.toml
-     поставки для этого стоит native-tls = true (системное хранилище).
-     Если и в системном его нет:
-
-         SSL_CERT_FILE=/путь/до/corp-root-ca.pem $0 $TARGET_REPO --index ...
-
-  3. Не найден интерпретатор. Скачивать его запрещено намеренно — укажите
-     явно тот, что есть:
-
-         $0 $TARGET_REPO --index ... --python /usr/bin/python3.12
-
-Скопированные файлы на месте, повторный запуск ничего не испортит.
-EOF
-    exit 1
-}
-
-if [ "$SYNC" -eq 1 ]; then
+# --- инструмент -------------------------------------------------------------
+if [ "$TOOL" -eq 1 ]; then
     command -v uv >/dev/null || { echo "uv не найден в PATH" >&2; exit 1; }
 
-    if [ "$RELOCK" -eq 1 ]; then
-        echo "Пересобираю лок против настроенного индекса…"
-        # Лок поставки при этом не удаляется: uv предпочтёт уже записанные
-        # версии, если зеркало их отдаёт, — тогда окружение совпадёт с тем,
-        # на котором гонялись тесты.
-        uv lock "${uv_flags[@]}" || diagnose
+    if [ -n "$INDEX" ]; then
+        # Пишем в клон, а не в $HOME: настройки uv действуют на каталог, из
+        # которого его зовут, и здесь это клон. Файл в .gitignore клона.
+        sed "s|https://ЗАПОЛНИТЬ/repository/pypi/simple|$INDEX|" \
+            "$SOURCE/deploy/uv.toml.example" > "$SOURCE/uv.toml"
+        echo "Индекс записан в $SOURCE/uv.toml"
     fi
 
-    sync_flags=(--frozen "${uv_flags[@]}")
-    [ "$INSTALL_PROJECT" -eq 0 ] && sync_flags+=(--no-install-project)
+    # Версии берутся из uv.lock клона, а не решаются заново. Без этого
+    # `uv tool install` подобрал бы свежие релизы, и окружение разошлось бы
+    # с тем, на котором гонялись тесты, — молча и в удобный момент.
+    #
+    # --no-hashes намеренно: на внутреннем зеркале файл может быть пересобран,
+    # и тогда сумма не сойдётся, хотя версия та же. Пин версии остаётся.
+    constraints="$(mktemp)"
+    echo "Снимаю версии из uv.lock…"
+    (cd "$SOURCE" && uv export --frozen --no-dev --no-emit-project --no-hashes \
+        --format requirements-txt -o "$constraints" -q) || {
+        echo "Не удалось прочитать uv.lock клона" >&2; rm -f "$constraints"; exit 1
+    }
 
-    echo "Поднимаю окружение…"
-    # --frozen: ставить ровно то, что в локе. Без него uv при малейшем
-    # расхождении полез бы в индекс перерешать зависимости, и поставка
-    # перестала бы быть воспроизводимой.
-    uv sync "${sync_flags[@]}" || diagnose
+    tool_flags=(--constraints "$constraints" --force)
+    [ -n "$PYTHON" ] && tool_flags+=(--python "$PYTHON")
+
+    echo "Ставлю docpipe в ${UV_TOOL_DIR:-каталог uv по умолчанию}…"
+    if ! (cd "$SOURCE" && uv tool install "${tool_flags[@]}" .); then
+        rm -f "$constraints"
+        cat >&2 <<EOF
+
+Установка не удалась. Три причины, по которым это обычно происходит
+на закрытом контуре, — в порядке частоты:
+
+  1. Пакеты тянутся не из внутреннего зеркала:
+         $0 --repo $REPO --config-dir $CONFIG_DIR --index https://зеркало/…
+
+  2. \`invalid peer certificate\` — сертификат TLS-прокси подписан внутренним
+     удостоверяющим центром, которого нет в наборе uv. В uv.toml для этого
+     стоит native-tls (системное хранилище). Если и там его нет:
+         SSL_CERT_FILE=/путь/до/corp-root-ca.pem $0 --repo … --index …
+
+  3. Не найден интерпретатор. Скачивать его запрещено намеренно:
+         $0 --repo … --index … --python 3.12.13
+
+Настройка разложена и повторным запуском не пострадает.
+EOF
+        exit 1
+    fi
+    rm -f "$constraints"
 
     echo -n "Проверка: docpipe "
-    PYTHONPATH="$DEST" uv run --no-sync "${uv_flags[@]}" python -m docpipe version || diagnose
-fi
-
-# Эталонный набор правил здесь лежал до T26 и больше не копируется. Удалить его
-# нельзя молча — установщик вообще ничего не удаляет, — но и промолчать нельзя:
-# путь `rules/dotnet.yaml` совпадает со значением `rules` по умолчанию, поэтому
-# прогон из этого каталога без `--config` возьмёт его вместо настроенного набора
-# и завершится успешно.
-if [ -f "$DEST/rules/dotnet.yaml" ]; then
-    cat >&2 <<EOF
-
-ВНИМАНИЕ: $DEST/rules/dotnet.yaml остался от прежней версии поставки.
-Он больше не нужен: сравнивать настроенный набор не с чем — отличия помечены
-в самом cashflow-docspipe/rules.yaml, а новая версия приходит как rules.yaml.new.
-Хуже того, запуск из $DEST без --config подхватит его молча: путь совпадает
-со значением по умолчанию. Удалите каталог: rm -r $DEST/rules
-EOF
+    if command -v docpipe >/dev/null; then
+        docpipe version
+    else
+        echo >&2
+        echo "Команда docpipe не видна в PATH. Каталог запускалок — UV_TOOL_BIN_DIR;" >&2
+        echo "добавьте его в PATH: export PATH=\"\${UV_TOOL_BIN_DIR:-\$HOME/.local/bin}:\$PATH\"" >&2
+    fi
 fi
 
 cat <<EOF
 
-Готово. Дальше — задать переменные и завести алиас (одна строка, работает
-в обоих режимах установки):
+Готово. Настройка — в $CONFIG_DIR, инструмент — на машине.
 
-  export CF_ROOT=$TARGET_REPO
-  export DOCPIPE=$DEST
-  export BUNDLE=\$DOCPIPE/cashflow-docspipe
-  export PYTHONPATH=\$DOCPIPE
-  alias docpipe="uv run --no-sync --project \$DOCPIPE python -m docpipe"
+Первое, что стоит сделать: убедиться, что конфигурация читается оттуда,
+откуда вы будете звать команды.
 
-  cd \$CF_ROOT                                        # out в конфигурации от текущего каталога
-  docpipe scan --root . --config \$BUNDLE/docpipe.yaml --stats --jobs 4
+  cd $REPO
+  docpipe config check --config $CONFIG_DIR/docpipe.yaml --root .
 
-Фронт (шаг web) настраивается тем же порядком и теми же двумя файлами:
-секция \`web:\` в docpipe.yaml и секция \`web:\` в rules.yaml.
+Дальше:
 
-  docpipe web scan --root . --config \$BUNDLE/docpipe.yaml --stats
-  docpipe web scan --root . --config \$BUNDLE/docpipe.yaml
-  docpipe web link \$BUNDLE/artifacts/doc-tree.json \$BUNDLE/artifacts/doc-tree.web.json \\
-      --config \$BUNDLE/docpipe.yaml
-
-Настройка под проект — в $DEST/cashflow-docspipe/README.md
+  docpipe scan --root . --config $CONFIG_DIR/docpipe.yaml --stats
+  docpipe scan --root . --config $CONFIG_DIR/docpipe.yaml --jobs 4
+  docpipe web scan --root . --config $CONFIG_DIR/docpipe.yaml --stats
 EOF
+
+if [ -n "$ENGINE" ]; then
+    cat <<EOF
+  docpipe graph build --root . --config $CONFIG_DIR/docpipe.yaml
+EOF
+else
+    cat <<EOF
+
+Движок разбора не задан (--engine), поэтому команды \`graph *\` откажутся
+работать. Это законно для шагов 1, 2 и бизнес-слоя; для графа впишите путь
+в ключ \`graph.engine_path\` или переустановите с --engine.
+EOF
+fi
+
+echo
+echo "Настройка под проект — в $CONFIG_DIR/README.md"

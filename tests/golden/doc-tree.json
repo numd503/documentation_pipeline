@@ -1,4 +1,32 @@
 {
+  "di_registrations": [
+    {
+      "confidence": "high",
+      "file": "src/Sample.Pricing.Api/Program.cs",
+      "impl_type": "PricingService",
+      "lifetime": "scoped",
+      "line": 12,
+      "service_type": "IPricingService"
+    },
+    {
+      "confidence": "high",
+      "file": "src/Sample.Pricing.Api/Program.cs",
+      "impl_type": "CurveProvider",
+      "lifetime": "singleton",
+      "line": 13,
+      "service_type": "IPricingProvider<string>"
+    },
+    {
+      "confidence": "high",
+      "file": "src/Sample.Pricing.Api/Program.cs",
+      "impl_type": "ValuationWorkflow",
+      "lifetime": "transient",
+      "line": 14,
+      "service_type": "ValuationWorkflow"
+    }
+  ],
+  "dispatch_handlers": [],
+  "dispatch_sends": [],
   "modules": [
     {
       "domain": "Sample.Common",
@@ -625,5 +653,8 @@
   },
   "partial": null,
   "ruleset_version": "2026-07-30.1",
-  "schema_version": "2.0"
+  "schema_version": "2.0",
+  "sql_objects": [],
+  "sql_usages": [],
+  "table_literals": []
 }

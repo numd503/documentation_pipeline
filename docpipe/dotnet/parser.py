@@ -17,6 +17,12 @@ import tree_sitter_c_sharp as tscs
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
 from docpipe.dotnet.di import extract_registrations
+from docpipe.dotnet.facts import (
+    SQL_METHODS,
+    TABLE_METHODS,
+    extract_constructions,
+    extract_literal_calls,
+)
 from docpipe.hashing import content_hash
 from docpipe.model import (
     Attribute,
@@ -485,8 +491,15 @@ def _build_declaration(declaration: Node, path: str, members: list[Member]) -> R
     )
 
 
-def parse_source(source: bytes, path: str) -> FileParseResult:
-    """Разобрать содержимое файла. `path` используется только как метка."""
+def parse_source(
+    source: bytes, path: str, di_methods: frozenset[str] = frozenset()
+) -> FileParseResult:
+    """Разобрать содержимое файла. `path` используется только как метка.
+
+    `di_methods` — самодельные обёртки регистрации из конфигурации. Значение
+    входит в ключ кэша разбора: без этого смена списка не пересобрала бы
+    ничего, и новые регистрации не появились бы до ручной чистки кэша.
+    """
     tree = _PARSER.parse(source)
     captures = QueryCursor(_query("declarations.scm")).captures(tree.root_node)
     member_captures = QueryCursor(_query("members.scm")).captures(tree.root_node)
@@ -507,6 +520,7 @@ def parse_source(source: bytes, path: str) -> FileParseResult:
     usings, global_usings = _usings(tree.root_node)
 
     di_calls = QueryCursor(_query("di.scm")).captures(tree.root_node).get("call", [])
+    creations = QueryCursor(_query("facts.scm")).captures(tree.root_node).get("new", [])
 
     return FileParseResult(
         path=path,
@@ -514,12 +528,18 @@ def parse_source(source: bytes, path: str) -> FileParseResult:
         usings=usings,
         global_usings=global_usings,
         declarations=declarations,
-        di_registrations=extract_registrations(di_calls, path),
+        di_registrations=extract_registrations(di_calls, path, di_methods),
+        # Те же узлы вызовов, что и у DI: второй проход по дереву ради
+        # тех же самых `invocation_expression` был бы чистой платой.
+        constructions=extract_constructions(creations),
+        literal_calls=extract_literal_calls(di_calls, TABLE_METHODS | SQL_METHODS),
         parse_errors=_count_errors(tree.root_node),
     )
 
 
-def parse_file(path: Path, repo_root: Path) -> FileParseResult:
+def parse_file(
+    path: Path, repo_root: Path, di_methods: frozenset[str] = frozenset()
+) -> FileParseResult:
     """Разобрать файл. Путь в результате — репо-относительный POSIX."""
     relative = path.resolve().relative_to(repo_root.resolve()).as_posix()
-    return parse_source(path.read_bytes(), relative)
+    return parse_source(path.read_bytes(), relative, di_methods)

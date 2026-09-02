@@ -1,0 +1,95 @@
+# Нормализованный реестр для канонической фикстуры (G03).
+#
+# Реестр объявляет то, чего в коде нет структурно: имя грид-сервиса,
+# идентификатор workflow, джоб по расписанию. Ни одно из этих имён
+# не встречается в C# литералом — связь «имя → класс» делает инструмент.
+#
+# Файл живёт рядом с фикстурой, а не внутри SampleSolution: количества
+# в самой фикстуре завязаны на критерии приёмки шага 1, и трогать её нельзя.
+version: "1"
+
+records:
+  # Имя сервиса кластера — независимый идентификатор: `RiskCompute`
+  # при классе `RiskComputeService`. Переименование класса якорь не меняет.
+  - kind: entry_point
+    key: RiskCompute
+    entry_kind: grid_service
+    name: Расчёт риска
+    impl: Sample.Pricing.Api.Grid.RiskComputeService
+    source:
+      file: registries.yaml
+      record: grid-services[RiskCompute]
+    provenance: manual
+
+  # Workflow: ключ несёт версию, потому что версий бывает несколько сразу.
+  - kind: entry_point
+    key: Valuation@1
+    entry_kind: workflow
+    name: Переоценка портфеля
+    impl: Sample.Pricing.Api.Workflows.ValuationWorkflow
+    source:
+      file: registries.yaml
+      record: workflows[Valuation]
+    provenance: manual
+
+  # Джоб, у которого класса в этом репозитории нет вовсе: корень существует,
+  # узла кода у него нет, и это состояние работы, а не дефект.
+  - kind: entry_point
+    key: Ночная переоценка
+    entry_kind: job
+    name: Ночная переоценка
+    impl: Sample.Missing.NightlyJob
+    source:
+      file: registries.yaml
+      record: jobs[Ночная переоценка]
+    provenance: manual
+
+  - kind: data
+    key: PRICES
+    data_kind: table
+    name: Цены
+    source:
+      file: registries.yaml
+      record: structure[Prices]
+    provenance: manual
+
+  # Шов между языками: маршрут, который знают обе стороны. Литерал приходит
+  # сюда из разведки, потому что на зовущей стороне он собирается из кусков
+  # и статическим поиском не находится (Р2).
+  # Питоновский сервис: объявлен реестром в виде кода, класса-«хоста» у него
+  # нет. Без корня на этой стороне вопрос «кого задену, правя контроллер»
+  # не имеет ответа: клиент есть в графе, но его никто не запускает.
+  - kind: entry_point
+    key: price-sync
+    entry_kind: service
+    name: Синхронизация цен
+    impl: PriceClient
+    source:
+      file: clients/price_client.py
+      record: PriceClient
+    provenance: manual
+
+  - kind: seam
+    key: api/ml/innerdebts/state/byclient
+    seam_kind: http_route
+    http_method: GET
+    literal: /api/ml/innerdebts/state/byclient
+    name: Состояние по клиенту
+    sides: ["python", "dotnet"]
+    source:
+      file: clients/price_client.py
+      record: PriceClient.load
+    provenance: manual
+
+  # Шов через очередь: та же механика, другой вид литерала. Отвечающая
+  # сторона ищется среди точек входа вида `queue`/`kafka_topic`/`event`.
+  - kind: seam
+    key: prices-recalculated
+    seam_kind: topic
+    literal: prices-recalculated
+    name: Пересчёт цен
+    sides: ["dotnet", "python"]
+    source:
+      file: clients/price_client.py
+      record: PriceClient.publish
+    provenance: manual

@@ -2,10 +2,13 @@
 
 Всё, что относится к этому проекту, лежит в этом каталоге: `docpipe.yaml`
 (где искать код), `rules.yaml` (что считать сервисом, контроллером, задачей
-кластера), `ownership.yaml` (кому принадлежит документ) и `templates/` (скелеты
-документов шага 2). Сам инструмент — уровнем выше и правке не подлежит: его
-обновляет `install.sh`. Ваши правки в перечисленных местах он сохраняет, новая
-версия приходит рядом как `*.new`.
+кластера), `ownership.yaml` (кому принадлежит документ), `pages.yaml` (ручной
+состав страниц), `registries.yaml` и `arch-registry.yaml` (реестры платформы)
+и `templates/` (скелеты документов).
+
+**Кода инструмента здесь нет.** Он стоит на машине и обновляется отдельно;
+раскладывает и то и другое `install.sh` из клона. Ваши правки в перечисленных
+файлах он сохраняет, новая версия приходит рядом как `*.new`.
 
 Полный чек-лист настройки — в `CASHFLOW.md` репозитория разработки.
 
@@ -15,35 +18,47 @@
 
 ```bash
 export CF_ROOT=$WORK/cfml/sbt.cms.cashflow      # корень репозитория АС CF
-export DOCPIPE=$CF_ROOT/docs/ml/docspipe        # каталог инструмента
-export BUNDLE=$DOCPIPE/cashflow-docspipe        # этот каталог: настройка под АС CF
-export PYTHONPATH=$DOCPIPE                      # нужен при установке с --no-install-project
+export CFG=docs/ml/docpipe/docpipe.yaml         # конфигурация, ОТ КОРНЯ репозитория
+export BUNDLE=$CF_ROOT/docs/ml/docpipe          # этот каталог
 export OUT=$BUNDLE/artifacts/doc-tree.json      # манифест
-
-alias docpipe="uv run --no-sync --project $DOCPIPE python -m docpipe"
 ```
 
-Три вещи, которые в этих строках существенны, а не просто длинны:
+Две вещи, которые в этих строках существенны, а не просто длинны:
 
-- **`--no-sync`** — запуск не ходит в сеть. Без него `uv run` при каждом вызове
-  сверялся бы с индексом и на машине без доступа к нему падал бы на команде,
-  которая с зависимостями ничего не делает. Окружение поднимает `install.sh`.
-- **`python -m docpipe`, а не консольная команда `docpipe`** — работает и когда
-  пакет собран, и когда окружение поднято с `--no-install-project`. `PYTHONPATH`
-  нужен для второго случая: пакет лежит в дереве, но не в `site-packages`.
-- **`cd $CF_ROOT` перед вызовом** (ниже) — поле `out` в конфигурации задано
-  относительно **текущего каталога**, а не `--root`. Из другого каталога манифест
-  уедет в неожиданное место; либо переходите в корень, либо задавайте `--out $OUT`.
+- **`cd $CF_ROOT` перед вызовом.** Цели записи (`out`, `worklist`, `graph.out`)
+  отсчитываются от **текущего** каталога, а не от `--root`, и второй ступени
+  поиска не получают: угадывать, куда писать, инструмент не должен. Из другого
+  каталога манифест уедет в неожиданное место.
+- **`--config` обязателен всегда.** Умолчания ведут в другие места, и прогон
+  без флага не откажется, а молча возьмёт не тот набор правил.
+
+Команда `docpipe` приходит из `UV_TOOL_BIN_DIR` и должна быть в `PATH`.
+Проверить: `docpipe version`.
+
+## Первым делом — проверить пути
+
+```bash
+cd $CF_ROOT
+docpipe config check --config $CFG --root .
+```
+
+Печатает, во что разрешается каждый путь конфигурации и что из этого есть
+на диске. Пути разрешаются от трёх разных баз, и по имени ключа базу не угадать;
+пока этого было нечем проверить, половина настроечных проблем выглядела как
+«инструмент не видит документы» и разбиралась часами на полном прогоне.
+
+Звать из того же каталога, из которого будете звать `scan`: иначе команда
+подтвердит настройку, которой в работе не будет.
 
 ## Команды
 
 ```bash
 cd $CF_ROOT
 
-docpipe scan --root . --config $BUNDLE/docpipe.yaml --jobs 4            # построить манифест
-docpipe scan --root . --config $BUNDLE/docpipe.yaml --stats            # состояние решений
-docpipe scan --root . --config $BUNDLE/docpipe.yaml --dry-run          # что изменилось бы
-docpipe symbols --root . --config $BUNDLE/docpipe.yaml                 # что осталось без решения
+docpipe scan --root . --config $CFG --jobs 4            # построить манифест
+docpipe scan --root . --config $CFG --stats            # состояние решений
+docpipe scan --root . --config $CFG --dry-run          # что изменилось бы
+docpipe symbols --root . --config $CFG                 # что осталось без решения
 docpipe validate $OUT                                                  # проверить построенное
 docpipe diff старый.json $OUT                                          # сравнить манифесты
 docpipe --help                                                         # все команды и флаги
@@ -59,7 +74,7 @@ docpipe --help                                                         # все 
 версии поставки, переносится с сохранением комментариев:
 
 ```bash
-uv run --project $DOCPIPE python $DOCPIPE/tools/migrate_rules.py \
+python3 <клон>/tools/migrate_rules.py \
     --dotnet $BUNDLE/rules.yaml --out $BUNDLE/rules.yaml
 ```
 
@@ -84,14 +99,14 @@ cd "$(git rev-parse --show-toplevel)"
 find . -name '*.csproj' -printf '%h\n' | cut -d/ -f2 | sort | uniq -c | sort -rn
 ```
 
-**2. Прогнать `docpipe scan --root . --config $BUNDLE/docpipe.yaml --stats`** и посмотреть последнюю строку блока решений —
+**2. Прогнать `docpipe scan --root . --config $CFG --stats`** и посмотреть последнюю строку блока решений —
 «решение не принято». Под ней пять срезов: модули, окончания имён, базовые типы,
 атрибуты, namespace-ы. Модулей больше пятнадцати — добавьте `--top 40`.
 
 **3. Взять самый крупный проект из среза «модули» и посмотреть, что в нём:**
 
 ```bash
-docpipe symbols --root . --config $BUNDLE/docpipe.yaml --module <имя-проекта>
+docpipe symbols --root . --config $CFG --module <имя-проекта>
 ```
 
 Команда печатает сами символы: замыкание наследования, атрибуты, публичные члены
@@ -101,8 +116,8 @@ docpipe symbols --root . --config $BUNDLE/docpipe.yaml --module <имя-прое
 **4. Проверить, что новое правило поймало именно то, что задумано:**
 
 ```bash
-docpipe symbols --root . --config $BUNDLE/docpipe.yaml --state documented    --rule <id-правила>
-docpipe symbols --root . --config $BUNDLE/docpipe.yaml --state not_documented --rule <id-решения>
+docpipe symbols --root . --config $CFG --state documented    --rule <id-правила>
+docpipe symbols --root . --config $CFG --state not_documented --rule <id-решения>
 ```
 
 Правило, покрывающее 500 типов, полезнее пяти правил по десять. Останавливаться,
@@ -119,13 +134,13 @@ docpipe symbols --root . --config $BUNDLE/docpipe.yaml --state not_documented --
 ```bash
 cd $CF_ROOT
 
-docpipe web scan --root . --config $BUNDLE/docpipe.yaml --stats   # состояние решений
-docpipe web scan --root . --config $BUNDLE/docpipe.yaml           # манифест фронта
+docpipe web scan --root . --config $CFG --stats   # состояние решений
+docpipe web scan --root . --config $CFG           # манифест фронта
 docpipe web link $BUNDLE/artifacts/doc-tree.json \
                  $BUNDLE/artifacts/doc-tree.web.json \
-                 --config $BUNDLE/docpipe.yaml                    # связь фронт↔бэк
-docpipe materialize $BUNDLE/artifacts/doc-tree.web.json --root . --config $BUNDLE/docpipe.yaml
-docpipe docs status $BUNDLE/artifacts/doc-tree.web.json --root . --config $BUNDLE/docpipe.yaml
+                 --config $CFG                    # связь фронт↔бэк
+docpipe materialize $BUNDLE/artifacts/doc-tree.web.json --root . --config $CFG
+docpipe docs status $BUNDLE/artifacts/doc-tree.web.json --root . --config $CFG
 ```
 
 Документы фронта лежат **отдельной веткой**: `web.modules_dir: "front-docs"`
@@ -152,7 +167,7 @@ docpipe web pages $BUNDLE/artifacts/doc-tree.web.json --format csv > pages.csv
 Правило, переставшее совпадать, печатается всегда; в CI закрепляется флагом:
 
 ```bash
-docpipe web scan --root . --config $BUNDLE/docpipe.yaml --fail-on-stale-overrides
+docpipe web scan --root . --config $CFG --fail-on-stale-overrides
 ```
 
 Подробности — в `docs/pages.md` репозитория инструмента.
@@ -193,10 +208,10 @@ artifacts/web-link.json           связь вызовов фронта с эн
 ```bash
 cd $CF_ROOT
 
-docpipe materialize $OUT --root . --config $BUNDLE/docpipe.yaml --dry-run   # ПЕРВЫМ
-docpipe materialize $OUT --root . --config $BUNDLE/docpipe.yaml
-docpipe docs status  $OUT --root . --config $BUNDLE/docpipe.yaml
-docpipe docs owners  $OUT --config $BUNDLE/docpipe.yaml --lint          # `--root` не нужен
+docpipe materialize $OUT --root . --config $CFG --dry-run   # ПЕРВЫМ
+docpipe materialize $OUT --root . --config $CFG
+docpipe docs status  $OUT --root . --config $CFG
+docpipe docs owners  $OUT --config $CFG --lint          # `--root` не нужен
 ```
 
 `--templates` задавать не нужно: путь прописан в `docpipe.yaml` и указывает
@@ -229,6 +244,54 @@ docpipe docs owners  $OUT --config $BUNDLE/docpipe.yaml --lint          # `--roo
 Правка шаблонов — по `templates/README.md`. Одно правило оттуда стоит помнить
 здесь: подсказки в шаблонах пишутся **только** HTML-комментариями. Обычный текст
 в секции делает её непустой, и весь пайплайн сочтёт документ уже написанным.
+
+## Индекс связей: `graph` и реестр
+
+Отдельный артефакт рядом с манифестом. Ни шаг 1, ни шаг 2, ни бизнес-слой
+секцию `graph` не читают — ради этого индекс и собирается отдельно.
+
+```bash
+cd $CF_ROOT
+
+docpipe graph build --root . --config $CFG --manifest $OUT   # собрать индекс
+docpipe graph info   --config $CFG                           # паспорт: чем собран
+docpipe graph health --config $CFG                           # что не разрешилось
+docpipe graph report --config $CFG --out artifacts/entrypoints.md
+docpipe graph reaches "имя точки входа" --config $CFG
+docpipe graph affects --stdin --config $CFG < <(git diff --name-only)
+```
+
+**Движок разбора задаётся явно и не ищется в `PATH`.** Ключ `graph.engine_path`
+умолчания не имеет: запуск того, что нашлось, означает числа от другой версии,
+а по результату это не видно. Путь подставляет установщик по флагу `--engine`.
+
+Отказ у движка ровно один — **версия** (`--version` обязан дать `0.6.0`).
+Расхождение **чек-суммы** — предупреждение, а не отказ: бинарь не воспроизводим
+бит в бит, и на контуре стои́т своя сборка той же версии. Фактическая сумма
+уходит в паспорт индекса, `docpipe graph info` её печатает. Чтобы закрепить
+свою сборку и убрать предупреждение — впишите сумму в `graph.engine_sha256`.
+
+**`arch-registry.yaml` приезжает пустым, и это рабочее состояние.** Граф
+возьмёт корни из кода и напечатает «декларативных источников точек входа нет».
+Для АС CF это важнее, чем звучит: джобы, workflow и обработчики событий
+диспетчеризуются по данным из XML-реестров, и литерала конкретного workflow
+в C# не существует **структурно** — без реестра эти 45 точек входа граф
+не увидит вовсе.
+
+Заполняется разведкой — она едет вместе с инструментом:
+
+```bash
+docpipe recon --root $CF_ROOT --json recon.json --text recon.txt
+```
+
+Блоки 4 и 5 отчёта — «чем система заякорена» и «как языки говорят между собой».
+Подтверждённое переносится в `arch-registry.yaml` руками; скилл `recon` готовит
+черновик, но записи со `skill_proposed` боевой реестр не принимает. Причина
+не в вежливости: неверная догадка оттуда выходит уверенным неправильным ребром
+в ответе на вопрос, и отличить её от факта, извлечённого из XML, уже нельзя.
+
+Проверить реестр: `docpipe arch validate $BUNDLE/arch-registry.yaml`,
+не отстал ли от кода: `docpipe arch status $BUNDLE/arch-registry.yaml --root .`
 
 ## Что проверить именно на этом репозитории
 
@@ -271,10 +334,16 @@ grep -rl "Compile Include" --include=*.csproj .
 
 ## Почему `docs/**` исключён
 
-В `docpipe.yaml` есть `exclude: ["docs/**"]`, и убирать это нельзя: сам
-инструмент лежит внутри сканируемого репозитория (`docs/ml/docspipe`) вместе
-с окружением `.venv`. Без исключения обход заходил бы в тысячи чужих файлов,
-а когда добавится разбор `.py`, docpipe принялся бы документировать сам себя.
+В `docpipe.yaml` есть `exclude: ["docs/**"]`, и убирать это нельзя. Это дерево
+документации, а не исходники продукта, и внутри него лежит каталог настройки
+вместе с артефактами прогона: манифест, индекс графа, очередь шага 3. Разбирать
+их как исходники незачем, а когда добавится разбор `.py`, docpipe принялся бы
+документировать сам себя.
+
+Окружения `.venv` здесь больше нет — инструмент стоит на машине, — но каталог
+настройки никуда не делся, и `docs_scan_exclude` по-прежнему обязан его
+накрывать: обход **документов** иначе зайдёт в `templates/` и примет скелеты
+за написанные документы.
 
 Шаблон обязан заканчиваться на `/**`. Без этого он совпадёт только с самим
 каталогом, но не с файлами под ним, — и будет выглядеть работающим.

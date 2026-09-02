@@ -1,0 +1,132 @@
+# Оценочный набор на фикстурах репозитория (G18).
+#
+# Набор второго рода из приёмки: он идёт на репозитории, у которого нет
+# ни одной черты целевой системы, и потому проверяет правило «инструмент
+# настраивается на репозиторий, а не знает его наизусть». Индекс собирается
+# из `tests/fixtures/WildSolution` (бэкенд) и `tests/fixtures/WebWorkspace`
+# (фронт) — команда сборки записана в журнале рядом с числами.
+#
+# Вопрос без ожидания не принимается: он ничего не мерит, а в отчёте
+# выглядит как измерение. `refute` — то, чего в ответе быть не должно:
+# ответ, в который затесался чужой сервис, выглядит полнее правильного.
+#
+# Набор пополняется каждый раз, когда найден неверный ответ.
+
+questions:
+  - id: страница-достигает-контроллер
+    why: главный вопрос Вехи 4 — как связана страница с сервисом .NET
+    form: reaches
+    args:
+      root: "entry:page:models"
+    expect:
+      - "InnerDebtsController.InsertAsync"
+      - "InnerDebtService.insert"
+    refute:
+      # Страница `models` не должна тянуть за собой прогноз: это другой экран.
+      - "ForecastComponent"
+
+  - id: путь-от-страницы-до-бэкенда
+    why: шов обязан быть виден звеном пути, а не схлопнут в прямое ребро
+    form: path
+    args:
+      source: "entry:page:models"
+      target: "src/Wild.Api/Controllers/InnerDebtsController.cs#InnerDebtsController.InsertAsync"
+    expect:
+      - "crosses"
+      - "DebtState.save"
+
+  - id: приблизительное-имя-контроллера
+    why: вопрос с приблизительным именем — то, на чём ломается точный поиск
+    form: resolve
+    args:
+      query: "innerdebts"
+    expect:
+      - "InnerDebtsController"
+
+  - id: маршрут-как-запрос
+    why: маршрут — это то, что знает вызывающий, и по нему обязан находиться вход
+    form: resolve
+    args:
+      query: "api/ml/innerdebts/insert"
+    expect:
+      - "entry:http_endpoint:post api/ml/innerdebts/insert"
+
+  - id: влияние-правки-сервиса-фронта
+    why: основной сценарий в PR — список изменённых файлов на входе
+    form: affects
+    args:
+      keys:
+        - "src/app/inner-debt/services/inner-debt.service.ts"
+    expect:
+      - "entry:page:models"
+
+  - id: карточка-точки-входа
+    why: ответ обязан называть вид и источник, а не только имя
+    form: card
+    args:
+      node: "entry:page:models"
+    expect:
+      - "entry_point"
+      - "\"route\": \"models\""
+
+  - id: вопрос-по-русски
+    why: >-
+      запрос на русском обязан находить русский текст: человеческие названия
+      из реестра — единственный источник предметных слов там, где код
+      английский. Регистр кириллицы сворачивается на нашей стороне.
+    form: resolve
+    args:
+      query: "РАСЧЁТ риска"
+    expect:
+      - "entry:grid_service:riskcompute"
+
+  - id: таблица-по-человеческому-имени
+    why: имя таблицы в коде английское, а спрашивают о ней по-русски
+    form: resolve
+    args:
+      query: "цены"
+    expect:
+      - "data:prices"
+
+  # Вопросы ниже добавлены после того, как ответ на них оказался неверным
+  # (G18 п. 6). Каждый — не гипотеза, а починенная ошибка.
+
+  - id: питон-достигает-контроллер-через-шов
+    why: >-
+      между языками вызовов нет — есть литерал, известный обеим сторонам.
+      Маршрут в клиенте собран конкатенацией, статический поиск даёт ноль,
+      и до объявленного шва граф обрывался на границе языка молча.
+    form: path
+    args:
+      source: "clients/price_client.py#PriceClient.load"
+      target: "src/Wild.Api/Controllers/InnerDebtsController.cs#InnerDebtsController.StateByClientAsync"
+    expect:
+      - "seam:http_route:api/ml/innerdebts/state/byclient"
+      - "crosses"
+
+  - id: шов-называет-литерал-и-стороны
+    why: >-
+      ответ «дошёл до эндпоинта» без названного литерала не даёт зацепиться:
+      читателю нужна строка, по которой это произошло, и файл, где она
+      объявлена
+    form: card
+    args:
+      node: "seam:http_route:api/ml/innerdebts/state/byclient"
+    expect:
+      - "seam"
+      - "clients/price_client.py"
+
+  - id: правка-контроллера-задевает-питоновский-сервис
+    why: >-
+      главный вопрос ради шва: правя контроллер .NET, надо знать, что
+      сломается на другом языке. Первая редакция этого вопроса спрашивала
+      обратное — «что задевает правка клиента» — и была неверна: `affects`
+      называет точки входа, которые **доходят** до узла, а клиент стои́т
+      выше эндпоинта, а не ниже. Ответ «ноль» был верен, и вопрос мерил
+      не то, что нужно.
+    form: affects
+    args:
+      keys:
+        - "src/Wild.Api/Controllers/InnerDebtsController.cs#InnerDebtsController.StateByClientAsync"
+    expect:
+      - "Синхронизация цен"

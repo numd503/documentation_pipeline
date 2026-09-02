@@ -16,6 +16,7 @@ from typing import Any, Final, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from docpipe.documents import STATE_KEY, accepted_block
 from docpipe.materialize.template import Template, resolve_template
 from docpipe.model import DocNode, Manifest, SourceSpan
 from docpipe.web.absorb import reachable_from
@@ -229,7 +230,7 @@ def dump_front_matter(
     руками, и без сортировки перестановка двух строк вызывала бы перезапись.
     """
     mapping: dict[str, Any] = {"docpipe": docpipe.model_dump(mode="json", by_alias=True)}
-    mapping["docpipe_state"] = state if state is not None else {"accepted": None, "review": None}
+    mapping[STATE_KEY] = state if state is not None else accepted_block(None)
     for key in sorted(preserved or {}):
         mapping[key] = (preserved or {})[key]
 
