@@ -146,14 +146,14 @@ from docpipe.web.tree import run as run_web_scan
 
 app = typer.Typer(
     name="docpipe",
-    help="Построение структуры документации по исходному коду .NET.",
+    help="Структура документации по коду (.NET, Angular) и контроль её актуальности.",
     no_args_is_help=True,
 )
 
 
 @app.callback()
 def main() -> None:
-    """Построение структуры документации по исходному коду .NET.
+    """Структура документации по коду (.NET, Angular) и контроль её актуальности.
 
     Callback нужен, чтобы typer не схлопывал единственную команду в корневую:
     без него `docpipe version` разбирается как вызов корня с лишним аргументом.
@@ -176,7 +176,7 @@ SCHEMA_MODELS: Final[dict[str, tuple[type[BaseModel], str]]] = {
 @app.command()
 def schema(
     model: Annotated[
-        str, typer.Option("--model", help="Что описывать: doc-tree или worklist.")
+        str, typer.Option("--model", help="Что описывать: doc-tree, worklist или arch.")
     ] = "doc-tree",
     out: Annotated[
         Path | None,

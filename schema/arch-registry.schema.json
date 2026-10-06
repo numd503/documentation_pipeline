@@ -131,6 +131,7 @@
         "entry_kind": {
           "enum": [
             "workflow",
+            "workflow_step",
             "job",
             "event_handler",
             "http_endpoint",
@@ -149,9 +150,12 @@
           "type": "string"
         },
         "impl": {
-          "default": "",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
           "title": "Impl",
-          "type": "string"
+          "type": "array"
         },
         "key": {
           "minLength": 1,

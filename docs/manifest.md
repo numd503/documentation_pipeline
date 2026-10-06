@@ -34,6 +34,7 @@ artifacts/doc-tree.run.json   сидкар — всё про конкретны�
 | `partial` | заполнено только у прогона со `--scope` |
 | `modules[]` | карта проектов |
 | `nodes[]` | документы, которые предстоит создать |
+| `di_registrations[]`, `dispatch_handlers[]`, `dispatch_sends[]`, `table_literals[]`, `sql_usages[]`, `sql_objects[]` | факты для графа связей, не документы — см. [ниже](#факты-для-графа-связей) |
 
 ## Модуль — это проект
 
@@ -82,7 +83,7 @@ artifacts/doc-tree.run.json   сидкар — всё про конкретны�
 `materialize`, `docs status` и бизнес-слой работают от `Manifest` и про язык
 не знают. Различает их `modules[].lang`.
 
-У узлов фронта заполнены два поля, у узлов .NET пустые всегда:
+У узлов фронта заполнены четыре поля, у узлов .NET пустые всегда:
 
 | Поле | Что |
 |---|---|
@@ -105,7 +106,7 @@ artifacts/doc-tree.run.json   сидкар — всё про конкретны�
   "signature_hash": "sha256:0e29455f…",
   "impl_hash": "sha256:77af12c0…",
 
-  "doc_path": "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md",
+  "doc_path": "docs/modules/controllers/Sample.Pricing.Api/pricing-controller.md",
   "parent": "module:src/…/Sample.Pricing.Api.csproj",
   "module": "Sample.Pricing.Api",
   "domain": "pricing",
@@ -161,7 +162,9 @@ artifacts/doc-tree.run.json   сидкар — всё про конкретны�
 ### Состав `symbol`
 
 `fqn`, `name`, `type_kind` (`class` | `interface` | `struct` | `record` |
-`record_struct` | `enum`), `namespace`, `module`, `modifiers`,
+`record_struct` | `enum`, у фронта ещё `function` | `const` — экспортируемые
+функция и константа: так объявлены функциональные guard'ы, интерцепторы
+и таблицы роутов), `namespace`, `module`, `modifiers`,
 `type_parameters`, `attributes`, `xml_doc`, `ambiguous`, `impl_hash`, плюс три важных:
 
 - **`sources[]`** — где лежит код. **Это список**: у `partial`-типа файлов
@@ -181,6 +184,32 @@ artifacts/doc-tree.run.json   сидкар — всё про конкретны�
 - `dependencies[]` — `target` (FQN), `via` (`constructor` | `di` | `inheritance`),
   `confidence` (`high` | `medium` | `low`);
 - `related[]` — `target`, `relation` (`implements` | `implemented_by` | `uses`).
+
+## Факты для графа связей
+
+Шесть списков верхнего уровня — не документы, а извлечённые факты о коде.
+Добыты они тем же проходом, что и эндпоинты, и лежат в манифесте, чтобы граф
+связей не разбирал те же файлы второй раз. Заполняет их только `scan` (.NET);
+у манифеста фронта они пусты всегда.
+
+| Поле | Что | Пусто, когда |
+|---|---|---|
+| `di_registrations[]` | регистрации в контейнере: `service_type`, `impl_type`, `lifetime`, `confidence`, `file`, `line`. `confidence` ниже `high` — тип взят из лямбды или выражения | стандартной формы нет, а свои обёртки не названы в `di_methods` |
+| `dispatch_handlers[]` | объявленная диспетчеризация по типу: `handler_fqn` обслуживает `request_type` через `interface` | в `dispatch_interfaces` не назван ни один интерфейс — имена у каждого репозитория свои |
+| `dispatch_sends[]` | места отправки: где в теле члена создан объект запроса, у которого есть обработчик | нет обработчиков: без них `new` ничего не значит |
+| `table_literals[]` | имя таблицы из литерала (`ToTable("FOO", "dbo")`) и сущность получателя. Пустое `name` — метод позвали, а имя пришло из константы; это состояние, а не пропуск | |
+| `sql_usages[]` | SQL-литерал в коде: какие имена он читает, пишет и зовёт; `dynamic` — строка собирается и исполняется, имени до исполнения нет | |
+| `sql_objects[]` | объекты из исходников `.sql` — процедуры, функции, представления — с теми же `reads`, `writes`, `calls` | процедуры живут только в базе — нормальный исход |
+
+Хранятся имена, а не текст запроса: мегабайты SQL сделали бы манифест
+нечитаемым в ревью ради данных, которые всё равно используются как имена.
+
+**Читает эти поля только граф связей** — `docpipe/graph/build.py` (связывание
+через DI, диспетчеризация, SQL) и `docpipe/graph/data.py` (узлы данных).
+`materialize`, `docs status` и бизнес-слой их не открывают, в хэши узлов они
+не входят — устаревание документа от них сейчас не зависит. Граф кода здесь —
+средство, а не цель (см. [`purpose.md`](../purpose.md)): из него берутся связи
+между документами и ответы разведке.
 
 ## Три разных «пути»
 

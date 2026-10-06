@@ -10,10 +10,16 @@
 «что делать с этим документом» — **писать**, **проверить** или **не трогать**.
 
 ```
-исходники .NET ──▶ шаг 1: docpipe scan        ──▶ doc-tree.json
-               ──▶ шаг 2: docpipe materialize ──▶ docs/**/*.md
-               ──▶ шаг 3: агент               ──▶ наполненные документы
+исходники .NET    ──▶ шаг 1: docpipe scan        ──▶ doc-tree.json
+исходники Angular ──▶ шаг 1: docpipe web scan    ──▶ doc-tree.web.json
+                  ──▶ шаг 2: docpipe materialize ──▶ docs/**/*.md
+                  ──▶ шаг 3: агент               ──▶ наполненные документы
 ```
+
+Шаг 2 работает от манифеста и про язык не знает: манифесты .NET и фронта
+обрабатываются одной машиной, каждый своим прогоном (`materialize`
+на `doc-tree.json`, затем на `doc-tree.web.json`). Разбор Python
+в дерево документации планируется (см. [`purpose.md`](../purpose.md)).
 
 **Чего не делает:** не рендерит ничего, не строит индексы и карты «для людей»,
 не вызывает LLM, не пишет текст документации и **никогда ничего не удаляет**.
@@ -33,7 +39,7 @@ docpipe:                       ← проекция манифеста, пере
   template_ref: templates/controller.md
   example_ref: templates/examples/controller.md
   module: Sample.Pricing.Api
-  module_csproj: src/Sample.Pricing.Api/Sample.Pricing.Api.csproj
+  module_project_file: src/Sample.Pricing.Api/Sample.Pricing.Api.csproj
   domain: Sample.Pricing.Api
   team: null
   signature_hash: sha256:0e29455f…
@@ -271,7 +277,7 @@ docpipe worklist artifacts/doc-tree.json --out /tmp/q.json --limit 50
   "schema_version": "1.1",
   "docs_root": "docs",
   "modules_root": "docs/modules",
-  "ruleset_version": "dotnet/1.0",
+  "ruleset_version": "2026-07-30.1",
   "manifest_sha256": "sha256:9f2c…",
   "manifest_partial": false,
   "needs_materialize": false,
@@ -364,11 +370,13 @@ cp ownership.example.yaml ownership.yaml
 docpipe docs owners MANIFEST --ownership ownership.yaml --lint
 ```
 
-В поставке для АС CF он уже лежит заготовкой, и путь к нему прописан
-в `docpipe.yaml`, — но подхватывается только при `--config`:
+Установщик (`deploy/install.sh --config-dir КАТАЛОГ`, см.
+[`deploy/README.md`](../deploy/README.md)) кладёт его заготовкой в каталог
+настройки, и путь к нему уже прописан в `docpipe.yaml` рядом, — но подхватывается
+он только при `--config`:
 
 ```bash
-docpipe docs owners MANIFEST --config docs/ml/docspipe/cashflow-docspipe/docpipe.yaml --lint
+docpipe docs owners MANIFEST --config КАТАЛОГ/docpipe.yaml --lint
 ```
 
 Правила раздают команду по **узлу**, а не по модулю: шэренный `.csproj` иначе
@@ -452,16 +460,20 @@ find docs -type d -empty -delete
 
 ## Шаблоны
 
-Семь скелетов в `templates/`, по одному на значение `template` из секции `dotnet`;
-их имена сверяются с набором правил тестом. Четыре заполненных образца
-в `templates/examples/` показывают агенту глубину и стиль. Подробности и правила
-правки — в [`templates/README.md`](../../templates/README.md).
+Скелеты в `templates/` — по одному на значение `template` из секций `dotnet`
+и `web` файла правил, плюс `page`, `api-service` и `feature`, которых правилом
+не объявишь (повышения шага `web` и раздел из `pages.yaml`). Каталог общий
+для языков: вид сущности — не свойство языка, и `service.md` обслуживает
+и .NET, и фронт. Имена сверяются с набором правил тестом. Четыре заполненных
+образца в `templates/examples/` (только для скелетов .NET) показывают агенту
+глубину и стиль. Подробности и правила правки — в
+[`templates/README.md`](../templates/README.md).
 
-Восьмой скелет — `default.md`. Он применяется к узлу, для которого скелета под его
-`template` нет, и в наборе правил не объявляется. Подстановка видима: прогон печатает
-раздел «Своего скелета нет, применён `default`» с перечнем видов и числом узлов.
-Без `default.md` неизвестный `template` остаётся блокирующей ошибкой — не записывается
-ничего. `template_ref` такого документа указывает на `templates/default.md`, то есть
+Отдельно лежит базовый скелет `default.md`. Он применяется к узлу, для которого
+скелета под его `template` нет, и в наборе правил не объявляется. Подстановка
+видима: прогон печатает раздел «Своего скелета нет, применён `default`» с перечнем
+видов и числом узлов. Без `default.md` неизвестный `template` остаётся блокирующей
+ошибкой — не записывается ничего. `template_ref` такого документа указывает на `templates/default.md`, то есть
 на применённый скелет, а `example_ref` пуст.
 
 Каталог задаётся ключом `templates` в `docpipe.yaml` или флагом `--templates`;

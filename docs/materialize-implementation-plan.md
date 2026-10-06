@@ -513,8 +513,8 @@ docpipe/
 ├── ruleset.py                 НОВЫЙ: движок правил, вынесен из classify.py
 └── materialize/
     ├── __init__.py
-    ├── model.py               pydantic-модели шага 2
-    ├── document.py            разбор и сборка документа (обратимо)
+    ├── model.py               pydantic-модели шага 2        → documents/model.py (G17 п. 5)
+    ├── document.py            разбор и сборка документа     → documents/zones.py (G17 п. 5)
     ├── template.py            загрузка templates/*.md, подстановка {{…}}
     ├── build.py               сборка front matter и генерируемого блока, кросс-ссылки
     ├── ownership.py           правила владения
@@ -550,7 +550,7 @@ M13 (после M09, самостоятельна)
 |---|---|---|
 | M01 | `docpipe/ruleset.py`: вынос движка правил из `classify.py` | — |
 | M02 | `impl_hash` в шаге 1 | — |
-| M03 | `materialize/document.py`: обратимый разбор документа | — |
+| M03 | `materialize/document.py` (теперь `documents/zones.py`): обратимый разбор документа | — |
 | M04 | `templates/**` + 4 образца + `materialize/template.py` | — |
 | M05 | `materialize/build.py`: front matter, генерируемый блок, кросс-ссылки | M03, M04 |
 | M06 | `materialize/ownership.py` + `ownership.example.yaml` | M01 |
@@ -688,6 +688,14 @@ uv run pytest tests/test_resolve_fqn.py tests/test_tree.py tests/test_cache.py t
 **Цель:** разобрать `.md` на front matter и сегменты так, чтобы сборка возвращала исходные байты.
 
 **Создать:** `docpipe/materialize/{__init__,model,document}.py`, `tests/test_materialize_document.py`
+
+> **Перенесено (G17 п. 5, 20.08.2026).** `materialize/document.py` теперь
+> `docpipe/documents/zones.py`, `materialize/model.py` — `docpipe/documents/model.py`;
+> рядом `documents/write.py` с формой блока приёмки. Разбор зон и приёмка нужны
+> и шагу 2, и бизнес-слою, а пока они лежали в `materialize`, бизнес-слой зависел
+> от шага 2 как от модуля (журнал, «G17 п. 5 — механизм приёмки выделен»). Тест
+> остался `tests/test_materialize_document.py`. Ниже имена — исходные, по ним
+> задача и выполнялась.
 
 **Зачем.** Обратимость — фундамент идемпотентности и сохранности авторского текста.
 Всё остальное в шаге 2 стоит на этом инварианте.
@@ -1860,4 +1868,6 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv
   [`business-implementation-plan.md`](business-implementation-plan.md). Он переиспользует
   `document.py`, `template.py`, `plan.py` и `apply.py` целиком, поэтому единственное, что
   требуется от шага 2, — не привязывать их к .NET;
-- парсеры Python и TypeScript.
+- парсеры Python и TypeScript — *TypeScript пришёл шагом `web`, шаг 2 для него
+  сделан в F14 ([`frontend-implementation-plan.md`](frontend-implementation-plan.md));
+  Python возвращён в цель ревизией 06.10 ([`purpose.md`](../purpose.md))*.

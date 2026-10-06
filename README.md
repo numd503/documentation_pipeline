@@ -1,97 +1,103 @@
 # documentation_pipeline
 
-Пайплайн построения, обновления и верификации технической документации проекта **АС CF**
-силами AI-агентов.
+`docpipe` строит по коду **детерминированную структуру документации** и **следит
+за тем, когда документ нужно обновить**. Языки — .NET (C#), Angular (TypeScript)
+и Python, плюс связки между ними. В перспективе — граф связей документации:
+документы связаны, потому что связан код под ними.
 
-Сам проект АС CF — собственность компании и в этот репозиторий не переносится. Здесь живут
-инструменты пайплайна, его проектная документация и тестовые данные.
+Цель, её границы и история её смены — в [`purpose.md`](purpose.md) (ревизия
+06.10.2026). Первый целевой репозиторий — **АС CF**, проект финансового
+моделирования компании; сам он в этот репозиторий не переносится. Здесь живут
+инструмент, его проектная документация и тестовые данные.
 
 ## Задача
 
-АС CF — большой проект финансового моделирования на .NET, Python и Angular, с распределённым
-кластером вычислений на Ignite (GridGain). Требуется документация, которая:
+Требуется документация, которая:
 
 - генерируется из кода, а не пишется вручную;
 - имеет понятную структуру;
 - **описывает**, а не пересказывает код;
-- содержит ссылки на конкретные места реализации.
-
-Полная постановка — в [`purpose.md`](purpose.md).
+- содержит ссылки на конкретные места реализации;
+- **не отстаёт от кода молча**: про каждый документ известно, соответствует ли
+  он коду и что именно изменилось, если нет.
 
 ## Пайплайн
 
 ```
-                     ┌─────────────────────────────────────┐
-   исходники .NET ──▶│  Шаг 1: docpipe scan (детермин.)    │──▶ doc-tree.json
-                     └─────────────────────────────────────┘         │
-                                                                     ▼
-                     ┌─────────────────────────────────────┐
-                     │  Шаг 2: materialize (идемпотентно)  │──▶ docs/**/*.md (скелеты)
-                     └─────────────────────────────────────┘         │
-                                                                     ▼
-                     ┌─────────────────────────────────────┐
-                     │  Шаг 3: агент + tools (недетермин.) │──▶ наполненные документы
-                     └─────────────────────────────────────┘
+   исходники .NET ─────┐
+   исходники Angular ──┼─▶ Шаг 1: scan, web scan        ──▶ doc-tree.json, doc-tree.web.json
+   исходники Python ───┘   (детерминированно;
+                           Python — в плане)                           │
+                                                                       ▼
+                           Шаг 2: materialize, docs status ──▶ docs/**/*.md и статус каждого
+                           (идемпотентно)                              │
+                                                                       ▼
+                           docpipe worklist               ──▶ что написать или обновить и почему
+                                                                       │
+                                                                       ▼
+                           Шаг 3: агент (вне цели,        ──▶ наполненные документы
+                           вне репозитория)
 ```
 
 Граница между детерминированным и недетерминированным проходит по одной линии:
 **классификация — правила, описание — агент.** Решение «этот класс — контроллер» принимает
-правило из YAML. Решение «что этот контроллер делает» принимает агент.
+правило из YAML. Решение «что этот контроллер делает» принимает агент. Что устарело,
+решает код: у каждого документа хранится принятый хэш контракта и реализации,
+и расхождение с манифестом видно в `docs status` без чтения текста.
 
-Отдельно от этих трёх шагов стоит **бизнес-слой**: процессы и сущности, которые из кода
-не выводятся и пишутся аналитиками.
+**Связи между документами** сейчас строятся на один шаг: разделы «Зависимости»
+и «Связи» ссылаются на документы зависимостей, документ страницы фронта собирает
+то, что страница зовёт, и устаревает вместе с поглощёнными узлами. Чего нет —
+связь фронт↔бэк в самих документах и распространение устаревания по связям;
+это направление «граф связей документации» в [`docs/backlog.md`](docs/backlog.md).
 
-```
-   реестры платформы ──▶ якоря (точки входа) ──┐
-                                               ├──▶ бизнес-документы ◀──▶ технические
-   каталог аналитика ──▶ бизнес-процессы ──────┘        (связь по якорю, не по коду)
-```
+### Вокруг ядра
 
-Связь между слоями держится на одном инварианте: **техника ссылается на бизнес, бизнес
-о технике не знает.** Якорем служит не имя класса, а строка, которую обязан знать
-вызывающий, — имя сервиса кластера, заголовок джоба, идентификатор workflow, маршрут.
-Поэтому рефакторинг, не меняющий бизнес-смысла, связь не рвёт. Подробно —
-в [`docs/business-implementation-plan.md`](docs/business-implementation-plan.md).
-
-Третья линия — **разведка и граф связей**: разобраться в незнакомом репозитории
-от первого взгляда до ответа на вопрос «что затронет эта правка». Разведка
-(`docpipe recon`) говорит, чем собран репозиторий и что читать первым; реестр
-(`docpipe arch`) сводит точки входа, швы и данные в один нормализованный файл;
-индекс (`docpipe graph`) отвечает, что достигает точка входа, какие точки входа
-затронет изменение и как связаны две сущности. Разбор тел и вызовы внутри
-языков даёт сторонний движок `codebase-memory-mcp` **0.6.0** — зовётся
-подпроцессом, весь контакт с ним заперт в одном модуле-мосте. Точки входа,
-связывание по DI, швы между языками, данные и достижимость — наши. Подробно —
+**Разведка и граф кода — средство.** Разведка (`docpipe recon`) говорит, чем
+собран незнакомый репозиторий, где реестры и что читать первым, — это первый
+шаг настройки `docpipe` на нём, и выполнять её должен уметь агент. Реестр
+(`docpipe arch`) сводит точки входа, швы и данные в один нормализованный файл.
+Индекс (`docpipe graph`) даёт связи, которых нет в манифесте: связывание по DI,
+швы через кластер и между языками, данные, достижимость. Разбор тел берётся
+у стороннего движка `codebase-memory-mcp` **0.6.0** — зовётся подпроцессом,
+весь контакт заперт в одном модуле-мосте. Граф развивается как источник связей
+для документов и для разведки, а не как самостоятельный продукт. Подробно —
 в [`docs/graph-implementation-plan.md`](docs/graph-implementation-plan.md).
+
+**Бизнес-слой** — процессы и сущности, которые из кода не выводятся и пишутся
+аналитиками. Работает, в цель ревизии 06.10 не включён. Связь со слоем держится
+на одном инварианте: **техника ссылается на бизнес, бизнес о технике не знает**,
+а якорем служит строка, которую обязан знать вызывающий (имя сервиса кластера,
+заголовок джоба, маршрут), а не имя класса. Подробно —
+в [`docs/business-implementation-plan.md`](docs/business-implementation-plan.md).
 
 ## Состояние
 
-**Шаги 1 и 2, бизнес-слой, шаг `web` и граф связей закончены.** Документируются
-.NET (C#) и фронтенд на Angular (TypeScript); Python и SQL-процедуры входят
-в граф связей.
+| | Что | Состояние |
+|---|---|---|
+| **Структура: .NET** | `docpipe scan`, T00–T26: манифест `doc-tree.json` по исходникам | ✅ |
+| **Структура: Angular** | `docpipe web scan/link/pages`, F01–F19: манифест фронта той же схемы, связь фронт↔бэк, страницы | ✅ |
+| **Страница как единица документации** | P01–P16: граф вызовов, `pages.yaml`, документ-агрегат, разделы без маршрута — [справочник](docs/pages.md) | ✅ |
+| **Актуальность** | `docpipe materialize`, `docs status/explain/accept`, `worklist`, M01–M13 | ✅ |
+| **Структура: Python** | свой разбор `.py`; аналитика и задачи PY01–PY17 — в ветке `feat/python-parser` | ⬜ блокирует разведка АС CF |
+| **Связи документации** | связь фронт↔бэк в документах, распространение устаревания, граф документов | ⬜ плана нет, [направления](docs/backlog.md) |
+| **Разведка и настройка агентом** | `docpipe recon` и скилл есть; настройку целиком агент пока не выполняет | ⬜ |
+| Граф кода (средство) | R01–R04, G00–G18: `docpipe recon`, `arch`, `graph`, MCP-сервер — [таблица по фичам](docs/graph-implementation-plan.md) | ✅ механизм; замеры на АС CF — долг |
+| Бизнес-слой (вне цели) | B01–B11: `docpipe anchors`, `docpipe business` | ✅ |
+| Настройка на АС CF | семь фронтов, Python, боевые замеры — каждый пункт сведён к команде | ⏳ [долг](docs/backlog.md) |
+| Шаг 3 (вне цели) | наполнение документов агентом; очередь ему готова (`docpipe worklist`) | — |
 
-| | Что |
-|---|---|
-| ✅ **Шаг 1**, T00–T26 | `docpipe scan`: детерминированный манифест `doc-tree.json` по исходникам |
-| ✅ **Шаг 2**, M01–M13 | `docpipe materialize` и `docpipe docs`: документы, зоны, статусы, приёмка |
-| ✅ **Бизнес-слой**, B01–B11 | `docpipe anchors` и `docpipe business`: точки входа, каталог процессов, `business_hash` |
-| ✅ **Шаг `web`**, F01–F19 | `docpipe web scan`, `docpipe web link` и `docpipe web pages`: манифест фронта той же схемы, связь фронт↔бэк и список страниц с обоснованием |
-| ✅ **Страница как единица документации**, P01–P16 | граф вызовов, `pages.yaml`, документ-агрегат, разделы без маршрута — [справочник](docs/pages.md) |
-| ✅ **Разведка и граф связей**, R01–R04, G00–G18 | `docpipe recon`, `docpipe arch`, `docpipe graph`: разведка, нормализованный реестр, индекс связей, отчёты, MCP-сервер — [таблица состояния по каждой фиче](docs/graph-implementation-plan.md) |
-| ✅ вызовы из шаблона | `(click)="save()"` и `service.list() \| async` в `.html` — G14: выражения из биндингов, сверка с объявленными именами вместо грамматики шаблонов |
-| ⏳ Настройка на АС CF | механизм под всем готов; G05c, G13, G16, G17 и G18 ждут замеров и значений с боевого репозитория и списка идентификаторов от команды OpenSpec. Каждый пункт — команда и два-три числа: таблица «что делать в первый день доступа» в [плане графа](docs/graph-implementation-plan.md) |
-| ⬜ Шаг 3 | наполнение документов агентом. Очередь ему готова (`docpipe worklist`), сам исполнитель — вне этого репозитория |
-| ⬜ T05b | связанные исходники `<Compile Include>` — отложена, см. [findings-stress.md](docs/findings-stress.md) |
-
-2000 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
+2000 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md),
+всё несделанное одним списком — в [`docs/backlog.md`](docs/backlog.md).
 
 Что уже работает сквозным прогоном:
 
 ```bash
 # техническая документация
+docpipe config check --config docpipe.yaml --root .     # во что разрешается каждый путь
 docpipe scan --root . --out artifacts/doc-tree.json     # что документировать
 docpipe materialize artifacts/doc-tree.json --root .    # создать документы
-docpipe docs status artifacts/doc-tree.json --root .    # что делать агенту
+docpipe docs status artifacts/doc-tree.json --root .    # что устарело и что делать
 docpipe worklist    artifacts/doc-tree.json --root .    # то же файлом, для внешнего исполнителя
 docpipe docs accept artifacts/doc-tree.json PATH        # зафиксировать соответствие коду
 
@@ -102,26 +108,25 @@ docpipe web pages artifacts/doc-tree.web.json --not-pages                     # 
 docpipe web scan --root . --pages pages.yaml                                  # ручной состав страниц
 docpipe materialize artifacts/doc-tree.web.json --root .                     # документы фронта
 
-# бизнес-документация
+# разведка и граф кода
+docpipe recon --root . --json recon.json --text recon.txt       # чем собран репозиторий, что читать первым
+docpipe arch validate arch-registry.yaml                        # нормализованный реестр
+docpipe graph build --root . --config docpipe.yaml              # индекс связей; нужен ключ graph.engine_path
+docpipe graph report --out artifacts/entrypoints.md             # таблица точек входа
+git diff --name-only main | docpipe graph affects --stdin       # какие точки входа затронет правка
+docpipe graph health                                            # что не разрешилось и сколько
+docpipe graph serve                                             # то же агенту: MCP-сервер на stdio
+
+# бизнес-документация (вне цели)
 docpipe anchors list artifacts/doc-tree.json --registries registries.yaml   # какие есть точки входа
 docpipe business new bp.valuation.eod --title "Переоценка"                  # завести процесс
 docpipe business build  artifacts/doc-tree.json --config docpipe.yaml       # собрать связь с кодом
 docpipe business lint   artifacts/doc-tree.json --config docpipe.yaml       # что сломано и сколько ещё писать
 docpipe business status artifacts/doc-tree.json --config docpipe.yaml       # что разошлось с реализацией
-
-# разведка и граф связей
-docpipe recon --root . --json recon.json --text recon.txt       # чем собран репозиторий, что читать первым
-docpipe arch validate arch-registry.yaml                        # нормализованный реестр
-docpipe graph build --root . --config docpipe.yaml              # индекс связей; нужен ключ graph.engine_path
-docpipe graph report --out artifacts/entrypoints.md             # таблица точек входа
-docpipe graph reaches "имя точки входа"                         # что она достигает
-git diff --name-only main | docpipe graph affects --stdin       # какие точки входа затронет правка
-docpipe graph health                                            # что не разрешилось и сколько
-docpipe graph serve                                             # то же агенту: MCP-сервер на stdio
 ```
 
 Что лежит в манифесте фронта и в отчёте связи — [`docs/web.md`](docs/web.md).
-Сквозная проверка всего механизма с числами — [`docs/manual-run.md`](docs/manual-run.md).
+Сквозная проверка механизма графа и разведки с числами — [`docs/manual-run.md`](docs/manual-run.md).
 
 Как вести бизнес-документацию — [`docs/business-layer.md`](docs/business-layer.md)
 и [`docs/entry-guide.md`](docs/entry-guide.md),
@@ -237,6 +242,7 @@ jq '.nodes[].doc_path' /tmp/dt.json
 
 | Команда | Зачем |
 |---|---|
+| `config check --config FILE --root PATH` | во что разрешается каждый путь конфигурации и что из этого есть; первое, что зовут после установки |
 | `symbols --root PATH` | какие именно символы остались без решения; инструмент отладки правил |
 | `materialize MANIFEST` | создать или обновить документы по манифесту |
 | `docs status MANIFEST` | что делать с каждым документом; отчёт человеку и CI |
@@ -247,15 +253,20 @@ jq '.nodes[].doc_path' /tmp/dt.json
 | `docs owners MANIFEST` | владельцы документов и диагностика правил владения |
 | `anchors list MANIFEST` | инвентаризация точек входа по реестрам платформы |
 | `anchors explain MANIFEST REF` | всё, что известно про один якорь: реестр, реализация, узел |
+| `anchors which MANIFEST QUERY` | какими якорями вызывается этот тип |
 | `business new ID --title …` | скелет бизнес-документа по выведенному из идентификатора пути |
 | `business build MANIFEST` | пересобрать генерируемые блоки бизнес-документов |
 | `business status MANIFEST` | что разошлось с реализацией; вход агента |
-| `business lint MANIFEST` | восемь проверок каталога и отчёт «сколько ещё писать» |
+| `business lint MANIFEST` | двенадцать проверок каталога и отчёт «сколько ещё писать» |
 | `business accept MANIFEST` | зафиксировать соответствие документа реализации |
 | `diff OLD NEW [--format text\|json]` | что изменилось между манифестами |
 | `validate MANIFEST` | схема плюс четыре инварианта; код 1 при нарушении |
 | `stats MANIFEST` | состав готового дерева |
-| `schema [--model doc-tree\|worklist]` | JSON Schema из моделей |
+| `schema [--model doc-tree\|worklist\|arch]` | JSON Schema из моделей |
+| `web scan/link/pages` | шаг `web`: манифест фронта, связь с бэком, страницы — [`docs/web.md`](docs/web.md) |
+| `recon --root PATH` | разведка незнакомого репозитория |
+| `arch validate/status/records/snapshot` | нормализованный реестр — [`docs/arch-registry.md`](docs/arch-registry.md) |
+| `graph …` | индекс связей: `build`, `info`, `health`, `report`, `entrypoints`, `reaches`, `affects`, `path`, `resolve`, `coverage`, `pr-check`, `eval`, `serve` |
 
 Кэш включён по умолчанию и создаётся **внутри сканируемого репозитория**:
 `<root>/.docpipe/cache/parse.sqlite`. Каталог стоит добавить в его `.gitignore`
@@ -413,7 +424,7 @@ Sbt.Cashflow.Grid.…AutoConclusionService.StandardProcessingFactory
 публичные члены, путь. Дальше — либо правило классификации, либо отсев с причиной.
 
 Фильтры: `--state` (по умолчанию `undecided`, ещё `not_documented`, `documented`,
-`not_enrolled`, `interface_covered`, `any`), `--module`, `--namespace`, `--rule`,
+`not_enrolled`, `interface_covered`, `page_covered`, `any`), `--module`, `--namespace`, `--rule`,
 `--kind`, `--limit`, `--format json`.
 
 И обратная проверка — что новое правило поймало то, что задумано:
@@ -849,10 +860,11 @@ tests/fixtures/
 
 | Документ | О чём |
 |---|---|
-| [`purpose.md`](purpose.md) | постановка задачи |
+| [`purpose.md`](purpose.md) | **цель проекта: что входит, что нет и почему (ревизия 06.10)** |
+| [`docs/backlog.md`](docs/backlog.md) | **всё несделанное одним списком: в цели, средство, вне цели** |
 | [`CASHFLOW.md`](CASHFLOW.md) | **что проверить и решить при настройке на репозитории АС CF** |
 | [`docs/parser-architecture.md`](docs/parser-architecture.md) | архитектура шага 1: решения и их обоснование |
-| [`docs/parser-implementation-plan.md`](docs/parser-implementation-plan.md) | исполнительный план шага 1 на 24 задачи с критериями приёмки |
+| [`docs/parser-implementation-plan.md`](docs/parser-implementation-plan.md) | исполнительный план шага 1: T00–T26 с критериями приёмки |
 | [`docs/materialize-implementation-plan.md`](docs/materialize-implementation-plan.md) | исполнительный план шага 2: формат документа, зоны, статусы, приёмка |
 | [`docs/business-implementation-plan.md`](docs/business-implementation-plan.md) | исполнительный план бизнес-слоя: якоря, реестры, каталог, `business_hash` |
 | [`docs/manifest.md`](docs/manifest.md) | справочник по манифесту: что лежит в `doc-tree.json` |
@@ -867,11 +879,11 @@ tests/fixtures/
 | [`docs/frontend-implementation-plan.md`](docs/frontend-implementation-plan.md) | исполнительный план шага `web`: F01–F19 |
 | [`docs/web.md`](docs/web.md) | справочник по выходу шага `web` и настройка на новом репозитории |
 | [`docs/pages-implementation-plan.md`](docs/pages-implementation-plan.md), [`docs/pages.md`](docs/pages.md) | страница как единица документации: план P01–P16 и справочник |
-| [`docs/graph-implementation-plan.md`](docs/graph-implementation-plan.md) | **разведка и граф связей: план-карта R01–R04, G00–G18, таблица состояния и «первый день доступа»** |
+| [`docs/graph-implementation-plan.md`](docs/graph-implementation-plan.md) | разведка и граф кода (средство): план-карта R01–R04, G00–G18, таблица состояния и «первый день доступа» |
 | [`docs/arch-registry.md`](docs/arch-registry.md) | справочник по `arch-registry.yaml`: виды записей, нормализация ключей, снимок против адаптера |
 | [`docs/module-review.md`](docs/module-review.md) | ревизия модулей пакета: категория, потребитель и признак смерти каждого |
 | [`docs/findings-codebase-memory.md`](docs/findings-codebase-memory.md) | разведка движка разбора: замеры, что берём, что остаётся нам |
-| [`docs/manual-run.md`](docs/manual-run.md) | **ручной прогон механизма на открытых репозиториях с числами** |
+| [`docs/manual-run.md`](docs/manual-run.md) | ручной прогон механизма графа и разведки на открытых репозиториях с числами |
 | [`docs/configuration.md`](docs/configuration.md) | `docpipe.yaml`: какой ключ кем читается и относительно чего разрешается |
 | [`deploy/README.md`](deploy/README.md), [`deploy/OFFLINE.md`](deploy/OFFLINE.md) | раскладка на целевой машине и сборка окружения в закрытом контуре |
 | [`docs/findings-cashflow-registries.md`](docs/findings-cashflow-registries.md) | **разведка АС CF: где объявлены точки входа и что ломает их разбор** |
@@ -892,6 +904,9 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv
 
 ## Проверочные репозитории
 
-`examples/` содержит склонированные .NET-проекты для проверки на реальном коде
-(`eshoponweb`, `abp`, `opentelemetry-dotnet`, `semantic-kernel`). Каталог в репозиторий **не входит** — тесты обязаны быть
-самодостаточными и опираться только на фикстуры.
+Проверка на реальном коде идёт на склонированных открытых проектах: .NET
+(`eshoponweb`, `abp`, `opentelemetry-dotnet`, `semantic-kernel`) и с фронтом
+или несколькими языками (`squidex`, `wexflow`, `ever-traduora`). Они лежат вне
+клона — `~/docspipe-examples/examples`, на них ссылается
+[`docs/manual-run.md`](docs/manual-run.md). В репозиторий они **не входят**:
+тесты обязаны быть самодостаточными и опираться только на фикстуры.

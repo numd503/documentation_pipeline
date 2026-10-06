@@ -29,6 +29,9 @@ uv run docpipe web scan --root . --out artifacts/doc-tree.web.json
 # настройка набора правил: счётчики и срезы, ничего не пишет
 uv run docpipe web scan --root . --stats
 
+# с ручным составом страниц; в CI — с отказом на протухшее правило
+uv run docpipe web scan --root . --pages pages.yaml --fail-on-stale-overrides
+
 # связь двух манифестов
 uv run docpipe web link artifacts/doc-tree.json artifacts/doc-tree.web.json \
     --out artifacts/web-link.json
@@ -61,6 +64,8 @@ web:
   rules: "rules/rules.yaml"                  # файл правил; читается его секция `web`
   out: "artifacts/doc-tree.web.json"
   link_out: "artifacts/web-link.json"
+  pages: ""                                  # ручной состав страниц; флаг --pages важнее
+  modules_dir: ""                            # ветка документов фронта внутри docs_root
   url_rewrite: []
   registry_calls: []
 ```
@@ -68,6 +73,10 @@ web:
 `out` и `link_out` — относительно **текущего каталога**, как `out` шага 1,
 а не относительно `--root`. На репозитории, где инструмент лежит внутри
 дерева документации, умолчания напишут артефакты в корень продукта.
+
+`pages` и `modules_dir` относятся к странице как единице документации:
+что пишется в `pages.yaml` и почему пустой `modules_dir` значит «та же
+ветка, что у бэкенда», — в [`pages.md`](pages.md).
 
 **2. Секция `web` в `rules.yaml`: что считать страницей, компонентом, сервисом.**
 
@@ -120,9 +129,11 @@ docpipe web scan --root . --fail-on-undecided   # закрепить в CI
 
 ## Узел манифеста
 
-Всё как на шаге 1, плюс два поля:
+Всё как на шаге 1, плюс четыре поля: `routes`, `web_calls`, `uses`,
+`absorbed_by`. У узлов .NET они пусты всегда.
 
 ```jsonc
+// страница: маршрут и то, что она зовёт
 {
   "id": "type:src#src/app/routes/models/quiz/quiz.component.QuizComponent`0",
   "kind": "page",
@@ -131,11 +142,23 @@ docpipe web scan --root . --fail-on-undecided   # закрепить в CI
     { "path": "models/loader/quiz", "component": "…QuizComponent", "route_unresolved": false,
       "source": "src/app/routesPath/models.ts", "table": "modelsPath" }
   ],
+  "uses": [
+    { "target": "src/app/shared/services/items.service.ItemsService",
+      "member": "dictionaries", "via": "load", "action": "" }
+  ],
+  "web_calls": [],
+  "absorbed_by": ""
+}
+// сервис: здесь вызов и записан
+{
+  "id": "type:src#src/app/shared/services/items.service.ItemsService`0",
+  "kind": "api-service",
   "web_calls": [
-    { "file": "src/app/shared/services/items.service.ts", "line": 31,
+    { "file": "src/app/shared/services/items.service.ts", "line": 31, "member": "dictionaries",
       "key": { "http_method": "GET", "route": "api/items", "discriminator": "dictionaries" },
       "confidence": "high", "via_action": null }
-  ]
+  ],
+  "absorbed_by": "type:src#src/app/routes/models/quiz/quiz.component.QuizComponent`0"
 }
 ```
 
@@ -145,11 +168,17 @@ docpipe web scan --root . --fail-on-undecided   # закрепить в CI
 - **`namespace` — каталог файла.** Пространств имён в языке нет; по этому полю
   матчатся правила `namespace_regex`;
 - **вызовы лежат на узле того файла, где записаны.** Связь строит сервис,
-  а не страница;
+  а не страница. `member` — член, в теле которого записан вызов (пустая
+  строка — вне члена); `via_action` заполнен, только когда вызов записан
+  прямо в обработчике `@Action`;
 - **шаблон `.html` входит в `sources` и в `impl_hash`**, стили `.scss` — нет;
 - **`uses` — граф вызовов**: «член этого узла зовёт вот этот член другого».
   Не то же, что `dependencies`: внедрить сервис и звать его метод — разные
-  утверждения, и разница между ними на боевом модуле была вчетверо;
+  утверждения, и разница между ними на боевом модуле была вчетверо.
+  `via` — член источника; у обращения из разметки это `<шаблон>`.
+  `action` — тип экшена NGXS, если до цели дошли цепочкой
+  `dispatch(new X())` → `@Action(X)`: тип живёт на ребре, а не на вызове,
+  потому что тот же метод сервиса зовут и обработчик, и компонент напрямую;
 - **`absorbed_by`** — идентификатор страницы, внутри документа которой узел
   описывается. Пустая строка: у узла свой документ;
 - **`source` и `table` называют, откуда взялся маршрут** — файл с таблицей
@@ -158,7 +187,8 @@ docpipe web scan --root . --fail-on-undecided   # закрепить в CI
 
 ## Виды
 
-Девять видов заводятся секцией `web` файла правил, два — фактами:
+Одиннадцать видов заводятся секцией `web` файла правил, два — фактами,
+один — объявлением человека:
 
 | Вид | Чем определяется |
 |---|---|
@@ -168,11 +198,14 @@ docpipe web scan --root . --fail-on-undecided   # закрепить в CI
 | `action`, `routes`, `dto` | путь и вид объявления |
 | **`page`** | компонент, до которого можно дойти по таблице роутов |
 | **`api-service`** | сервис, который делает HTTP-вызовы |
+| **`feature`** | раздел без маршрута, объявленный в `pages.yaml` (`features:`) |
 
-Последние два — повышения: их выдаёт не правило, а факт. Таблица роутов
-собирается межфайлово, вызовы разбираются отдельно, и в символе нет ни того,
-ни другого. `matched_rules` при повышении не меняется — там записано,
-что сработало.
+`page` и `api-service` — повышения: их выдаёт не правило, а факт. Таблица
+роутов собирается межфайлово, вызовы разбираются отдельно, и в символе нет
+ни того, ни другого. `matched_rules` при повышении не меняется — там записано,
+что сработало. `feature` — синтетический узел без символа: границей служит
+каталог, а узлы внутри описываются в его документе; подробно — в
+[`pages.md`](pages.md).
 
 ## Список страниц и обоснование
 
@@ -180,7 +213,7 @@ docpipe web scan --root . --fail-on-undecided   # закрепить в CI
 > документ — описана отдельно: [`pages.md`](pages.md). Здесь только выход шага.
 
 ```bash
-docpipe web pages artifacts/doc-tree.web.json [--depth 2] [--not-pages]
+docpipe web pages artifacts/doc-tree.web.json [--depth 3] [--not-pages]
                   [--route ПОДСТРОКА] [--module ПОДСТРОКА] [--format text|json|csv]
 ```
 
@@ -193,13 +226,18 @@ docpipe web pages artifacts/doc-tree.web.json [--depth 2] [--not-pages]
   почему страница  web.component -> component, затем повышение по таблице роутов (1)
   маршруты         /models/loader/quiz   <- src/app/routesPath/models.ts : modelsPath
   документ         docs/modules/pages/tr-p/quiz-component.md
-  состав           членов 2, внешний шаблон нет
-  тянет            ItemsService (api-service, шаг 1)
-  вызовы           GET /api/items   <- через ItemsService, шаг 1
+  состав           членов 4, внешний шаблон нет
+  зовёт            AuditService (api-service, шаг 1): log
+                   ItemsService (api-service, шаг 1): dictionaries
+  эндпоинтов       2 зовёт, 2 достижимо по внедрению (вторая величина — инвентарь, а не состав страницы)
+                   GET /api/items   <- через ItemsService.dictionaries, шаг 1
+                   POST /integration/log/auditj   <- через AuditService.log, шаг 1
 ```
 
-- **вызовы вычисляются обходом**, а не читаются полем: они лежат на узле
-  сервиса, где и записаны. Отсюда `--depth` и посредник у каждой строки;
+- **вызовы вычисляются обходом графа вызовов** (`uses`), а не читаются полем:
+  они лежат на узле сервиса, где и записаны. Отсюда `--depth` (умолчание 3)
+  и посредник у каждой строки; до цели, достигнутой диспатчем, дописывается
+  тип экшена;
 - **`--not-pages`** печатает обратную сторону — компоненты, страницами
   не ставшие, с причиной. Вопрос «почему этого экрана нет в списке» задаётся
   так же часто, как прямой;
@@ -211,8 +249,9 @@ docpipe web pages artifacts/doc-tree.web.json [--depth 2] [--not-pages]
 | Заметка | Что значит |
 |---|---|
 | маршрут пустой | обычно layout с `<router-outlet>`, а не экран |
-| признаков функционала не найдено | ни членов, ни шаблона, ни вызовов |
-| вызовов не найдено, но функционал есть | поход за данными идёт через `dispatch(new Action())` → стейт → сервис, а он по конструкторным зависимостям не виден |
+| признаков функционала не найдено | ни членов, ни внешнего шаблона, ни вызовов |
+| страница не ходит за данными сама | члены есть, а ни прямого вызова сервиса, ни диспатча нет: обычно данные приходят через `@Input` от родителя либо из платформенного грида |
+| цепочка вызовов обрывается на символах без решения | ребро ведёт в символ, про который решение не принято, и список эндпоинтов короче правды; чинится настройкой правил, а не глубиной |
 | маршрут не восстановлен ни у одной записи | вид `page` есть, а якорь поставить нельзя: в покрытие страниц такая не попадёт |
 
 **Ноль страниц при непустом манифесте — почти всегда неопознанная таблица.**
@@ -223,11 +262,11 @@ docpipe web pages artifacts/doc-tree.web.json [--depth 2] [--not-pages]
 ## Отчёт связи
 
 ```
-Вызовов фронта: 15, эндпоинтов бэкенда: 10.
+Вызовов фронта: 18, эндпоинтов бэкенда: 10.
 
       6  связь найдена точно
       3  почти совпало: ключи различаются только числом {}
-      6  вызов без эндпоинта
+      9  вызов без эндпоинта
       3  эндпоинт без вызывающего
       1  ОДИН КЛЮЧ У ДВУХ УЗЛОВ БЭКЕНДА
 ```
@@ -281,9 +320,8 @@ uv run docpipe web link A.json B.json --fail-on duplicate_endpoints
 
 | Не делает | Почему |
 |---|---|
-| не разбирает `.html` как язык | отдельная грамматика; шаблон участвует хэшем, и этого хватает для статусов |
+| не разбирает `.html` грамматикой | грамматики шаблонов нет; выражения из `{{ … }}` и биндингов (`(click)=`, `[value]=`, `*ngIf=`) достаются регулярными выражениями и сверяются с объявленными членами (`web/templates.py`): обращение к члену зависимости становится ребром `uses` с `via: "<шаблон>"`, к своему члену — только счётчиком, неопознанное имя не становится ничем |
 | не выводит логику интерцепторов | это интерпретатор TypeScript; преобразование задаётся `web.url_rewrite` |
-| не собирает цепочку NGXS | `dispatch(new X(…))` не разбирается, `WebCall.via_action` всегда пуст |
 | не поддерживает `this.http.request(method, url)` | первый аргумент там не URL, и обработка «через раз» дала бы маршрут `get` |
 | не параллелит разбор | 1301 файл разбирается за 1,4 с; пул процессов стоил бы дороже |
 
@@ -296,9 +334,13 @@ uv run docpipe web link A.json B.json --fail-on duplicate_endpoints
   "duration_seconds": 1.4,
   "docpipe_version": "0.1.0",
   "stats": {
-    "files": 27, "modules": 2, "symbols": 30, "nodes": 27,
-    "calls_resolved": 15, "calls_unresolved": 1, "registry_unresolved": 0,
-    "routes": 6, "routes_unresolved": 1
+    "files": 28, "modules": 2, "symbols": 34, "nodes": 30,
+    "calls_resolved": 18, "calls_unresolved": 1, "registry_unresolved": 0,
+    "routes": 6, "routes_unresolved": 1,
+    "usages": 12, "usages_external": 22, "usages_unresolved": 11,
+    "dispatches": 2, "selects": 2, "actions_without_handler": 1,
+    "templates": 7, "template_usages": 1, "template_own_members": 4, "template_external": 0,
+    "absorbed": 5, "features": 0, "pages_added": 0, "pages_removed": 0, "overrides_stale": 0
   },
   "parse_error_files": []
 }

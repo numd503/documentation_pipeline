@@ -13,7 +13,7 @@
 Проверить это можно командой:
 
 ```bash
-docpipe web pages artifacts/doc-tree.web.json [--depth 2] [--not-pages]
+docpipe web pages artifacts/doc-tree.web.json [--depth 3] [--not-pages]
                   [--route ПОДСТРОКА] [--module ПОДСТРОКА] [--format text|json|csv]
 ```
 
@@ -23,9 +23,11 @@ docpipe web pages artifacts/doc-tree.web.json [--depth 2] [--not-pages]
   маршруты         /models/loader/quiz   <- src/app/routesPath/models.ts : modelsPath
   документ         docs/modules/pages/tr-p/quiz-component.md
   состав           членов 4, внешний шаблон нет
-  зовёт            ItemsService (api-service, шаг 1): dictionaries
-  эндпоинтов       2 зовёт, 2 достижимо по внедрению
+  зовёт            AuditService (api-service, шаг 1): log
+                   ItemsService (api-service, шаг 1): dictionaries
+  эндпоинтов       2 зовёт, 2 достижимо по внедрению (вторая величина — инвентарь, а не состав страницы)
                    GET /api/items   <- через ItemsService.dictionaries, шаг 1
+                   POST /integration/log/auditj   <- через AuditService.log, шаг 1
 ```
 
 ## Две величины эндпоинтов, и почему их две
@@ -57,9 +59,12 @@ docpipe symbols --root . --lang ts --state undecided  # что именно
 полная цепочка боевого фронта. Замер на АС CF: на глубине 2 страницы зовут
 42 эндпоинта, на глубине 4 — 49, и почти вся разница набирается третьим шагом.
 
-**Чего разбор не видит:** вызовы из шаблона. `(click)="save()"` и
-`service.ready$ | async` живут в `.html`, грамматика Angular-шаблонов в дерево
-не входит. Отчёт говорит об этом словами там, где вызовов не нашлось.
+**Вызовы из шаблона.** `(click)="save()"` и `service.list() | async` живут
+в `.html`; грамматики Angular-шаблонов нет, поэтому выражения из интерполяций
+и биндингов достаются регулярными выражениями и сверяются с объявленными
+членами (G14, `web/templates.py`). Обращение к члену зависимости становится
+ребром графа с источником `<шаблон>` и участвует в обходе наравне с вызовами
+из `.ts`; обращение к своему члену и неопознанное имя ребром не становятся.
 
 ## Ручной состав: `pages.yaml`
 
