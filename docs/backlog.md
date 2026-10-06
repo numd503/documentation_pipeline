@@ -84,6 +84,7 @@
 | покрытие XML-doc на АС CF — замерить до планирования шага 3 | `findings-eshoponweb.md` |
 | бизнес-документы в очереди `worklist` | `materialize-implementation-plan.md`, «Отложено» |
 | `business-map.yaml`, `contracts[]` и `shape_hash` DTO, аннотации `<business ref>` | `business-implementation-plan.md`, «Отложено намеренно» |
+| `graph coverage` не сопоставляет страницы: идентичность корня-страницы собирается из имени «Заголовок (маршрут)», а якорь `page` — из маршрута, поэтому каждая страница числится непокрытой, а каждый якорь страницы — висящим. `business lint` (`pages-uncovered`) считает верно | ревизия 06.10, `docpipe/graph/coverage.py`, `_entry_identity` |
 | неизвестное о реестрах АС CF: активная версия workflow, полный перечень реестров, источник Kafka, расхождение с БД | `findings-cashflow-registries.md`, «Что осталось неизвестным» |
 
 ## Закрыто
