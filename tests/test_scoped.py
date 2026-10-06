@@ -6,6 +6,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from docpipe.cli import app
+from docpipe.config import DocpipeConfig
 from docpipe.discovery import normalize_scope
 from docpipe.emit import scan
 from docpipe.merge import merge_manifests, node_in_scope
@@ -227,6 +228,117 @@ def test_merge_sorts_and_marks_partial(sample_solution: Path, tmp_path: Path) ->
     assert [n.id for n in merged.nodes] == sorted(n.id for n in merged.nodes)
     assert merged.partial is not None
     assert merged.partial.scope == sorted([COMMON, PRICING])
+
+
+# --------------------------------------------------------------------------------------
+# Факты для графа: регистрации, диспетчеризация, таблицы, SQL
+# --------------------------------------------------------------------------------------
+
+FACTS = (
+    "di_registrations",
+    "dispatch_handlers",
+    "dispatch_sends",
+    "table_literals",
+    "sql_usages",
+    "sql_objects",
+)
+
+_CSPROJ = '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+_CSPROJ += "<TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>"
+
+
+def _facts_solution(tmp_path: Path) -> Path:
+    """Два модуля, и в каждом — все шесть видов фактов.
+
+    `SampleSolution` расширять нельзя (на его количества завязаны критерии
+    T04–T20), а ни SQL, ни диспетчеризации в нём нет. Запрос `GetB` отправляет
+    модуль A, а обслуживает модуль B: отправка по одну сторону границы
+    скоупа, обработчик по другую.
+    """
+    root = tmp_path / "Facts"
+    for name, other in (("A", "B"), ("B", "A")):
+        module = root / "src" / name
+        (module / "db").mkdir(parents=True)
+        (module / f"{name}.csproj").write_text(_CSPROJ, encoding="utf-8")
+        (module / "Program.cs").write_text(
+            f"""
+            var builder = WebApplication.CreateBuilder(args);
+            builder.Services.AddScoped<I{name}Service, {name}Service>();
+            """,
+            encoding="utf-8",
+        )
+        (module / "Code.cs").write_text(
+            f"""
+            namespace {name};
+            public class Get{name} {{ }}
+            public class Get{name}Handler : IRequestHandler<Get{name}, string> {{
+                public string Handle(Get{name} request) => "";
+            }}
+            public class {name}Controller {{
+                public void Get() {{ _mediator.Send(new Get{other}()); }}
+            }}
+            public class {name}Context {{
+                protected void OnModelCreating(ModelBuilder b) {{
+                    b.Entity<{name}Row>().ToTable("{name}_ROWS");
+                }}
+                public void Touch() {{
+                    Database.ExecuteSqlRaw("UPDATE {name}_ROWS SET x = 1");
+                }}
+            }}
+            """,
+            encoding="utf-8",
+        )
+        (module / "db" / f"{name}Proc.sql").write_text(
+            f"CREATE PROCEDURE dbo.{name}Proc AS SELECT * FROM {name}_ROWS",
+            encoding="utf-8",
+        )
+    return root
+
+
+def test_scoped_run_keeps_every_fact_as_full_run(tmp_path: Path) -> None:
+    """Скоуп-прогон обязан давать те же факты, что и полный, — и без дублей.
+
+    Слияние переносило только регистрации и складывало их со списком нового
+    манифеста целиком. А новый манифест собран по всем файлам, включая взятые
+    из кэша вне скоупа, — регистрации вне скоупа удваивались, остальные пять
+    списков пропадали. `graph build` по такому манифесту молча терял
+    диспетчеризацию, таблицы и SQL.
+    """
+    root = _facts_solution(tmp_path)
+    config = DocpipeConfig(dispatch_interfaces=["IRequestHandler"])
+    cache_dir = tmp_path / "cache"
+    full, _ = scan(root, config=config, cache_dir=cache_dir)
+
+    # Конструкции действительно извлеклись — иначе сравнение пустого с пустым
+    # прошло бы при любом слиянии.
+    for field in FACTS:
+        assert {item.file.split("/")[1] for item in getattr(full, field)} == {"A", "B"}, field
+
+    for scope in ("src/A", "src/B"):
+        scoped, _ = scan(root, config=config, cache_dir=cache_dir, scope=[scope], previous=full)
+        for field in FACTS:
+            assert getattr(scoped, field) == getattr(full, field), (scope, field)
+
+
+def test_scoped_run_with_cold_cache_keeps_facts_outside_scope(tmp_path: Path) -> None:
+    """При холодном кэше факты вне скоупа знает только старый манифест.
+
+    Брать новый список целиком нельзя: файлов вне скоупа в нём нет, а исходники
+    SQL обход вне скоупа не находит вовсе.
+    """
+    root = _facts_solution(tmp_path)
+    config = DocpipeConfig(dispatch_interfaces=["IRequestHandler"])
+    full, _ = scan(root, config=config)
+
+    scoped, _ = scan(
+        root, config=config, cache_dir=tmp_path / "empty", scope=["src/A"], previous=full
+    )
+
+    for field in FACTS:
+        outside = [item for item in getattr(full, field) if item.file.startswith("src/B/")]
+        assert outside, field
+        kept = [item for item in getattr(scoped, field) if item.file.startswith("src/B/")]
+        assert kept == outside, field
 
 
 # --------------------------------------------------------------------------------------

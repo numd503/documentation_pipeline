@@ -304,3 +304,36 @@ def test_uncovered_feature_is_counted_and_does_not_fail_the_run(scanned: WebScan
         "inner-debt"
     ]
     assert "features-uncovered" in INFORMATIONAL
+
+
+def test_feature_anchor_loads_through_the_catalog_and_covers_the_feature(
+    scanned: WebScanResult, tmp_path: Path
+) -> None:
+    """Якорь раздела проходит загрузку каталога, а не только `resolve()`.
+
+    Остальные тесты раздела зовут `resolve()` с готовым `Anchor` и пустым
+    каталогом — загрузку они не проходят. А `ANCHOR_KINDS` якоря `feature`
+    не знал: документ с ним каталог отвергал как «неизвестный вид якоря»,
+    и находку `features-uncovered` закрыть было нельзя ничем.
+    """
+    from docpipe.business.catalog import load_catalog
+    from docpipe.business.lint import lint
+
+    doc = tmp_path / "business" / "processes" / "debt" / "inner-debt.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text(
+        "---\ndocpipe:\n  schema: business/1\n  id: bp.debt.inner-debt\n"
+        "  kind: process\n  title: Внутренний долг\n"
+        "  entry:\n  - kind: feature\n    ref: inner-debt\n---\n\n# Внутренний долг\n",
+        encoding="utf-8",
+    )
+    catalog = load_catalog(tmp_path, "business")
+
+    assert catalog.errors == []
+    assert [anchor.kind for anchor in catalog.docs[0].anchors] == ["feature"]
+
+    manifest = scanned.manifest
+    empty = Manifest(ruleset_version="x", parser=manifest.parser)
+    report = lint(catalog, [], build_context([], empty, web=manifest), "business")
+
+    assert not [item for item in report.findings if item.check == "features-uncovered"]

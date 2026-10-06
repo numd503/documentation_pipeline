@@ -39,7 +39,7 @@ sha256sum ~/.local/bin/codebase-memory-mcp          # 3a3b6491…fb39e6c7
 uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv run pytest -q
 ```
 
-Ожидается `2000 passed`. Если `codebase-memory-mcp` показал не 0.6.0 —
+Ожидается `2003 passed`. Если `codebase-memory-mcp` показал не 0.6.0 —
 дальше идти нельзя: числа будут от другого движка, и это вскроется
 на боевом контуре, где чинить дороже всего.
 

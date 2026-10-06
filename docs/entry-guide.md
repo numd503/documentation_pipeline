@@ -88,6 +88,7 @@ docpipe business lint   artifacts/doc-tree.json --config docpipe.yaml --root .
 | `kafka` | имя топика | — | — |
 | `http` | маршрут | — | — |
 | `page` | маршрут страницы фронта (`/models/loader/quiz`, **не** класс компонента) | — | — |
+| `feature` | имя раздела фронта из `pages.yaml` (`inner-debt`, **не** каталог) | — | — |
 | `type` | FQN | — | — |
 
 `table` — единственный вид, где слово в `anchors` и слово в документе не
