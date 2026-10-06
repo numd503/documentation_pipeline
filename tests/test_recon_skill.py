@@ -10,13 +10,20 @@
 """
 
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 from docpipe.arch import check_document
 
-SKILL = Path(".claude/skills/recon/SKILL.md")
+# Агент на целевой машине — gigacode, форк qwen code: проектные скиллы он ищет
+# в `.qwen/skills/<имя>/SKILL.md`. Claude Code, которым ведётся разработка,
+# видит тот же файл через ссылку `.claude/skills/recon`.
+SKILL = Path(".qwen/skills/recon/SKILL.md")
+CLAUDE_LINK = Path(".claude/skills/recon")
 
 
 def frontmatter_and_body() -> tuple[dict, str]:
@@ -94,3 +101,26 @@ def test_skill_points_at_the_recon_script_and_the_format_reference() -> None:
     assert "docs/arch-registry.md" in body
     assert Path("docpipe/recon.py").is_file()
     assert Path("docs/arch-registry.md").is_file()
+
+
+def test_claude_sees_the_same_skill_through_a_link() -> None:
+    """Ссылка, а не копия: две копии одной инструкции разъедутся молча."""
+    assert CLAUDE_LINK.is_symlink()
+    assert (CLAUDE_LINK / "SKILL.md").resolve() == SKILL.resolve()
+
+
+def test_skill_reaches_a_fresh_clone() -> None:
+    """Скилл обязан быть в git, а не только на машине разработчика.
+
+    Строка `.claude/` в `.gitignore` закрывала его целиком: R02 числился
+    сделанным, а в свежем клоне скилла не было, и этот файл тестов падал.
+    Проверка идёт по правилам игнорирования, а не по индексу.
+    """
+    if shutil.which("git") is None or not Path(".git").exists():
+        pytest.skip("нужен git-клон")
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", str(SKILL), str(CLAUDE_LINK)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.split() == []

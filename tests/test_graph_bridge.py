@@ -17,7 +17,16 @@ from pathlib import Path
 import pytest
 
 from docpipe.graph import build, logical_hash, project
-from docpipe.graph.engine import EXPECTED_VERSION, SKIPPED_DIRECTORIES, Engine, EngineError
+from docpipe.graph import engine as engine_module
+from docpipe.graph.engine import (
+    EXPECTED_VERSION,
+    PROJECT_CONFIG,
+    SKIPPED_DIRECTORIES,
+    Engine,
+    EngineError,
+    engine_environment,
+)
+from docpipe.hashing import content_hash
 
 ENGINE_PATH = Path(
     os.environ.get("DOCPIPE_ENGINE_PATH", "~/.local/bin/codebase-memory-mcp")
@@ -341,3 +350,110 @@ def test_engine_skips_whole_directories_without_saying_so(tmp_path: Path) -> Non
     assert indexed == {"src", "clients"}, indexed
     for directory in SKIPPED_DIRECTORIES:
         assert directory not in indexed
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Окружение движка: что пользователь не должен менять в разборе
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_engine_environment_drops_what_changes_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Переменные движка и путь к его пользовательскому конфигу — скрытый вход.
+
+    `CBM_SEMANTIC_ENABLED` в профиле одного человека включила бы у него
+    семантические рёбра, а `XDG_CONFIG_HOME` привёл бы движок к его личному
+    сопоставлению расширений. Индекс бы различался, а по индексу этого не видно.
+    """
+    monkeypatch.setenv("CBM_SEMANTIC_ENABLED", "1")
+    monkeypatch.setenv("CBM_SEMANTIC_THRESHOLD", "0.1")
+    monkeypatch.setenv("CBM_CACHE_DIR", "/home/someone/.cache/codebase-memory-mcp")
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/home/someone/.config")
+    cache = tmp_path / "cache"
+
+    env = engine_environment(cache)
+
+    assert sorted(key for key in env if key.startswith("CBM_")) == ["CBM_CACHE_DIR"]
+    assert env["CBM_CACHE_DIR"] == str(cache)
+    assert Path(env["XDG_CONFIG_HOME"]).is_relative_to(cache)
+    assert not Path(env["XDG_CONFIG_HOME"]).exists()
+    # Остальное окружение проходит как есть: PATH нужен движку для git.
+    assert env["PATH"] == os.environ["PATH"]
+
+
+def _repo_with_foreign_extension(root: Path) -> Path:
+    """Репозиторий с файлом, который движок разбирает только по чужому конфигу."""
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "hidden.foo").write_text(
+        "class Hidden:\n    def run(self):\n        return 1\n", encoding="utf-8"
+    )
+    (root / "src" / "seen.py").write_text("class Seen:\n    pass\n", encoding="utf-8")
+    return root
+
+
+_FOO_IS_PYTHON = '{"extra_extensions": {".foo": "python"}}\n'
+
+
+def _classes(engine: Engine, project: str) -> set[str]:
+    return {row[0] for row in engine.query(project, "MATCH (n:Class) RETURN n.name")}
+
+
+@engine_required
+def test_user_engine_config_does_not_reach_the_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Контрактный тест: движок читает пользовательский конфиг, мост — глушит.
+
+    Первая половина фиксирует поведение чужого кода: если следующая версия
+    перестанет читать `~/.config/codebase-memory-mcp/config.json`, это упадёт
+    здесь, и глушение можно будет пересмотреть. Вторая — что мост его глушит.
+    """
+    repo = _repo_with_foreign_extension(tmp_path / "repo")
+    user_config = tmp_path / "xdg"
+    (user_config / "codebase-memory-mcp").mkdir(parents=True)
+    (user_config / "codebase-memory-mcp" / "config.json").write_text(
+        _FOO_IS_PYTHON, encoding="utf-8"
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(user_config))
+
+    # Без глушения: окружение пользователя как есть.
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            engine_module,
+            "engine_environment",
+            lambda cache: {**os.environ, "CBM_CACHE_DIR": str(cache)},
+        )
+        raw = Engine(binary=ENGINE_PATH, cache_dir=tmp_path / "raw-cache")
+        assert _classes(raw, raw.index(repo).project) == {"Seen", "Hidden"}
+
+    bridged = Engine(binary=ENGINE_PATH, cache_dir=tmp_path / "cache")
+    assert _classes(bridged, bridged.index(repo).project) == {"Seen"}
+
+
+@engine_required
+def test_project_engine_config_is_kept_and_recorded(tmp_path: Path) -> None:
+    """Конфиг движка в корне репозитория — часть репозитория, и он не глушится.
+
+    Решать за автора репозитория нельзя, но и молча принять нельзя: разбор
+    с ним идёт не по умолчанию. Поэтому предупреждение сейчас и сумма
+    в паспорте — для того, кто читает индекс позже.
+    """
+    plain = _repo_with_foreign_extension(tmp_path / "plain")
+    warnings: list[str] = []
+    result = build(
+        Engine(binary=ENGINE_PATH, cache_dir=tmp_path / "c1"), plain, warn=warnings.append
+    )
+    assert result.meta.engine_project_config == ""
+    assert not any(PROJECT_CONFIG in message for message in warnings)
+
+    configured = _repo_with_foreign_extension(tmp_path / "configured")
+    (configured / PROJECT_CONFIG).write_text(_FOO_IS_PYTHON, encoding="utf-8")
+    engine = Engine(binary=ENGINE_PATH, cache_dir=tmp_path / "c2")
+    result = build(engine, configured, warn=warnings.append)
+
+    assert _classes(engine, result.run.project) == {"Seen", "Hidden"}
+    assert result.meta.engine_project_config == content_hash(
+        (configured / PROJECT_CONFIG).read_bytes()
+    )
+    assert any(PROJECT_CONFIG in message for message in warnings)

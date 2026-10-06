@@ -9169,3 +9169,64 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe  → 
     docpipe version → 0.1.0; `uv cache dir` из корня клона и из подкаталога —
     тот же <клон>/.uv-cache
 ```
+
+## Движок без пользовательского контекста; скилл разведки в git
+
+**Изменено:** `docpipe/graph/engine.py` (`engine_environment`, `project_config`),
+`docpipe/graph/build.py`, `docpipe/graph/model.py` (`engine_project_config`
+в паспорте), `docpipe/graph/store.py`, `docpipe/cli.py` (`graph info`),
+`tests/test_graph_bridge.py` (+3), `tests/test_recon_skill.py` (+2), `.gitignore`,
+`CLAUDE.md`, `docs/graph-implementation-plan.md`, `deploy/README.md`.
+**Перенесено:** `.claude/skills/recon/SKILL.md` → `.qwen/skills/recon/SKILL.md`,
+на старом месте — ссылка.
+
+**Движок читал пользовательский контекст, и это меняло разбор.** Мост передавал
+движку окружение пользователя целиком и переопределял только `CBM_CACHE_DIR`.
+По исходникам 0.6.0 движок при этом читает:
+
+- `$XDG_CONFIG_HOME/codebase-memory-mcp/config.json` (без переменной —
+  `~/.config/…`): `extra_extensions`, какие ещё расширения разбирать и каким
+  языком. Замерено: файл `src/hidden.foo` с классом внутри при
+  `{".foo": "python"}` в этом конфиге даёт узел `Hidden`, без него — нет;
+- `CBM_SEMANTIC_ENABLED` и `CBM_SEMANTIC_THRESHOLD`: семантические рёбра
+  и их порог;
+- `<корень>/.codebase-memory.json` — проектный двойник первого, он побеждает.
+
+Один репозиторий у двух людей разобрался бы по-разному, а индекс этого
+не показывает. Теперь `engine_environment` убирает все `CBM_*` и уводит
+`XDG_CONFIG_HOME` в несуществующий путь внутри кэша прогона. `HOME` не трогается:
+движок зовёт git для истории (режимы `moderate` и `full`; в `fast` проход
+пропускается — `pass.skip … fast_mode`), и `~/.gitconfig` с `safe.directory`
+обязан читаться как прежде. Теряется только `~/.config/git/config`.
+
+Проектный конфиг не глушится: он часть репозитория, и решать за его автора
+нельзя. Но молча принять его тоже нельзя — разбор с ним идёт не по умолчанию.
+Поэтому предупреждение отдельным каналом при сборке и сумма файла в паспорте
+(`engine_project_config`, печатает `graph info`). Поколение индекса считается
+по узлам и рёбрам, новое поле паспорта его не меняет.
+
+Контрактный тест держит обе половины: без глушения движок 0.6.0 читает
+пользовательский конфиг (если следующая версия перестанет, глушение можно
+пересмотреть), с мостом — нет. Без подмены `XDG_CONFIG_HOME` он падает.
+
+**Скилл разведки не попадал в git ни разу.** `git ls-files .claude` пуст:
+строка `.claude/` в `.gitignore` закрывала каталог целиком. R02 числился
+сделанным, `test_recon_skill.py` проходил на машине разработчика и падал бы
+в свежем клоне, а на целевую машину скилл не доезжал вовсе. Ловушка та же,
+что с `templates/examples/` выше.
+
+Положен он туда, где его ищет агент контура: там gigacode — форк qwen code,
+и проектные скиллы у него — `.qwen/skills/<имя>/SKILL.md` с тем же
+front matter (`name`, `description`), что у Claude Code. Claude Code, которым
+ведётся разработка, видит тот же файл через ссылку `.claude/skills/recon`.
+Копии нет намеренно. `.gitignore` теперь `/.claude/*` с `!/.claude/skills/`:
+`settings.local.json` и `worktrees/` по-прежнему вне git.
+
+```
+uv run pytest -q  → 1997 passed  (+5 тестов)
+uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe  → чисто
+```
+
+Попутно сработал страж Р13 (`test_engine_vocabulary_is_confined_to_the_bridge`):
+первая редакция подписи в `graph info` называла файл по имени, и имя движка
+вышло за мост. Имя файла знает только мост (`PROJECT_CONFIG`), подпись — общая.

@@ -2537,6 +2537,8 @@ def graph_info(
     # кто читает индекс позже.
     if meta.engine_checksum:
         typer.echo(f"  чек-сумма разборщика: {meta.engine_checksum}")
+    if meta.engine_project_config:
+        typer.echo(f"  конфиг разборщика из корня репозитория: {meta.engine_project_config}")
     for name, number in sorted(meta.counts.items()):
         typer.echo(f"  {name}: {number}")
     if meta.report:
