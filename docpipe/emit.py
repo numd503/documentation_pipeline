@@ -28,7 +28,16 @@ from docpipe.dotnet.facts import SQL_METHODS
 from docpipe.dotnet.parser import parse_source
 from docpipe.dotnet.resolve import build_symbol_index, compute_closures
 from docpipe.hashing import content_hash, stable_json_dumps
-from docpipe.merge import merge_manifests, node_in_scope
+from docpipe.merge import (
+    handler_order,
+    merge_manifests,
+    node_in_scope,
+    registration_order,
+    send_order,
+    sql_object_order,
+    sql_usage_order,
+    table_order,
+)
 from docpipe.model import (
     DispatchDeclaration,
     DispatchSend,
@@ -259,10 +268,7 @@ def collect_dispatch(
                     line=source.start if source else 0,
                 )
             )
-    return sorted(
-        found,
-        key=lambda item: (item.file, item.line, item.handler_fqn, item.request_type),
-    )
+    return sorted(found, key=handler_order)
 
 
 def split_type_arguments(text: str) -> list[str]:
@@ -319,7 +325,7 @@ def collect_sends(
                     line=construction.line,
                 )
             )
-    return sorted(found, key=lambda item: (item.file, item.line, item.request_type))
+    return sorted(found, key=send_order)
 
 
 def collect_sql_usages(
@@ -351,7 +357,7 @@ def collect_sql_usages(
                     dynamic=facts.dynamic,
                 )
             )
-    return sorted(found, key=lambda item: (item.file, item.line))
+    return sorted(found, key=sql_usage_order)
 
 
 def collect_sql_objects(root: Path, files: list[str]) -> list[SqlObject]:
@@ -382,7 +388,7 @@ def collect_sql_objects(root: Path, files: list[str]) -> list[SqlObject]:
                     dynamic=facts.dynamic,
                 )
             )
-    return sorted(found, key=lambda item: (item.file, item.name))
+    return sorted(found, key=sql_object_order)
 
 
 def collect_tables(
@@ -409,7 +415,7 @@ def collect_tables(
                     line=call.line,
                 )
             )
-    return sorted(found, key=lambda item: (item.file, item.line, item.method, item.name))
+    return sorted(found, key=table_order)
 
 
 def run(
@@ -496,10 +502,7 @@ def run(
         sql_objects=collect_sql_objects(root, found.sql_files),
         # Явная сортировка, а не порядок обхода: список идёт в манифест,
         # а манифест обязан быть байт-в-байт воспроизводимым.
-        di_registrations=sorted(
-            registrations,
-            key=lambda item: (item.file, item.line, item.service_type, item.impl_type or ""),
-        ),
+        di_registrations=sorted(registrations, key=registration_order),
     )
 
     if scope is not None:

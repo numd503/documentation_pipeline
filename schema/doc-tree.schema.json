@@ -64,6 +64,140 @@
       "title": "Dependency",
       "type": "object"
     },
+    "DiRegistration": {
+      "additionalProperties": false,
+      "description": "Регистрация в контейнере: `services.AddScoped<IFoo, Foo>()`.\n\n`confidence` ниже `high` означает, что тип извлечён из лямбды или выражения\nи может быть неточным. Динамические регистрации (сканирование сборок)\nсинтаксически не видны и сюда не попадают вовсе.",
+      "properties": {
+        "confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "impl_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Impl Type"
+        },
+        "lifetime": {
+          "enum": [
+            "scoped",
+            "singleton",
+            "transient",
+            "hosted",
+            "unknown"
+          ],
+          "title": "Lifetime",
+          "type": "string"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "service_type": {
+          "title": "Service Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "service_type",
+        "lifetime",
+        "confidence",
+        "file",
+        "line"
+      ],
+      "title": "DiRegistration",
+      "type": "object"
+    },
+    "DispatchDeclaration": {
+      "additionalProperties": false,
+      "description": "Объявленная диспетчеризация по типу: «этот тип обслуживает такой запрос».\n\nФорма `class Handler : IRequestHandler<GetOrders, Result>` встречается\nу медиаторов, шин команд и обработчиков сообщений. Извлекается она вместе\nс остальными объявлениями и **по списку интерфейсов из конфигурации**:\nзашивать сюда имя конкретной библиотеки нельзя — на другом репозитории\nинтерфейс называется иначе, а механика та же.\n\nКлючевое здесь то же, что и в цепочке фронта: **тип запроса живёт\nна ребре, а не на вызове**. Один и тот же метод обработчика зовут\nи диспетчер, и код напрямую.",
+      "properties": {
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "handler_fqn": {
+          "title": "Handler Fqn",
+          "type": "string"
+        },
+        "interface": {
+          "title": "Interface",
+          "type": "string"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "module": {
+          "title": "Module",
+          "type": "string"
+        },
+        "request_type": {
+          "title": "Request Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "handler_fqn",
+        "interface",
+        "request_type",
+        "module",
+        "file",
+        "line"
+      ],
+      "title": "DispatchDeclaration",
+      "type": "object"
+    },
+    "DispatchSend": {
+      "additionalProperties": false,
+      "description": "Место отправки запроса: где создан объект, у которого есть обработчик.\n\nВторая половина диспетчеризации по типу. Объявление («этот тип обслуживает\nтакой запрос») видно в базовом типе обработчика, отправка — только в теле,\nи без обеих половин ребра не существует.",
+      "properties": {
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "member": {
+          "title": "Member",
+          "type": "string"
+        },
+        "module": {
+          "title": "Module",
+          "type": "string"
+        },
+        "request_type": {
+          "title": "Request Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_type",
+        "member",
+        "module",
+        "file",
+        "line"
+      ],
+      "title": "DispatchSend",
+      "type": "object"
+    },
     "DocNode": {
       "additionalProperties": false,
       "description": "Один документ будущей документации.\n\n`matched_rules` содержит **все** совпавшие правила, а не только победившее:\nбез этого классификация превращается в чёрный ящик.\n\n`signature_hash` считается от нормализованных сигнатур и намеренно\n**не включает** номера строк и пути — переформатирование файла не должно\nзаставлять агента на шаге 3 перегенерировать документ.",
@@ -530,6 +664,118 @@
       "title": "SourceSpan",
       "type": "object"
     },
+    "SqlObject": {
+      "additionalProperties": false,
+      "description": "Объект, объявленный в исходнике SQL: процедура, функция, представление.",
+      "properties": {
+        "calls": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Calls",
+          "type": "array"
+        },
+        "dynamic": {
+          "default": false,
+          "title": "Dynamic",
+          "type": "boolean"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "reads": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reads",
+          "type": "array"
+        },
+        "writes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Writes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "file",
+        "line"
+      ],
+      "title": "SqlObject",
+      "type": "object"
+    },
+    "SqlUsage": {
+      "additionalProperties": false,
+      "description": "SQL, записанный литералом в коде: что он читает, пишет и зовёт.\n\nХранятся **имена**, а не текст запроса: манифест читают в ревью, и класть\nтуда мегабайты SQL значило бы сделать его нечитаемым ради данных, которые\nвсё равно используются только как имена.",
+      "properties": {
+        "calls": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Calls",
+          "type": "array"
+        },
+        "dynamic": {
+          "default": false,
+          "title": "Dynamic",
+          "type": "boolean"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "member": {
+          "title": "Member",
+          "type": "string"
+        },
+        "module": {
+          "title": "Module",
+          "type": "string"
+        },
+        "reads": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reads",
+          "type": "array"
+        },
+        "writes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Writes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "member",
+        "module",
+        "file",
+        "line"
+      ],
+      "title": "SqlUsage",
+      "type": "object"
+    },
     "Symbol": {
       "additionalProperties": false,
       "description": "Тип решения целиком: объявления слиты, базовые типы резолвнуты.\n\n`sources` — список, потому что `partial class` живёт в нескольких файлах.\n`base_types` содержит FQN там, где резолв удался, и сырое имя там, где нет\n(внешние типы вроде `ControllerBase` не резолвятся принципиально — правила\nматчатся именно по таким именам).",
@@ -653,6 +899,56 @@
       "title": "Symbol",
       "type": "object"
     },
+    "TableLiteral": {
+      "additionalProperties": false,
+      "description": "Имя таблицы, записанное литералом: `ToTable(\"FOO\", \"dbo\")`.\n\nПустое `name` — законное состояние, а не пропуск: метод позвали, но имя\nпришло из константы или переменной. Такие считаются отдельно, иначе\n«неразрешённых нет» неотличимо от «мы их не искали».",
+      "properties": {
+        "entity": {
+          "default": "",
+          "title": "Entity",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "member": {
+          "title": "Member",
+          "type": "string"
+        },
+        "method": {
+          "title": "Method",
+          "type": "string"
+        },
+        "module": {
+          "title": "Module",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "title": "Name",
+          "type": "string"
+        },
+        "schema_name": {
+          "default": "",
+          "title": "Schema Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "member",
+        "module",
+        "file",
+        "line"
+      ],
+      "title": "TableLiteral",
+      "type": "object"
+    },
     "Usage": {
       "additionalProperties": false,
       "description": "Обращение узла к члену другого узла: ребро графа вызовов.\n\nОтличается от `Dependency` тем же, чем документ отличается от инвентаря:\nзависимость говорит «внедрил сервис», обращение — «зову вот этот метод».\nНа боевом модуле разница между ними — 51 эндпоинт против единиц.\n\n`via` — член источника, из которого зовут; пустая строка значит «вне\nчленов». Он же связывает цепочку: обращение из метода стейта, помеченного\n`@Action`, — это уже путь «страница → экшен → стейт → сервис».",
@@ -738,6 +1034,27 @@
   "additionalProperties": false,
   "description": "Артефакт шага 1. Не содержит ни одного недетерминированного поля.\n\nМетаданные прогона (время, хост, длительность) живут в отдельном\n`RunMeta` — благодаря этому тест на детерминизм сводится к побайтовому\nсравнению файлов без логики исключения полей.",
   "properties": {
+    "di_registrations": {
+      "items": {
+        "$ref": "#/$defs/DiRegistration"
+      },
+      "title": "Di Registrations",
+      "type": "array"
+    },
+    "dispatch_handlers": {
+      "items": {
+        "$ref": "#/$defs/DispatchDeclaration"
+      },
+      "title": "Dispatch Handlers",
+      "type": "array"
+    },
+    "dispatch_sends": {
+      "items": {
+        "$ref": "#/$defs/DispatchSend"
+      },
+      "title": "Dispatch Sends",
+      "type": "array"
+    },
     "modules": {
       "items": {
         "$ref": "#/$defs/Module"
@@ -775,6 +1092,27 @@
       "default": "2.0",
       "title": "Schema Version",
       "type": "string"
+    },
+    "sql_objects": {
+      "items": {
+        "$ref": "#/$defs/SqlObject"
+      },
+      "title": "Sql Objects",
+      "type": "array"
+    },
+    "sql_usages": {
+      "items": {
+        "$ref": "#/$defs/SqlUsage"
+      },
+      "title": "Sql Usages",
+      "type": "array"
+    },
+    "table_literals": {
+      "items": {
+        "$ref": "#/$defs/TableLiteral"
+      },
+      "title": "Table Literals",
+      "type": "array"
     }
   },
   "required": [

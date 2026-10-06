@@ -2632,6 +2632,21 @@ T00 ─┬─ T01 ────────────────────�
 
 ## T22 — Поставка в репозиторий АС CF
 
+> **Устарело — не реализовывать по этому тексту.** Поставка «внутрь репозитория»
+> (пакет, свой `pyproject.toml` и `uv.lock`, `.venv` в `docs/ml/docspipe`) и `uv.toml`
+> рядом с пакетом отменены. С 02.09.2026 инструмент ставится на машину через
+> `uv tool install`, в репозиторий продукта уезжает только настройка, каталог
+> которой задаёт `--config-dir`; `deploy/pyproject.toml` и `deploy/uv.lock` удалены.
+> `uv.toml` живёт в клоне, а не рядом с пакетом; с 06.10.2026 он передаётся
+> `uv tool install` флагом `--config-file` (сам `uv tool` настроек проекта
+> не читает), и кэш uv тоже в клоне. Источник истины — [`deploy/README.md`](../deploy/README.md)
+> и [`deploy/OFFLINE.md`](../deploy/OFFLINE.md), обоснование — журнал, записи
+> «Поставка: инструмент на машине, настройка в репозитории продукта» (02.09)
+> и «Поставка: кэш uv в клоне, `uv tool` без настроек проекта, образцы шаблонов
+> вне git» (06.10). Ниже — исходная постановка; ловушки закрытого контура в ней
+> (зеркало, `native-tls`, `python-downloads`, ключи до `[[index]]`) в силе,
+> способ поставки — нет.
+
 **Цель:** запускать `docpipe` на боевом репозитории, не перенося туда среду разработки.
 
 **Создать:** `deploy/` (`install.sh`, `pyproject.toml`, `uv.lock`, `gitignore`, `README.md`,
@@ -3186,7 +3201,9 @@ uv run pytest tests/test_deploy_bundle.py -q
 
 - создание директорий и `.md`-файлов (шаг 2 пайплайна);
 - шаблоны документации (Service / Provider / Workflow / Controller);
-- парсеры Python и TypeScript;
+- парсеры Python и TypeScript — *TypeScript сделан шагом `web`
+  ([`frontend-implementation-plan.md`](frontend-implementation-plan.md)), Python
+  возвращён в цель ревизией 06.10 ([`purpose.md`](../purpose.md))*;
 - любая интеграция с LLM.
 
 Первые два пункта закрыты шагом 2 — см. [`materialize-implementation-plan.md`](materialize-implementation-plan.md)

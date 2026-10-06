@@ -1406,7 +1406,7 @@ uv run docpipe web pages /tmp/web.json --format csv > /tmp/pages.csv
 в единицу документации — точный список её вызовов (вместо достижимости),
 ручное управление составом страниц и документ с разделами «Состояние»
 и «Логика» — вынесено в отдельный план:
-[`pages-implementation-plan.md`](pages-implementation-plan.md), задачи P01–P12.
+[`pages-implementation-plan.md`](pages-implementation-plan.md), задачи P01–P16 (закрыт).
 Туда же ушёл названный пробел F14 — цепочка NGXS (P03).
 
 ## Что намеренно не входит в этот план
