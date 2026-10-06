@@ -9230,3 +9230,46 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe  → 
 Попутно сработал страж Р13 (`test_engine_vocabulary_is_confined_to_the_bridge`):
 первая редакция подписи в `graph info` называла файл по имени, и имя движка
 вышло за мост. Имя файла знает только мост (`PROJECT_CONFIG`), подпись — общая.
+
+## MCP-сервер графа подключается агенту контура (gigacode)
+
+**Изменено:** `deploy/install.sh` (запись `.qwen/settings.json` клона,
+`json_escape`), `.gitignore`, `tests/test_deploy_bundle.py` (+3),
+`deploy/README.md` (раздел «Агент: скилл и MCP-сервер»), `deploy/OFFLINE.md`,
+`CLAUDE.md`, `README.md`, `docs/graph-implementation-plan.md` (G12, доставка).
+
+G12 сделал сервер, но доставки до агента не было: на контуре его никто
+не прописывал. Агент там — gigacode, форк qwen code. Проектные MCP-серверы
+он читает из `mcpServers` в `.qwen/settings.json` каталога, откуда запущен,
+и запускают его из корня клона — там же теперь скилл `.qwen/skills/recon`.
+Установщик пишет запись туда, а не в `~/.qwen`.
+
+Три решения, каждое из которых в другую сторону ломается молча:
+
+- **запускалка полным путём** (`uv tool dir --bin`, учитывает
+  `UV_TOOL_BIN_DIR`). Агент поднимает сервер со своим `PATH`, и каталога
+  запускалок uv в нём может не быть — сервер «не отвечает» без объяснения;
+- **`cwd` — корень продукта.** `graph.out` в `docpipe.yaml` — цель записи
+  и отсчитывается от текущего каталога. С `cwd` клона сервер искал бы индекс
+  не там и отвечал «индекса нет» при собранном;
+- **файл вне git, уже лежащий не затирается** (`keep_configured`, рядом
+  `.new`). Пути в нём — этой машины; в файл могли дописать своё.
+
+С `--no-tool` файл не пишется: запускалки нет. Форма для этого режима
+(`uv run --no-sync --project <клон> python -m docpipe graph serve …`, полный
+путь к `uv`, `PYTHONPATH`) записана в `OFFLINE.md` и проверена так же.
+
+Доверие папкам: при `security.folderTrust.enabled` qwen code не подключает
+проектные настройки, скиллы и MCP, пока папка не отмечена доверенной.
+Установщик говорит об этом в конце вывода.
+
+Проверено живым прогоном: `install.sh` настоящим uv на копии клона, продукт —
+копия `SampleSolution`, `graph build` по поставленной настройке; затем сервер
+поднят ровно по сгенерированной записи (`command`, `args`, `cwd`) из `/tmp`
+с `PATH=/usr/bin:/bin`: семь инструментов, `docpipe_resolve("PricingController")`
+— точное совпадение.
+
+```
+uv run pytest -q  → 2000 passed  (+3 теста)
+uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe  → чисто
+```

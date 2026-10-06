@@ -45,6 +45,12 @@ artifacts/
 /.claude/*
 !/.claude/skills/
 
+# Подключение MCP-сервера docpipe для gigacode (qwen code): install.sh пишет его
+# в клон с абсолютными путями этой машины, поэтому в git ему не место.
+# Скиллы рядом, в `.qwen/skills/`, — в git.
+/.qwen/settings.json
+/.qwen/settings.json.new
+
 # Машинно-локальное: настройки редактора и регистрация MCP-серверов.
 # К проекту не относятся и у каждого свои.
 .vscode/

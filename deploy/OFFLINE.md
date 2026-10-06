@@ -182,6 +182,27 @@ PYTHONPATH=$CLONE uv run --no-sync python -m docpipe version
 alias docpipe="PYTHONPATH=$CLONE uv run --no-sync --project $CLONE python -m docpipe"
 ```
 
+MCP-сервер графа для gigacode установщик с `--no-tool` не прописывает:
+запускалки нет, команда другая. Тогда `.qwen/settings.json` клона пишется
+руками — пути абсолютные, в том числе к самому `uv` (`command -v uv`: агент
+поднимает сервер со своим `PATH`), `cwd` обязательно корень продукта (оттуда
+отсчитывается `graph.out`):
+
+```json
+{
+  "mcpServers": {
+    "docpipe": {
+      "command": "/полный/путь/до/uv",
+      "args": ["run", "--no-sync", "--project", "/путь/до/клона", "python", "-m", "docpipe",
+               "graph", "serve", "--config", "/путь/до/продукта/docs/ml/docpipe/docpipe.yaml",
+               "--root", "/путь/до/продукта"],
+      "cwd": "/путь/до/продукта",
+      "env": {"PYTHONPATH": "/путь/до/клона"}
+    }
+  }
+}
+```
+
 `--no-sync` обязателен: без него `uv run` при каждом вызове сверяется с индексом
 и на машине без доступа к нему падает — на команде, которая с зависимостями
 ничего не делает.

@@ -9,6 +9,7 @@
 настройки задаётся при деплое, кэши лежат снаружи.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -647,10 +648,12 @@ def test_installer_does_not_write_inside_home_by_default() -> None:
     assert "UV_TOOL_DIR" in text
 
 
-# Заглушка uv: пишет строку «кэш<TAB>аргументы» на каждый вызов, а на
-# `uv export -o ФАЙЛ` создаёт файл — установщик дальше передаёт его ограничениями.
+# Заглушка uv: пишет строку «кэш<TAB>аргументы» на каждый вызов, на
+# `uv export -o ФАЙЛ` создаёт файл — установщик дальше передаёт его ограничениями,
+# — а на `uv tool dir --bin` называет каталог запускалок.
 _UV_STUB = """#!/usr/bin/env bash
 printf '%s\\t%s\\n' "${UV_CACHE_DIR:-}" "$*" >> "$UV_STUB_LOG"
+if [ "$*" = "tool dir --bin" ]; then echo "$UV_STUB_TOOL_BIN"; fi
 prev=""
 for arg in "$@"; do
     if [ "$prev" = "-o" ]; then : > "$arg"; fi
@@ -660,7 +663,11 @@ done
 
 
 def _install_tool(
-    tmp_path: Path, *, index: str = "", uv_toml: str | None = None
+    tmp_path: Path,
+    *,
+    index: str = "",
+    uv_toml: str | None = None,
+    qwen_settings: str | None = None,
 ) -> tuple[Path, list[tuple[str, str]]]:
     """Прогнать установку инструмента с заглушкой вместо uv.
 
@@ -673,6 +680,9 @@ def _install_tool(
     shutil.copytree(ROOT / "templates", clone / "templates")
     if uv_toml is not None:
         (clone / "uv.toml").write_text(uv_toml, encoding="utf-8")
+    if qwen_settings is not None:
+        (clone / ".qwen").mkdir()
+        (clone / ".qwen" / "settings.json").write_text(qwen_settings, encoding="utf-8")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stub = bin_dir / "uv"
@@ -686,6 +696,7 @@ def _install_tool(
     env = {key: value for key, value in os.environ.items() if not key.startswith("UV_")}
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["UV_STUB_LOG"] = str(log)
+    env["UV_STUB_TOOL_BIN"] = str(tmp_path / "tools-bin")
     command = [
         str(clone / "deploy" / "install.sh"),
         "--repo",
@@ -794,3 +805,55 @@ def test_documentation_leads_with_the_configuration_check(relative: str) -> None
     и инструкция обязана звать проверку раньше прогона.
     """
     assert "config check" in (DEPLOY / relative).read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------------------
+# MCP-сервер для агента контура (gigacode, форк qwen code)
+# --------------------------------------------------------------------------------------
+
+
+def test_mcp_server_is_registered_in_the_clone_not_in_home(tmp_path: Path) -> None:
+    """Проектный `.qwen/settings.json` клона, а не `~/.qwen` и не репозиторий продукта.
+
+    Агента запускают из корня клона, там же лежит скилл разведки. Запускалка —
+    полным путём: агент поднимает сервер со своим PATH. `cwd` — корень продукта,
+    потому что `graph.out` отсчитывается от текущего каталога, как у `graph build`.
+    """
+    clone, _ = _install_tool(tmp_path)
+    repo = tmp_path / "repo"
+
+    settings = json.loads((clone / ".qwen" / "settings.json").read_text(encoding="utf-8"))
+    server = settings["mcpServers"]["docpipe"]
+    config = repo / CONFIG_DIR / "docpipe.yaml"
+    assert server == {
+        "command": str(tmp_path / "tools-bin" / "docpipe"),
+        "args": ["graph", "serve", "--config", str(config), "--root", str(repo)],
+        "cwd": str(repo),
+    }
+    # Путь указывает на настоящую установленную конфигурацию, а не на выдуманную.
+    assert config.is_file()
+    assert not (repo / ".qwen").exists()
+
+
+def test_edited_agent_settings_are_kept(tmp_path: Path) -> None:
+    """В `.qwen/settings.json` клона могли дописать своё — затирать нельзя."""
+    own = '{"mcpServers": {}, "model": {"name": "своя"}}\n'
+    clone, _ = _install_tool(tmp_path, qwen_settings=own)
+
+    assert (clone / ".qwen" / "settings.json").read_text(encoding="utf-8") == own
+    proposed = json.loads((clone / ".qwen" / "settings.json.new").read_text(encoding="utf-8"))
+    assert "docpipe" in proposed["mcpServers"]
+
+
+def test_agent_settings_stay_out_of_git_and_skills_stay_in() -> None:
+    """Пути в настройках агента — этой машины; скиллы рядом — общие."""
+    if shutil.which("git") is None or not (ROOT / ".git").exists():
+        pytest.skip("нужен git-клон")
+
+    def ignored(path: str) -> bool:
+        check = ["git", "check-ignore", "--no-index", "-q", path]
+        return subprocess.run(check, cwd=ROOT).returncode == 0
+
+    assert ignored(".qwen/settings.json")
+    assert ignored(".qwen/settings.json.new")
+    assert not ignored(".qwen/skills/recon/SKILL.md")
