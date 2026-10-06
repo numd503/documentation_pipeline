@@ -93,6 +93,11 @@ class GraphMeta(_Base):
     generation: str
     engine_version: str = ""
     engine_checksum: str = ""
+    # Сумма проектного конфига движка из корня репозитория (имя файла знает
+    # только мост — `PROJECT_CONFIG`), если он там был: движок читает его сам,
+    # и разбор с ним идёт не по умолчанию. Пусто — файла не было.
+    # Пользовательский двойник в паспорт не попадает: мост его глушит.
+    engine_project_config: str = ""
     repo: str = ""
     counts: dict[str, int] = Field(default_factory=dict)
     # Категории неполноты: что отсеяно и почему. Молча выброшенное через

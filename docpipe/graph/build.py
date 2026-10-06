@@ -26,7 +26,14 @@ from docpipe.graph.data import collect as collect_data
 from docpipe.graph.data import from_registry as data_from_registry
 from docpipe.graph.data import from_sql as data_from_sql
 from docpipe.graph.data import merge as merge_data
-from docpipe.graph.engine import Engine, EngineGraph, EngineNode, EngineRun
+from docpipe.graph.engine import (
+    PROJECT_CONFIG,
+    Engine,
+    EngineGraph,
+    EngineNode,
+    EngineRun,
+    project_config,
+)
 from docpipe.graph.entrypoints import EntryPointReport, from_manifest, from_registry, link
 from docpipe.graph.grid import GridReport
 from docpipe.graph.grid import seams as grid_seams
@@ -39,6 +46,7 @@ from docpipe.graph.search import SearchEntry
 from docpipe.graph.search import entries as search_entries
 from docpipe.graph.web import WebReport
 from docpipe.graph.web import collect as collect_web
+from docpipe.hashing import content_hash
 from docpipe.model import Manifest
 
 # Расширение → язык. Служит одному решению: чьи рёбра брать. Список короткий
@@ -237,6 +245,19 @@ def build(
     version = identity.version
     if identity.warning is not None:
         complain(identity.warning)
+    # Пользовательский конфиг движка заглушён в окружении, а проектный —
+    # часть репозитория, и решать за его автора нельзя. Поэтому он не
+    # глушится, а виден: предупреждением сейчас и суммой в паспорте потом.
+    engine_config = project_config(root)
+    engine_config_hash = ""
+    if engine_config is not None:
+        engine_config_hash = content_hash(engine_config.read_bytes())
+        complain(
+            f"в корне репозитория лежит {PROJECT_CONFIG}: движок сам возьмёт из него, "
+            "какие ещё расширения разбирать и каким языком, и разбор пойдёт "
+            "не по умолчанию. Попал туда случайно — уберите; намеренно — его сумма "
+            "записана в паспорт индекса (`docpipe graph info`)."
+        )
     say("индексирую репозиторий")
     run = engine.index(root)
     say(f"читаю граф: узлов {run.nodes}, рёбер {run.edges}")
@@ -415,6 +436,7 @@ def build(
         # значением врал бы про каждый прогон на контуре — и врал бы
         # убедительно, поскольку поле называется «чем собран».
         engine_checksum=identity.checksum,
+        engine_project_config=engine_config_hash,
         repo=root.resolve().name,
         counts={
             "nodes": len(index.nodes),

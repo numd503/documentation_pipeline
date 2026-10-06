@@ -92,6 +92,54 @@ def in_skipped_directory(path: str) -> bool:
     return any(segment in SKIPPED_DIRECTORIES for segment in path.split("/")[:-1])
 
 
+# Файл в корне разбираемого репозитория, который движок читает сам:
+# `{"extra_extensions": {".foo": "python"}}` — какие ещё расширения разбирать
+# и каким языком. Его пользовательский двойник лежит в
+# `$XDG_CONFIG_HOME/codebase-memory-mcp/config.json` (или `~/.config/…`),
+# и проектный побеждает. Отсутствие обоих движок пропускает молча.
+PROJECT_CONFIG: Final = ".codebase-memory.json"
+
+# Куда направляется `XDG_CONFIG_HOME` движка. Каталог не создаётся никогда:
+# нужен путь, по которому заведомо нет ни одного файла.
+_NO_USER_CONFIG: Final = "no-user-config"
+
+
+def engine_environment(cache_dir: Path) -> dict[str, str]:
+    """Окружение подпроцесса движка: пользовательское, но без того, что меняет разбор.
+
+    Всё, что движок читает из окружения и домашнего каталога, — скрытый вход:
+    один и тот же репозиторий у двух людей разобрался бы по-разному, и по индексу
+    этого не видно. Замерено на 0.6.0: файл `.foo` с классом внутри при
+    `extra_extensions` в пользовательском конфиге даёт узел, без него — нет.
+
+    - `CBM_*` убираются целиком. Среди них `CBM_SEMANTIC_ENABLED`
+      и `CBM_SEMANTIC_THRESHOLD`, включающие и настраивающие семантические
+      рёбра, и `CBM_CACHE_DIR` — его ставим сами;
+    - `XDG_CONFIG_HOME` ведёт в несуществующий каталог внутри кэша прогона,
+      и пользовательский конфиг движка не находится. Кроме движка этот путь
+      читает только git, которого движок зовёт для истории — в режимах
+      `moderate` и `full`, не в `fast`. Он теряет `~/.config/git/config`,
+      а `~/.gitconfig`, где обычно стоит `safe.directory`, читает как прежде:
+      `HOME` не трогаем;
+    - кэш — внутри рабочего каталога прогона, а не в `~/.cache`: два проекта
+      не должны делить кэш, иначе прогон по чужому кэшу и прогон с нуля — два
+      разных входа, которые выглядят одним.
+
+    Проектный `PROJECT_CONFIG` здесь не глушится: он часть репозитория, и решать
+    за его автора нельзя. Его видно иначе — предупреждением и суммой в паспорте.
+    """
+    env = {key: value for key, value in os.environ.items() if not key.startswith("CBM_")}
+    env["CBM_CACHE_DIR"] = str(cache_dir)
+    env["XDG_CONFIG_HOME"] = str(cache_dir / _NO_USER_CONFIG)
+    return env
+
+
+def project_config(root: Path) -> Path | None:
+    """Проектный конфиг движка в корне репозитория, если он там лежит."""
+    candidate = root / PROJECT_CONFIG
+    return candidate if candidate.is_file() else None
+
+
 # Наши имена для видов рёбер движка. Словарь движка за пределы моста
 # не выходит.
 EDGE_KIND: Final[dict[str, str]] = {
@@ -303,17 +351,12 @@ class Engine:
         аргументом. Флага `--json` там нет: строка с ним падает с
         `unknown tool: --json`.
         """
-        env = dict(os.environ)
-        # Кэш внутри рабочего каталога прогона, а не в `~/.cache`: два проекта
-        # не должны делить кэш, иначе прогон по чужому кэшу и прогон с нуля —
-        # два разных входа, которые выглядят одним.
-        env["CBM_CACHE_DIR"] = str(self.cache_dir)
         try:
             proc = subprocess.run(
                 [str(self.binary), "cli", tool, json.dumps(payload)],
                 capture_output=True,
                 text=True,
-                env=env,
+                env=engine_environment(self.cache_dir),
                 timeout=self.timeout,
             )
         except subprocess.TimeoutExpired as error:
