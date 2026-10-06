@@ -33,7 +33,6 @@ mkdir -p $TRY && cd $REPO
 uv sync
 codebase-memory-mcp --version                       # 0.6.0 — другая версия недопустима
 sha256sum ~/.local/bin/codebase-memory-mcp          # 3a3b6491…fb39e6c7
-./venv-for-codeindex/bin/python -c "import importlib.metadata as m; print(m.version('code-index-mcp'))"
 uv run ruff check . && uv run ruff format --check . && uv run mypy docpipe && uv run pytest -q
 ```
 

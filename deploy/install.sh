@@ -51,7 +51,8 @@ usage() {
   --engine ПУТЬ        путь к codebase-memory-mcp 0.6.0. Без него команды
                        `graph *` откажутся работать, остальные — нет
   --index URL          адрес внутреннего зеркала пакетов. Записывается
-                       в uv.toml клона и действует на все вызовы uv оттуда
+                       в uv.toml клона; `uv tool install` получает этот файл
+                       явно, потому что сам настроек проекта не читает
   --python ПУТЬ|ВЕРСИЯ каким интерпретатором ставить, например 3.12.13.
                        Скачивать Python запрещено намеренно, поэтому на
                        закрытом контуре его надо назвать
@@ -62,6 +63,10 @@ usage() {
 идёт вне $HOME, задайте их до запуска:
 
     export UV_TOOL_DIR=$WORK/.uv     UV_TOOL_BIN_DIR=$WORK/.uv/bin
+
+Кэш uv лежит в клоне (<клон>/.uv-cache), а не в ~/.cache/uv: установщик
+дописывает `cache-dir` в uv.toml клона, если его там нет. Перенести кэш —
+поправить эту строку.
 EOF
     exit 2
 }
@@ -202,12 +207,47 @@ mkdir -p "$DEST/artifacts" "$CACHE_DIR"
 if [ "$TOOL" -eq 1 ]; then
     command -v uv >/dev/null || { echo "uv не найден в PATH" >&2; exit 1; }
 
+    UV_SETTINGS="$SOURCE/uv.toml"
     if [ -n "$INDEX" ]; then
-        # Пишем в клон, а не в $HOME: настройки uv действуют на каталог, из
-        # которого его зовут, и здесь это клон. Файл в .gitignore клона.
+        # Пишем в клон, а не в $HOME: проектные команды uv (`uv run`, `uv sync`,
+        # `uv lock`, `uv export`) читают uv.toml из каталога, откуда их зовут,
+        # а зовут их из корня клона. Файл в .gitignore клона.
         sed "s|https://ЗАПОЛНИТЬ/repository/pypi/simple|$INDEX|" \
-            "$SOURCE/deploy/uv.toml.example" > "$SOURCE/uv.toml"
-        echo "Индекс записан в $SOURCE/uv.toml"
+            "$SOURCE/deploy/uv.toml.example" > "$UV_SETTINGS"
+        echo "Индекс записан в $UV_SETTINGS"
+    fi
+
+    # Кэш uv — в клоне, а не в ~/.cache/uv. Строка уходит в uv.toml, чтобы
+    # `uv run` и `uv sync` из корня клона брали тот же кэш, что и установка.
+    #
+    # Дописывается В НАЧАЛО файла: ключ верхнего уровня, поставленный после
+    # `[[index]]`, TOML отнёс бы к таблице зеркала, и настройка перестала бы
+    # действовать без единой ошибки. Путь абсолютный: относительный uv считает
+    # от текущего каталога, а не от файла настроек.
+    #
+    # Уже заданный `cache-dir` не трогаем: его могли перенести намеренно.
+    if [ ! -f "$UV_SETTINGS" ] ||
+        ! grep -Eq '^[[:space:]]*cache-dir[[:space:]]*=' "$UV_SETTINGS"; then
+        uv_tmp="$(mktemp)"
+        {
+            echo "# Кэш uv — в клоне, а не в ~/.cache/uv. Строку дописал install.sh."
+            echo "cache-dir = \"$SOURCE/.uv-cache\""
+            echo
+            if [ -f "$UV_SETTINGS" ]; then cat "$UV_SETTINGS"; fi
+        } > "$uv_tmp"
+        mv "$uv_tmp" "$UV_SETTINGS"
+    fi
+    UV_CACHE="$(sed -n \
+        -e 's/^[[:space:]]*cache-dir[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        -e "s/^[[:space:]]*cache-dir[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" \
+        "$UV_SETTINGS" | head -n 1)"
+    if [ -n "$UV_CACHE" ]; then
+        # Переменной, а не через --config-file: она ничего не отключает,
+        # и зеркало из пользовательского или системного uv.toml остаётся в силе.
+        export UV_CACHE_DIR="$UV_CACHE"
+        echo "Кэш uv:      $UV_CACHE"
+    else
+        echo "Внимание: не разобрал cache-dir в $UV_SETTINGS — кэш uv останется на умолчании uv" >&2
     fi
 
     # Версии берутся из uv.lock клона, а не решаются заново. Без этого
@@ -225,6 +265,19 @@ if [ "$TOOL" -eq 1 ]; then
 
     tool_flags=(--constraints "$constraints" --force)
     [ -n "$PYTHON" ] && tool_flags+=(--python "$PYTHON")
+
+    # `uv tool *` НЕ читает uv.toml проекта — только пользовательский
+    # и системный. Без явного файла зеркало, native-tls, find-links и offline
+    # из клона на установку не действуют: проверено на uv 0.11, запрос уходит
+    # на pypi.org при зеркале, вписанном в uv.toml клона.
+    #
+    # Файл передаётся, только когда в нём описан источник пакетов: --config-file
+    # ЗАМЕЩАЕТ пользовательский конфиг, а не дополняет его. Файл с одним
+    # cache-dir отнял бы зеркало, настроенное на машине в ~/.config/uv.
+    if grep -Eq '^[[:space:]]*(\[\[index\]\]|find-links[[:space:]]*=|offline[[:space:]]*=)' \
+        "$UV_SETTINGS"; then
+        tool_flags+=(--config-file "$UV_SETTINGS")
+    fi
 
     echo "Ставлю docpipe в ${UV_TOOL_DIR:-каталог uv по умолчанию}…"
     if ! (cd "$SOURCE" && uv tool install "${tool_flags[@]}" .); then

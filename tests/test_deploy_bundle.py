@@ -9,6 +9,8 @@
 настройки задаётся при деплое, кэши лежат снаружи.
 """
 
+import os
+import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -643,6 +645,145 @@ def test_installer_does_not_write_inside_home_by_default() -> None:
     text = (DEPLOY / "install.sh").read_text(encoding="utf-8")
     assert "WORK" in text
     assert "UV_TOOL_DIR" in text
+
+
+# Заглушка uv: пишет строку «кэш<TAB>аргументы» на каждый вызов, а на
+# `uv export -o ФАЙЛ` создаёт файл — установщик дальше передаёт его ограничениями.
+_UV_STUB = """#!/usr/bin/env bash
+printf '%s\\t%s\\n' "${UV_CACHE_DIR:-}" "$*" >> "$UV_STUB_LOG"
+prev=""
+for arg in "$@"; do
+    if [ "$prev" = "-o" ]; then : > "$arg"; fi
+    prev="$arg"
+done
+"""
+
+
+def _install_tool(
+    tmp_path: Path, *, index: str = "", uv_toml: str | None = None
+) -> tuple[Path, list[tuple[str, str]]]:
+    """Прогнать установку инструмента с заглушкой вместо uv.
+
+    Установщик пишет `uv.toml` в СВОЙ клон, поэтому гоняется копия: в настоящем
+    клоне тест затёр бы рабочие настройки uv. Возвращает копию клона и вызовы
+    uv парами (UV_CACHE_DIR, аргументы).
+    """
+    clone = tmp_path / "clone"
+    shutil.copytree(DEPLOY, clone / "deploy")
+    shutil.copytree(ROOT / "templates", clone / "templates")
+    if uv_toml is not None:
+        (clone / "uv.toml").write_text(uv_toml, encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "uv"
+    stub.write_text(_UV_STUB, encoding="utf-8")
+    stub.chmod(0o755)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.sln").touch()
+    log = tmp_path / "uv.log"
+    # Переменные uv из окружения разработчика заслонили бы то, что ставит установщик.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("UV_")}
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["UV_STUB_LOG"] = str(log)
+    command = [
+        str(clone / "deploy" / "install.sh"),
+        "--repo",
+        str(repo),
+        "--config-dir",
+        CONFIG_DIR,
+        "--cache-dir",
+        str(tmp_path / "cache"),
+    ]
+    if index:
+        command += ["--index", index]
+    subprocess.run(command, capture_output=True, text=True, check=True, env=env)
+    calls = [tuple(line.split("\t", 1)) for line in log.read_text(encoding="utf-8").splitlines()]
+    return clone, [(cache, args) for cache, args in calls]
+
+
+def _tool_install_args(calls: list[tuple[str, str]]) -> str:
+    [args] = [args for _, args in calls if args.startswith("tool install")]
+    return args
+
+
+def test_uv_cache_lives_in_the_clone_not_in_home(tmp_path: Path) -> None:
+    """Кэш uv — в клоне, и один и тот же для установки и для `uv run` оттуда.
+
+    Строка `cache-dir` в uv.toml нужна проектным командам, переменная
+    UV_CACHE_DIR — установке: `uv tool install` настроек проекта не читает.
+    Разные значения у них значили бы два кэша, один из которых в `$HOME`.
+    """
+    clone, calls = _install_tool(tmp_path)
+
+    expected = str(clone / ".uv-cache")
+    assert tomllib.loads((clone / "uv.toml").read_text(encoding="utf-8"))["cache-dir"] == expected
+    assert calls and all(cache == expected for cache, _ in calls)
+
+
+def test_settings_without_a_mirror_do_not_replace_the_user_config(tmp_path: Path) -> None:
+    """`--config-file` замещает пользовательский конфиг uv, а не дополняет его.
+
+    Файл с одним `cache-dir` отнял бы у установки зеркало, настроенное на машине
+    в `~/.config/uv/uv.toml`, и она ушла бы на pypi.org. Проверено на uv 0.11.
+    """
+    _, calls = _install_tool(tmp_path)
+
+    assert "--config-file" not in _tool_install_args(calls)
+
+
+def test_tool_install_gets_the_mirror_from_the_clone(tmp_path: Path) -> None:
+    """`uv tool install` не читает uv.toml проекта — файл передаётся явно.
+
+    Без этого `--index` установщика действовал на `uv export`, но не на саму
+    установку: зеркало, `native-tls`, `find-links` и `offline` из клона
+    пропускались, и запрос уходил на pypi.org. Проверено на uv 0.11.
+    """
+    clone, calls = _install_tool(tmp_path, index="https://mirror.example/simple")
+
+    settings = tomllib.loads((clone / "uv.toml").read_text(encoding="utf-8"))
+    assert settings["index"] == [
+        {"name": "corp", "url": "https://mirror.example/simple", "default": True}
+    ]
+    # Ключ верхнего уровня, а не поле зеркала: после `[[index]]` TOML отнёс бы
+    # его к таблице, и кэш молча остался бы в `$HOME`.
+    assert settings["cache-dir"] == str(clone / ".uv-cache")
+    assert settings["native-tls"] is True
+    assert f"--config-file {clone / 'uv.toml'}" in _tool_install_args(calls)
+
+
+def test_installed_templates_are_not_gitignored() -> None:
+    """Всё, что копирует установщик из `templates/`, обязано доехать до свежего клона.
+
+    Строка `examples/` в `.gitignore` (каталог проверочных репозиториев) без
+    ведущего `/` закрывала и `templates/examples/`: локально образцы лежали,
+    а клон на целевой машине падал на `cp` установщика. Проверка идёт по правилам
+    игнорирования, а не по индексу, — так она ловит и файл, добавленный завтра.
+    """
+    if shutil.which("git") is None or not (ROOT / ".git").exists():
+        pytest.skip("нужен git-клон")
+    templates = sorted(str(path.relative_to(ROOT)) for path in (ROOT / "templates").rglob("*.md"))
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", *templates],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.split() == []
+
+
+def test_existing_uv_settings_are_kept(tmp_path: Path) -> None:
+    """Перенесённый руками кэш и собранный внутри контура uv.toml не трогаются.
+
+    Так устроен `OFFLINE.md`: файл с `find-links` и `offline` пишут руками,
+    и установщик обязан взять его как есть, в том числе и кэш.
+    """
+    own = 'cache-dir = "/elsewhere/uv"\nfind-links = ["/wheels"]\noffline = true\n'
+    clone, calls = _install_tool(tmp_path, uv_toml=own)
+
+    assert (clone / "uv.toml").read_text(encoding="utf-8") == own
+    assert all(cache == "/elsewhere/uv" for cache, _ in calls)
+    assert "--config-file" in _tool_install_args(calls)
 
 
 @pytest.mark.parametrize("relative", ["README.md", "OFFLINE.md", "cashflow-docspipe/README.md"])
