@@ -83,7 +83,7 @@
 | ⬜ Шаг 3 | наполнение документов агентом. Очередь ему готова (`docpipe worklist`), сам исполнитель — вне этого репозитория |
 | ⬜ T05b | связанные исходники `<Compile Include>` — отложена, см. [findings-stress.md](docs/findings-stress.md) |
 
-1987 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
+1997 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
 
 Что уже работает сквозным прогоном:
 
@@ -825,7 +825,8 @@ ownership.example.yaml    правила владения — кому прин�
 registries.example.yaml   реестры точек входа АС CF — тоже данные
 pages.example.yaml        ручной состав страниц фронта
 arch-registry.example.yaml  образец нормализованного реестра
-.claude/skills/recon/     скилл разведки поверх `docpipe recon`: черновик arch-registry.yaml
+.qwen/skills/recon/       скилл разведки поверх `docpipe recon` (gigacode / qwen code;
+                          для Claude Code — ссылка .claude/skills/recon)
 deploy/                   раскладка на целевой машине: инструмент отдельно, настройка отдельно
 ├── install.sh            uv tool install + настройка в <репозиторий>/<--config-dir>
 ├── uv.toml.example       зеркало пакетов и сертификаты для закрытого контура
