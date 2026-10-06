@@ -40,5 +40,16 @@ python_version = "3.12"
 strict = true
 ignore_missing_imports = true
 
+# Pyright нужен не для проверки (это делает mypy), а агенту для навигации:
+# LSP-плагин Claude Code. Сам он `.venv` не ищет и берёт `python` из PATH,
+# и тогда каждая правка приносит ложные «import not resolved» на pydantic
+# и tree_sitter. Тесты mypy не проверяет — их диагностику глушим, а переход
+# к определению и поиск ссылок в них остаются.
+[tool.pyright]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+ignore = ["tests"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
