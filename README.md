@@ -53,10 +53,22 @@
 Поэтому рефакторинг, не меняющий бизнес-смысла, связь не рвёт. Подробно —
 в [`docs/business-implementation-plan.md`](docs/business-implementation-plan.md).
 
+Третья линия — **разведка и граф связей**: разобраться в незнакомом репозитории
+от первого взгляда до ответа на вопрос «что затронет эта правка». Разведка
+(`docpipe recon`) говорит, чем собран репозиторий и что читать первым; реестр
+(`docpipe arch`) сводит точки входа, швы и данные в один нормализованный файл;
+индекс (`docpipe graph`) отвечает, что достигает точка входа, какие точки входа
+затронет изменение и как связаны две сущности. Разбор тел и вызовы внутри
+языков даёт сторонний движок `codebase-memory-mcp` **0.6.0** — зовётся
+подпроцессом, весь контакт с ним заперт в одном модуле-мосте. Точки входа,
+связывание по DI, швы между языками, данные и достижимость — наши. Подробно —
+в [`docs/graph-implementation-plan.md`](docs/graph-implementation-plan.md).
+
 ## Состояние
 
-**Шаги 1 и 2, бизнес-слой и шаг `web` закончены.** Два языка: .NET (C#)
-и фронтенд на Angular (TypeScript).
+**Шаги 1 и 2, бизнес-слой, шаг `web` и граф связей закончены.** Документируются
+.NET (C#) и фронтенд на Angular (TypeScript); Python и SQL-процедуры входят
+в граф связей.
 
 | | Что |
 |---|---|
@@ -65,11 +77,13 @@
 | ✅ **Бизнес-слой**, B01–B11 | `docpipe anchors` и `docpipe business`: точки входа, каталог процессов, `business_hash` |
 | ✅ **Шаг `web`**, F01–F19 | `docpipe web scan`, `docpipe web link` и `docpipe web pages`: манифест фронта той же схемы, связь фронт↔бэк и список страниц с обоснованием |
 | ✅ **Страница как единица документации**, P01–P16 | граф вызовов, `pages.yaml`, документ-агрегат, разделы без маршрута — [справочник](docs/pages.md) |
+| ✅ **Разведка и граф связей**, R01–R04, G00–G18 | `docpipe recon`, `docpipe arch`, `docpipe graph`: разведка, нормализованный реестр, индекс связей, отчёты, MCP-сервер — [таблица состояния по каждой фиче](docs/graph-implementation-plan.md) |
+| ✅ вызовы из шаблона | `(click)="save()"` и `service.list() \| async` в `.html` — G14: выражения из биндингов, сверка с объявленными именами вместо грамматики шаблонов |
+| ⏳ Настройка на АС CF | механизм под всем готов; G05c, G13, G16, G17 и G18 ждут замеров и значений с боевого репозитория и списка идентификаторов от команды OpenSpec. Каждый пункт — команда и два-три числа: таблица «что делать в первый день доступа» в [плане графа](docs/graph-implementation-plan.md) |
 | ⬜ Шаг 3 | наполнение документов агентом. Очередь ему готова (`docpipe worklist`), сам исполнитель — вне этого репозитория |
 | ⬜ T05b | связанные исходники `<Compile Include>` — отложена, см. [findings-stress.md](docs/findings-stress.md) |
-| ⬜ вызовы из шаблона | `(click)="save()"` и `service.ready$ | async` в `.html` разбор не видит: нужна грамматика Angular-шаблонов, см. «не входит» в [плане страниц](docs/pages-implementation-plan.md) |
 
-1526 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
+1987 тестов. Подробности по каждой задаче — в [журнале реализации](docs/implementation-log.md).
 
 Что уже работает сквозным прогоном:
 
@@ -94,9 +108,20 @@ docpipe business new bp.valuation.eod --title "Переоценка"            
 docpipe business build  artifacts/doc-tree.json --config docpipe.yaml       # собрать связь с кодом
 docpipe business lint   artifacts/doc-tree.json --config docpipe.yaml       # что сломано и сколько ещё писать
 docpipe business status artifacts/doc-tree.json --config docpipe.yaml       # что разошлось с реализацией
+
+# разведка и граф связей
+docpipe recon --root . --json recon.json --text recon.txt       # чем собран репозиторий, что читать первым
+docpipe arch validate arch-registry.yaml                        # нормализованный реестр
+docpipe graph build --root . --config docpipe.yaml              # индекс связей; нужен ключ graph.engine_path
+docpipe graph report --out artifacts/entrypoints.md             # таблица точек входа
+docpipe graph reaches "имя точки входа"                         # что она достигает
+git diff --name-only main | docpipe graph affects --stdin       # какие точки входа затронет правка
+docpipe graph health                                            # что не разрешилось и сколько
+docpipe graph serve                                             # то же агенту: MCP-сервер на stdio
 ```
 
 Что лежит в манифесте фронта и в отчёте связи — [`docs/web.md`](docs/web.md).
+Сквозная проверка всего механизма с числами — [`docs/manual-run.md`](docs/manual-run.md).
 
 Как вести бизнес-документацию — [`docs/business-layer.md`](docs/business-layer.md)
 и [`docs/entry-guide.md`](docs/entry-guide.md),
@@ -106,13 +131,21 @@ docpipe business status artifacts/doc-tree.json --config docpipe.yaml       # ч
 
 ### Установка
 
+Для разработки и пробных прогонов — окружение клона:
+
 ```bash
 uv sync
 uv run docpipe --help
 ```
 
+На целевую машину инструмент ставится отдельно от настройки: `deploy/install.sh`
+делает `uv tool install` с версиями из `uv.lock`, а в репозиторий продукта
+кладёт только yaml и шаблоны. Порядок и флаги — в [`deploy/README.md`](deploy/README.md).
+
 .NET SDK не требуется: C# разбирается через `tree-sitter`, без сборки проекта.
-Достаточно, чтобы исходники лежали на диске.
+Достаточно, чтобы исходники лежали на диске. Командам `graph *` нужен ещё
+бинарь `codebase-memory-mcp` версии 0.6.0 — путь к нему задаёт ключ
+`graph.engine_path`; остальные команды без него работают.
 
 ### Первый прогон
 
@@ -225,7 +258,8 @@ jq '.nodes[].doc_path' /tmp/dt.json
 Кэш включён по умолчанию и создаётся **внутри сканируемого репозитория**:
 `<root>/.docpipe/cache/parse.sqlite`. Каталог стоит добавить в его `.gitignore`
 (в этом репозитории он уже там). Если трогать чужое дерево нежелательно —
-`--no-cache` или свой `cache_dir` в конфигурации.
+`--no-cache` или свой `cache_dir` в конфигурации. Установщик целевой машины
+так и делает: флаг `--cache-dir` выносит кэш за пределы репозитория продукта.
 
 Кэш не меняет результат, только время: на ABP тёплый прогон 2,8 с против 10,2 с
 холодного. Попадание определяется хэшем содержимого, а не временем модификации,
@@ -277,7 +311,7 @@ uv run docpipe scan --root . --out artifacts/doc-tree.json \
 ### Проверка
 
 ```bash
-uv run pytest -q                                    # 460 тестов
+uv run pytest -q                                    # все тесты, около 40 с
 uv run docpipe schema --out schema/doc-tree.schema.json   # JSON Schema из моделей
 ```
 
@@ -720,8 +754,8 @@ Roslyn потребовал бы .NET SDK и `restore` всех проектов
 ## Структура репозитория
 
 ```
-docpipe/                  пакет шага 1
-├── cli.py                команды: version, schema, scan (дальше — diff, stats, validate)
+docpipe/                  пакет: все шаги, бизнес-слой, разведка и граф
+├── cli.py                все команды (`docpipe --help`)
 ├── emit.py               сквозной прогон и запись манифеста с сидкаром
 ├── diff.py               что изменилось между двумя манифестами
 ├── stats.py              счётчики, подсказки по правилам, проверка инвариантов
@@ -733,9 +767,18 @@ docpipe/                  пакет шага 1
 ├── __main__.py           запуск пакетом там, где проект не установлен
 ├── discovery.py          обход ФС с ignore-правилами и scope
 ├── hashing.py            content_hash, stable_json_dumps, slugify
-├── model.py              16 pydantic-моделей трёх уровней
-├── materialize/          шаг 2: документы, зоны, статусы, приёмка
-│   ├── document.py       обратимый разбор `.md` на front matter и сегменты
+├── keys.py               нормализация ключей: одно правило на весь проект
+├── symbols.py            ключ символа и разбор имени типа — общее для .NET и фронта
+├── route.py              нормализация HTTP-маршрута: общий ключ бэка и фронта
+├── explain.py            выборка символов по состоянию решения (`docpipe symbols`)
+├── sql.py                какие таблицы трогает SQL и какие процедуры зовёт (G05c)
+├── recon.py              разведка незнакомого репозитория (R01): только stdlib и git,
+│                         работает и подкомандой, и скопированным одним файлом
+├── model.py              pydantic-модели манифеста
+├── documents/            документ как файл: зоны, состояние приёмки, запись — общее
+│   ├── zones.py          обратимый разбор `.md` на front matter и сегменты
+│   └── write.py          атомарная запись
+├── materialize/          шаг 2: документы, статусы, приёмка
 │   ├── template.py       загрузка скелетов и подстановка
 │   ├── build.py          front matter, генерируемый блок, кросс-ссылки
 │   ├── ownership.py      кто владеет документом
@@ -751,32 +794,49 @@ docpipe/                  пакет шага 1
 │   ├── config.py         registries.yaml с проверкой структуры
 │   ├── reader.py         xml/json, вложенные записи, переход по ссылке
 │   └── parse.py          расписание джоба и assembly-qualified имена типов
-└── dotnet/
-    ├── csproj.py         граф модулей: TFM, ProjectReference, PackageReference
-    ├── sln.py            разбор файла решения
-    ├── parser.py         C# -> FileParseResult: типы, члены, usings
-    ├── di.py             регистрации services.Add* -> сервис, реализация, lifetime
-    ├── endpoints.py      HTTP-маршруты контроллеров из атрибутов
-    ├── resolve.py        файлы -> индекс символов: FQN, partial, наследование
-    └── queries/*.scm     declarations.scm, members.scm, usings.scm, di.scm
+├── dotnet/
+│   ├── csproj.py         граф модулей: TFM, ProjectReference, PackageReference
+│   ├── sln.py            разбор файла решения
+│   ├── parser.py         C# -> FileParseResult: типы, члены, usings
+│   ├── di.py             регистрации services.Add* -> сервис, реализация, lifetime
+│   ├── endpoints.py      HTTP-маршруты контроллеров из атрибутов
+│   ├── facts.py          факты из тел: создание объекта и вызов с литералом
+│   ├── resolve.py        файлы -> индекс символов: FQN, partial, наследование
+│   └── queries/*.scm     declarations, members, usings, di, facts
+├── web/                  шаг `web`: Angular — разбор, роуты, вызовы, страницы, шаблоны
+├── arch/                 нормализованный реестр (R03) и адаптеры реестров (R04)
+└── graph/                индекс связей (G01–G18)
+    ├── engine.py         мост к codebase-memory-mcp: единственное место контакта с движком
+    ├── build.py          сборка: разбор движком, проекция, запись
+    ├── store.py          наш индекс в SQLite; потребители читают только его
+    ├── identity.py, match.py   ключ узла и сопоставление с манифестом
+    ├── entrypoints.py    точки входа как корни графа
+    ├── binding.py        связывание по DI и диспетчеризация по типу запроса
+    ├── data.py, grid.py, seams.py, web.py   данные, грид-сервисы, швы между языками, фронт
+    ├── reach.py          достижимость с конденсацией SCC
+    ├── api.py            семь форм вопроса — общие для CLI и MCP
+    ├── mcp.py            MCP-сервер на stdio без сторонних зависимостей
+    └── report.py, search.py, coverage.py, evaluate.py   отчёты, поиск, покрытие, оценка
 
-docpipe/recon.py          разведка незнакомого репозитория (R01): только stdlib и git,
-                          работает и подкомандой, и скопированным одним файлом
 rules/rules.yaml          правила классификации: секции dotnet и web, данные, а не код
-templates/                семь скелетов документов и четыре заполненных образца
+templates/                скелеты документов, бизнес-скелеты и заполненные образцы
 docpipe.example.yaml      пример конфигурации под свой репозиторий
 ownership.example.yaml    правила владения — кому принадлежит документ
 registries.example.yaml   реестры точек входа АС CF — тоже данные
+pages.example.yaml        ручной состав страниц фронта
+arch-registry.example.yaml  образец нормализованного реестра
+.claude/skills/recon/     скилл разведки поверх `docpipe recon`: черновик arch-registry.yaml
 deploy/                   раскладка на целевой машине: инструмент отдельно, настройка отдельно
 ├── install.sh            uv tool install + настройка в <репозиторий>/<--config-dir>
 ├── uv.toml.example       зеркало пакетов и сертификаты для закрытого контура
 ├── OFFLINE.md            сборка окружения там, где зеркало отдаёт не всё
-└── cashflow-docspipe/    настройка под АС CF: шесть yaml и шаблоны
+└── cashflow-docspipe/    настройка под АС CF: шесть yaml и README
 tools/
 ├── recon-frontend.sh     разведка фронтенда на боевом репозитории: только чтение
 └── migrate_rules.py      перенос плоского rules.yaml в секционный
+evals/                    оценочные наборы графа (G18): вопросы и ожидаемые ответы
 docs/                     проектная документация (см. ниже)
-schema/                   JSON Schema манифеста, генерируется из моделей
+schema/                   JSON Schema манифеста, очереди и реестра, генерируется из моделей
 tests/fixtures/
 ├── SampleSolution/       канонические случаи, выверенные количества
 └── WildSolution/         конструкции, пойманные в реальных репозиториях
@@ -801,7 +861,18 @@ tests/fixtures/
 | [`templates/README.md`](templates/README.md) | как устроены скелеты и что переживает прогон |
 | [`docs/implementation-log.md`](docs/implementation-log.md) | журнал: что сделано, что проверено, где план разошёлся с реальностью |
 | [`docs/frontend-analysis.md`](docs/frontend-analysis.md) | **фронтенд (Angular) в пайплайне: связь с бэкендом, страницы, что переиспользуется** |
+| [`docs/frontend-implementation-plan.md`](docs/frontend-implementation-plan.md) | исполнительный план шага `web`: F01–F19 |
+| [`docs/web.md`](docs/web.md) | справочник по выходу шага `web` и настройка на новом репозитории |
+| [`docs/pages-implementation-plan.md`](docs/pages-implementation-plan.md), [`docs/pages.md`](docs/pages.md) | страница как единица документации: план P01–P16 и справочник |
+| [`docs/graph-implementation-plan.md`](docs/graph-implementation-plan.md) | **разведка и граф связей: план-карта R01–R04, G00–G18, таблица состояния и «первый день доступа»** |
+| [`docs/arch-registry.md`](docs/arch-registry.md) | справочник по `arch-registry.yaml`: виды записей, нормализация ключей, снимок против адаптера |
+| [`docs/module-review.md`](docs/module-review.md) | ревизия модулей пакета: категория, потребитель и признак смерти каждого |
+| [`docs/findings-codebase-memory.md`](docs/findings-codebase-memory.md) | разведка движка разбора: замеры, что берём, что остаётся нам |
+| [`docs/manual-run.md`](docs/manual-run.md) | **ручной прогон механизма на открытых репозиториях с числами** |
+| [`docs/configuration.md`](docs/configuration.md) | `docpipe.yaml`: какой ключ кем читается и относительно чего разрешается |
+| [`deploy/README.md`](deploy/README.md), [`deploy/OFFLINE.md`](deploy/OFFLINE.md) | раскладка на целевой машине и сборка окружения в закрытом контуре |
 | [`docs/findings-cashflow-registries.md`](docs/findings-cashflow-registries.md) | **разведка АС CF: где объявлены точки входа и что ломает их разбор** |
+| [`docs/findings-cashflow-frontend.md`](docs/findings-cashflow-frontend.md) | разведка фронтенда АС CF: семь фронтов, префиксы прокси, покрытие вызовов |
 | [`docs/findings-eshoponweb.md`](docs/findings-eshoponweb.md) | отчёт о прогоне на eShopOnWeb (244 файла) |
 | [`docs/findings-abp.md`](docs/findings-abp.md) | отчёт о прогоне на ABP (671 проект, 7869 файлов) |
 | [`docs/findings-stress.md`](docs/findings-stress.md) | стресс-тест на четырёх репозиториях: OpenTelemetry, semantic-kernel |
