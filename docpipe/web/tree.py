@@ -44,7 +44,14 @@ from docpipe.model import (
 from docpipe.route import RewriteRule
 from docpipe.tree import doc_path_for, signature_hash
 from docpipe.web.absorb import FEATURE_KIND, PAGE_KIND, absorb
-from docpipe.web.calls import CallScan, RawCall, RegistryCall, build_calls, extract_calls
+from docpipe.web.calls import (
+    CallScan,
+    RawCall,
+    RegistryCall,
+    ResolvedCall,
+    build_calls,
+    extract_calls,
+)
 from docpipe.web.members import MemberRanges, member_ranges
 from docpipe.web.modules import (
     WebModule,
@@ -165,7 +172,13 @@ def _parse_files(root: Path, relatives: list[str], cache: ParseCache | None) -> 
     return parsed
 
 
-def _registry_calls(config: DocpipeConfig) -> list[RegistryCall]:
+def registry_calls(config: DocpipeConfig) -> list[RegistryCall]:
+    """Правила `web.registry_calls` в форме, которую читает `build_calls`.
+
+    Публичная, потому что её же зовут кандидаты (`setup candidates
+    registry-calls`): отметка «уже в настройке» обязана читать правила
+    тем же путём, что прогон.
+    """
     return [
         RegistryCall(
             route=item.route,
@@ -216,16 +229,18 @@ def _calls_by_file(
         if key is not None:
             by_module.setdefault(key, []).extend(item.calls)
 
-    registry = _registry_calls(config)
+    registry = registry_calls(config)
     calls: list[WebCall] = []
     unresolved: list[RawCall] = []
     registry_unresolved: list[WebCall] = []
+    resolved: list[ResolvedCall] = []
 
     for module in modules:
         scan = build_calls(
             by_module.get(module.key, []),
             rewrite=_rewrite_for(module, config),
             registry=registry,
+            module=module.module.name,
         )
 
         def with_member(call: WebCall) -> WebCall:
@@ -237,7 +252,15 @@ def _calls_by_file(
                 }
             )
 
-        calls.extend(with_member(call) for call in scan.calls)
+        attributed = [with_member(call) for call in scan.calls]
+        calls.extend(attributed)
+        # Пара «факт → ключ» несёт тот же вызов, что и `calls`, а не его
+        # копию до приписки члена: два разных объекта одного вызова читались
+        # бы как два вызова.
+        resolved.extend(
+            ResolvedCall(raw=item.raw, call=call, module=item.module)
+            for item, call in zip(scan.resolved, attributed, strict=True)
+        )
         unresolved.extend(scan.unresolved)
         # Тот же список проходит ту же обработку: `registry_unresolved` —
         # подмножество `calls`, и разное наполнение полей у одного вызова
@@ -249,7 +272,12 @@ def _calls_by_file(
         grouped.setdefault(call.file, []).append(call)
 
     return (
-        CallScan(calls=calls, unresolved=unresolved, registry_unresolved=registry_unresolved),
+        CallScan(
+            calls=calls,
+            unresolved=unresolved,
+            registry_unresolved=registry_unresolved,
+            resolved=resolved,
+        ),
         grouped,
     )
 

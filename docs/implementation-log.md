@@ -10188,3 +10188,34 @@ Golden и прежние тесты без изменений.
 на копии фикстуры.
 
 **Проверка:** команда S14 — 40 passed.
+
+---
+
+## S13 — кандидаты в `web.registry_calls` (08.10.2026)
+
+**Создано:** `tests/test_setup_candidates_registry.py` (24). **Изменено:** `docpipe/web/calls.py`
+(`ResolvedCall`, `CallScan.resolved`, `RawCall.body_nonliteral`, `discriminator_of`),
+`docpipe/web/tree.py` (`registry_calls` публичная), `docpipe/setup/candidates.py`,
+`docpipe/cli.py`, `docs/setup.md`, `docs/configuration.md`, `docs/module-review.md`,
+`docs/backlog.md`.
+
+Поле тела или параметр query, которое у одного маршрута меняется от вызова к вызову.
+Группа — глагол и маршрут ключа без различителя (модули — полем `modules`: правило пишется
+на маршрут). На `WebWorkspace`: `POST api/items/query` (body, `models`, `users`) и
+`GET api/items` (query, `dictionaries` и одно выражение); `audit.service.ts` — ни одного.
+Маршрут печатается после `url_rewrite`, в кавычках JSON (`{}` ломает потоковый YAML);
+число «без различителя» — той же `discriminator_of`, что у прогона, и совпадает
+с `registry_unresolved` после записи правила.
+
+**Отклонения и находки.**
+- Значение-выражение — отдельное значение (`nonliteral`): только по литералам `GET api/items`
+  кандидатом не становился, а главная форма обращения к реестру — обёртка `byType(type)`.
+- Два правила `registry_calls` на один маршрут загружаются без отказа, действует последнее —
+  молча; в бэклоге с пометкой «нужно решение».
+- На открытых репозиториях до S18–S19 вид слеп: squidex — 2 восстановленных вызова из 81,
+  ever-traduora — 0 из 50; отсюда база `calls_resolved`/`calls_unresolved` в отчёте.
+- При сведении с S14 прогон фронта `_web_scan` стал общим и читает `pages.yaml`: названный
+  отсутствующий `web.pages` и здесь — код 2.
+
+**Проверка:** команда S13 — 50 passed; после сведения с S14 — все четыре вида кандидатов
+93 passed.

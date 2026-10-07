@@ -294,9 +294,13 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 `docpipe setup candidates` колонкой не выделен: виды `di-methods`
 и `dispatch-interfaces` зовут прогон шага 1 и читают ровно ключи столбца
 `scan`, а `di_methods` и `dispatch_interfaces` — ещё раз, чтобы пометить
-уже перечисленные (`configured`). Вид `features` зовёт прогон шага `web`
-тем же путём, что `web scan` (секция `web`, включая `web.pages`), и по
-`features` из `pages.yaml` помечает уже объявленные (`declared`).
+уже перечисленные (`configured`). Виды `features` и `registry-calls` зовут
+один прогон шага `web` тем же путём, что `web scan` (секция `web`, включая
+`web.pages`). `features` по `features` из `pages.yaml` помечает уже
+объявленные (`declared`). `registry-calls` читает `web.registry_calls`
+ещё раз, тем же словарём правил, что прогон; на вызовы ручной состав
+не влияет, но названный и ненайденный `web.pages` роняет и этот вид —
+как `web scan`.
 
 Секцию `graph` (`engine_path`, `engine_sha256`, `mode`, `out`, `cache_dir`)
 читает только `docpipe graph *`: ни одна команда шага 1, шага 2 или бизнес-слоя
@@ -443,7 +447,7 @@ docs/front/...     фронт,  единица документации — ст
 проверенных пути. Раньше ключ без файла молча давал пустые правила.
 
 Читают ключ все прогоны фронта: `web scan`, `symbols --lang ts`
-и `setup candidates features` — одним загрузчиком
+и `setup candidates` видов `features` и `registry-calls` — одним загрузчиком
 (`web/overrides.load_page_overrides`). `symbols` до этого шёл без правил
 `pages.yaml` и считал страницы по одной таблице роутов — снятая руками
 страница продолжала делить сервисы с соседними, и состояние `page_covered`
@@ -487,9 +491,9 @@ uv run python tools/migrate_rules.py --dotnet rules.yaml --out rules.yaml
 `ruleset_version` — внутри каждой, он уходит в манифест и в `business_hash`.
 
 **Секцию `web` читают команды `web scan` и `web link`, а также
-`symbols --lang ts` и `setup candidates features`** — они разбирают фронт
-заново тем же путём, что `web scan`, и потому читают `web.rules` (секцию
-`web` файла правил), `web.roots` и `web.pages`. В таблице
+`symbols --lang ts` и `setup candidates` (`features`, `registry-calls`)** —
+они разбирают фронт заново тем же путём, что `web scan`, и потому читают
+`web.rules` (секцию `web` файла правил), `web.roots` и `web.pages`. В таблице
 выше колонок для них нет намеренно: колонка на два ключа шире таблицы, а состав
 секции описан ниже отдельно. Исключение одно: `web.out` мягко читает `business`
 — оттуда берётся манифест фронта для якорей `page`, и отсутствие файла значит

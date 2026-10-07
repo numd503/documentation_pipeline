@@ -11,6 +11,7 @@
 для CLI и сервера настройки (S27): вид → нужный прогон → отчёт.
 """
 
+import json
 import posixpath
 import re
 from collections import Counter, defaultdict
@@ -38,9 +39,18 @@ from docpipe.model import (
     Symbol,
 )
 from docpipe.web.absorb import FEATURE_KIND, PAGE_KIND, reachable_from
+from docpipe.web.calls import (
+    CallScan,
+    RawCall,
+    RegistryCall,
+    ResolvedCall,
+    discriminator_of,
+    query_parameters,
+    registry_rules,
+)
 from docpipe.web.overrides import Overrides, load_page_overrides
 from docpipe.web.pages import index_by_fqn
-from docpipe.web.tree import WebScanResult
+from docpipe.web.tree import WebScanResult, registry_calls
 from docpipe.web.tree import run as run_web_scan
 
 # Длина страницы по умолчанию. Агент контура обрезает вывод инструмента,
@@ -604,6 +614,243 @@ def format_dispatch_interfaces(report: DispatchCandidates) -> str:
 
 
 # --------------------------------------------------------------------------------------
+# Кандидаты в `web.registry_calls`
+# --------------------------------------------------------------------------------------
+
+# Маршрут, который зовут хотя бы дважды: одним вызовом «много смыслов»
+# не покажешь.
+MIN_REGISTRY_CALLS: Final = 2
+
+# Сколько разных значений поля назвать: у реестра платформы имён списков
+# бывают десятки, а вопрос задаётся по первым.
+_VALUES: Final = 10
+
+REGISTRY_LIMITS: Final = (
+    "тело читается только из объектного литерала второго аргумента; "
+    "`HttpParams` и `{ params: … }` не разбираются",
+    "вызов с невосстановленным адресом в счёт не идёт: маршрута у него нет "
+    "(`calls_unresolved` у `web scan --stats`)",
+)
+
+
+class RegistryCallCandidate(_Base):
+    """Поле тела или параметр query, которое у одного маршрута меняется от вызова к вызову.
+
+    `api/items/query` с `listInnerName: 'users'` и `'models'` — один эндпоинт
+    платформы на много смыслов, и ключ «метод + маршрут» склеивает их в одну
+    точку (CLAUDE.md, «Один маршрут на много смыслов»). Признак — **разные
+    значения одного поля**, а не повтор маршрута: шесть вызовов журнала
+    аудита с переменной в теле — повтор, и смысла в нём не меняется ничего.
+
+    `route` — в той форме, в какой его пишут в `registry_calls.route`: после
+    `url_rewrite` модуля. Правило сверяется именно с ней, и маршрут, как он
+    написан в коде, при преобразовании префикса не сработает никогда.
+
+    `values` — литеральные значения (до десяти, по имени), `values_total` —
+    сколько их всего. `nonliteral` — вызовы, где значение есть, но задано
+    выражением (`${type}` в query, `{ listInnerName: name }` в теле): такое
+    значение считается ещё одним, отличным от литералов, — обёртка
+    `byType(type)` и есть главная форма обращения к реестру, а различителя
+    прогон из неё не достанет.
+
+    `calls` — вызовов группы (глагол + маршрут). `route_calls` и
+    `unresolved_when_configured` — по **всем** вызовам маршрута, любого
+    глагола и модуля: правило `registry_calls` глагола и модуля не знает,
+    и записанное, оно оставит без различителя ровно столько вызовов
+    (`registry_unresolved` у `web scan --stats`).
+    """
+
+    route: str
+    http_method: str
+    where: Literal["body", "query"]
+    name: str
+    values: list[str]
+    values_total: int
+    nonliteral: int
+    calls: int
+    route_calls: int
+    modules: list[str]
+    configured: bool
+    unresolved_when_configured: int
+    examples: list[str]
+
+
+class RegistryCallCandidates(_Base):
+    """Отчёт `setup candidates registry-calls`.
+
+    `limits` — чего разбор не видит. Без них пустой список читался бы как
+    «обращений к реестру нет», а не «их нет в тех формах, которые читаются».
+
+    `calls_resolved` и `calls_unresolved` — база, из которой строятся
+    кандидаты. На открытых репозиториях до обёрток и построителей адреса
+    (S18–S19) восстановлено 2 вызова из 81 (squidex) и 0 из 50
+    (ever-traduora): ноль кандидатов там значит «маршрутов не видно»,
+    а не «реестра нет», и без базы эти два ответа неразличимы.
+    """
+
+    schema_version: Literal["1.0"] = "1.0"
+    calls_resolved: int
+    calls_unresolved: int
+    total: int
+    offset: int
+    limits: list[str]
+    items: list[RegistryCallCandidate]
+
+
+type _Where = Literal["body", "query"]
+
+
+@dataclass
+class _Field:
+    """Что известно об одном поле внутри группы вызовов."""
+
+    values: set[str]
+    nonliteral: int
+    # (не литерал, файл, строка): примеры — сначала вызовы с литералом,
+    # по ним видно, какие имена списков зовут.
+    seen: list[tuple[bool, str, int]]
+
+
+def _fields_of(raw: RawCall) -> list[tuple[_Where, str, str | None]]:
+    """Поля вызова: `(где, имя, литерал)`; `None` — значение задано выражением."""
+    literal, substituted = query_parameters(raw.url or "")
+    found: list[tuple[_Where, str, str | None]] = [
+        ("body", name, value) for name, value in raw.body_fields.items()
+    ]
+    found += [("body", name, None) for name in raw.body_nonliteral]
+    found += [("query", name, value) for name, value in literal.items()]
+    found += [("query", name, None) for name in substituted]
+    return found
+
+
+def registry_call_candidates(
+    calls: CallScan,
+    settings: DocpipeConfig,
+    *,
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
+) -> RegistryCallCandidates:
+    """Кандидаты в `web.registry_calls` по восстановленным вызовам прогона `web`.
+
+    Группа — глагол и маршрут построенного ключа **без** различителя:
+    с настроенным правилом ключи разошлись бы по значениям, и кандидат
+    пропал бы ровно тогда, когда его надо пометить «уже в настройке».
+    Модули в группу не входят: правило пишется на маршрут, и вопрос
+    о платформенном эндпоинте, который зовут семь фронтов, — один вопрос.
+
+    Кандидат — поле группы от двух вызовов, у которого значений хотя бы два;
+    значение-выражение считается одним значением, отличным от литералов.
+    Порядок — `(-values_total, -calls, route, http_method, where, name)`.
+    """
+    rules = registry_rules(registry_calls(settings))
+
+    by_route: defaultdict[str, list[ResolvedCall]] = defaultdict(list)
+    groups: defaultdict[tuple[str, str], list[ResolvedCall]] = defaultdict(list)
+    for item in calls.resolved:
+        by_route[item.call.key.route].append(item)
+        groups[(item.call.key.http_method, item.call.key.route)].append(item)
+
+    found: list[RegistryCallCandidate] = []
+    for (http_method, route), items in groups.items():
+        if len(items) < MIN_REGISTRY_CALLS:
+            continue
+        fields: dict[tuple[_Where, str], _Field] = {}
+        for item in items:
+            for where, name, value in _fields_of(item.raw):
+                known = fields.setdefault((where, name), _Field(set(), 0, []))
+                if value is None:
+                    known.nonliteral += 1
+                else:
+                    known.values.add(value)
+                known.seen.append((value is None, item.raw.file, item.raw.line))
+
+        for (where, name), known in fields.items():
+            if len(known.values) + (1 if known.nonliteral else 0) < 2:
+                continue
+            # Счёт «без различителя» — той же функцией, что у прогона:
+            # число обязано совпасть с `registry_unresolved` после записи правила.
+            rule = RegistryCall(route=route, discriminator_in=where, name=name)
+            effective = rules.get(route)
+            found.append(
+                RegistryCallCandidate(
+                    route=route,
+                    http_method=http_method,
+                    where=where,
+                    name=name,
+                    values=sorted(known.values)[:_VALUES],
+                    values_total=len(known.values),
+                    nonliteral=known.nonliteral,
+                    calls=len(items),
+                    route_calls=len(by_route[route]),
+                    modules=sorted({item.module for item in items}),
+                    configured=effective is not None
+                    and (effective.discriminator_in, effective.name) == (where, name),
+                    unresolved_when_configured=sum(
+                        1 for other in by_route[route] if not discriminator_of(other.raw, rule)
+                    ),
+                    examples=[f"{path}:{line}" for _, path, line in sorted(known.seen)[:_EXAMPLES]],
+                )
+            )
+
+    found.sort(key=lambda c: (-c.values_total, -c.calls, c.route, c.http_method, c.where, c.name))
+    return RegistryCallCandidates(
+        calls_resolved=len(calls.resolved),
+        calls_unresolved=len(calls.unresolved),
+        total=len(found),
+        offset=offset,
+        limits=list(REGISTRY_LIMITS),
+        items=_page(found, limit, offset),
+    )
+
+
+def registry_rule_text(item: RegistryCallCandidate) -> str:
+    """Элемент списка `web.registry_calls` одной строкой YAML (потоковая запись).
+
+    Маршрут и имя — в кавычках JSON: `{}` в маршруте (`api/lists/{}/items`)
+    и `[` в имени (`filter[name]`) внутри потоковой записи YAML иначе
+    читаются как вложенная структура.
+    """
+    route = json.dumps(item.route, ensure_ascii=False)
+    name = json.dumps(item.name, ensure_ascii=False)
+    return f"{{route: {route}, discriminator: {{in: {item.where}, name: {name}}}}}"
+
+
+def format_registry_calls(report: RegistryCallCandidates) -> str:
+    lines = [
+        f"Кандидаты в web.registry_calls: {report.total} "
+        f"(маршрут с одним глаголом, вызовов не меньше {MIN_REGISTRY_CALLS}, "
+        "поле тела или параметр query с разными значениями).",
+        f"Вызовов восстановлено {report.calls_resolved}, "
+        f"не восстановлено {report.calls_unresolved}: невосстановленные в счёт не идут.",
+    ]
+    for item in report.items:
+        mark = "  [уже в registry_calls]" if item.configured else ""
+        more = " …" if item.values_total > len(item.values) else ""
+        across = (
+            f"; у маршрута всего вызовов {item.route_calls} (другие глаголы или модули)"
+            if item.route_calls != item.calls
+            else ""
+        )
+        lines += [
+            "",
+            f"{item.http_method} {item.route} — {item.where}.{item.name}{mark}",
+            f"  значения ({item.values_total}): {', '.join(item.values) or '—'}{more}; "
+            f"выражением: {item.nonliteral}",
+            f"  вызовов {item.calls}{across}; "
+            f"с правилом без различителя останется {item.unresolved_when_configured}",
+            f"  модули: {', '.join(item.modules) or '—'}",
+            f"  в web.registry_calls: {registry_rule_text(item)}",
+            f"  примеры: {', '.join(item.examples)}",
+        ]
+
+    lines += ["", "Ограничения разбора:"]
+    lines += [f"  - {text}" for text in report.limits]
+    lines.append("")
+    lines.append(_page_line(report.total, report.offset, len(report.items)))
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------------------
 # Кандидаты в разделы без маршрута (`features` в `pages.yaml`)
 # --------------------------------------------------------------------------------------
 
@@ -841,9 +1088,11 @@ def format_features(report: FeatureCandidates) -> str:
 # Вид кандидатов → прогон → отчёт
 # --------------------------------------------------------------------------------------
 
-# Объединение отчётов всех видов: следующие задачи (S13) дописывают сюда
-# свои модели, а в `_KINDS` — свои функции.
-type CandidateReport = DiMethodCandidates | DispatchCandidates | FeatureCandidates
+# Объединение отчётов всех видов: новый вид дописывает сюда свою модель,
+# а в `_KINDS` — свою функцию.
+type CandidateReport = (
+    DiMethodCandidates | DispatchCandidates | RegistryCallCandidates | FeatureCandidates
+)
 
 
 @dataclass(frozen=True)
@@ -886,9 +1135,12 @@ def _dispatch_interfaces(inputs: CandidateInputs, limit: int, offset: int) -> Ca
 def _web_scan(inputs: CandidateInputs) -> tuple[WebScanResult, Overrides]:
     """Прогон шага `web` тем же путём, что у `web scan`: правила, `pages.yaml`, кэш.
 
-    `pages.yaml` читается тем же `load_page_overrides`: без объявленных
-    разделов отметка `declared` не значила бы ничего, а названный
-    и ненайденный файл — отказ, как у `web scan`, а не пустые правила.
+    Один на оба вида фронта. `pages.yaml` читается тем же `load_page_overrides`:
+    без объявленных разделов отметка `declared` у `features` не значила бы
+    ничего, а названный и ненайденный файл — отказ, как у `web scan`, а не
+    пустые правила. Виду `registry-calls` ручной состав не нужен — на вызовы
+    он не влияет, — но и не мешает: без `web.pages` правила пустые, а битый
+    названный файл — та же ошибка настройки, на которой упал бы `web scan`.
     """
     try:
         ruleset = load_ruleset(resolve_input(inputs.settings.web.rules, inputs.config), "web")
@@ -911,6 +1163,11 @@ def _web_scan(inputs: CandidateInputs) -> tuple[WebScanResult, Overrides]:
         raise InputError(f"ошибка в ручном составе страниц: {exc}") from exc
 
 
+def _registry_calls(inputs: CandidateInputs, limit: int, offset: int) -> CandidateReport:
+    result, _ = _web_scan(inputs)
+    return registry_call_candidates(result.calls, inputs.settings, limit=limit, offset=offset)
+
+
 def _features(inputs: CandidateInputs, limit: int, offset: int) -> CandidateReport:
     result, overrides = _web_scan(inputs)
     return feature_candidates(result.manifest, overrides, limit=limit, offset=offset)
@@ -920,6 +1177,7 @@ _KINDS: Final[dict[str, Callable[[CandidateInputs, int, int], CandidateReport]]]
     "di-methods": _di_methods,
     "dispatch-interfaces": _dispatch_interfaces,
     "features": _features,
+    "registry-calls": _registry_calls,
 }
 
 KINDS: Final[tuple[str, ...]] = tuple(sorted(_KINDS))
@@ -941,6 +1199,8 @@ def format_candidates(report: CandidateReport) -> str:
     """Текст для человека. Вид отчёта определяется моделью, а не флагом."""
     if isinstance(report, DispatchCandidates):
         return format_dispatch_interfaces(report)
+    if isinstance(report, RegistryCallCandidates):
+        return format_registry_calls(report)
     if isinstance(report, FeatureCandidates):
         return format_features(report)
     return format_di_methods(report)

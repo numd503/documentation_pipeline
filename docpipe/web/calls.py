@@ -75,6 +75,13 @@ class RawCall:
     (`?listInnerName=models`) живёт именно там, а нормализация маршрута его
     отбрасывает. Отбросить его здесь значило бы склеить все справочники
     в один ключ ещё до того, как конфигурация успеет что-то сказать.
+
+    `body_nonliteral` — поля объекта-тела, у которых значение есть, но не
+    строковый литерал: `{ listInnerName: name }`, `{ listInnerName }`.
+    Различителем прогон их не возьмёт, но поле, которое в одном вызове
+    `'users'`, а в другом — параметр, меняется от вызова к вызову, и это
+    признак обращения к реестру (`setup candidates registry-calls`). Без
+    списка тело было бы слепо к форме, которую query видит по `{}`.
     """
 
     file: str
@@ -85,6 +92,7 @@ class RawCall:
     reason: str = ""
     expression: str = ""
     body_fields: dict[str, str] = field(default_factory=dict)
+    body_nonliteral: tuple[str, ...] = ()
 
     @property
     def resolved(self) -> bool:
@@ -528,6 +536,30 @@ def _body_fields(node: Node) -> dict[str, str]:
     return found
 
 
+def _body_nonliteral(node: Node) -> tuple[str, ...]:
+    """Поля объекта-тела со значением-выражением: `{ a: name }`, `{ a }` -> (`a`,).
+
+    Вычисляемый ключ (`[k]: …`), спред и метод в счёт не идут: имени поля
+    у них нет, и правило `registry_calls` на них не напишешь.
+    """
+    if node.type != "object":
+        return ()
+    found: set[str] = set()
+    for child in node.named_children:
+        if child.type == "shorthand_property_identifier":
+            found.add(_text(child))
+            continue
+        if child.type != "pair":
+            continue
+        key = child.child_by_field_name("key")
+        value = child.child_by_field_name("value")
+        if key is None or value is None or key.type == "computed_property_name":
+            continue
+        if _literal_value(value) is None:
+            found.add(_literal_value(key) or _text(key))
+    return tuple(sorted(found))
+
+
 def extract_calls(root: Node, path: str) -> list[RawCall]:
     """Факты о HTTP-вызовах одного файла. От конфигурации не зависят."""
     captures = QueryCursor(_query("calls.scm")).captures(root)
@@ -574,6 +606,7 @@ def extract_calls(root: Node, path: str) -> list[RawCall]:
                 reason=reason,
                 expression=_compact(first),
                 body_fields=_body_fields(body) if body is not None else {},
+                body_nonliteral=_body_nonliteral(body) if body is not None else (),
             )
         )
 
@@ -627,11 +660,33 @@ class RegistryCall:
 
 
 @dataclass(frozen=True)
+class ResolvedCall:
+    """Восстановленный вызов вместе с фактом, из которого он построен.
+
+    Ключ вызова query-строку и поля тела уже потерял: нормализация маршрута
+    их отбрасывает, а в `WebCall` остаётся только различитель **настроенного**
+    правила. Вопрос «какое поле у этого маршрута меняется от вызова к вызову»
+    (`setup candidates registry-calls`) задаётся до настройки, поэтому ответ
+    на него — в паре «факт → ключ». Только в памяти: `RawCall` не кэшируется
+    и в манифест не идёт.
+
+    `module` — имя модуля фронта, по правилам которого построен ключ
+    (`web.url_rewrite` у каждого модуля свой).
+    """
+
+    raw: RawCall
+    call: WebCall
+    module: str = ""
+
+
+@dataclass(frozen=True)
 class CallScan:
     """Итог: что восстановлено, что нет и где смысл остался неизвестен.
 
     `registry_unresolved` — подмножество `calls`: маршрут известен, а различитель
     нет. Это состояние работы, а не дефект, и печатается оно числом.
+
+    `resolved` параллелен `calls`: тот же порядок, `resolved[i].call is calls[i]`.
 
     Инвариант: `len(calls) + len(unresolved)` равно общему числу найденных
     вызовов. Именно он делает число честным — иначе «восстановлено 58»
@@ -641,18 +696,60 @@ class CallScan:
     calls: list[WebCall] = field(default_factory=list)
     unresolved: list[RawCall] = field(default_factory=list)
     registry_unresolved: list[WebCall] = field(default_factory=list)
+    resolved: list[ResolvedCall] = field(default_factory=list)
+
+
+def query_parameters(url: str) -> tuple[dict[str, str], frozenset[str]]:
+    """Параметры query-строки: литеральные значения и имена со значением-подстановкой.
+
+    Литерал — то, что прогон возьмёт различителем: первое непустое значение
+    без `{}`. Подстановка (`listInnerName={}` из `` `…=${type}` ``) — имя,
+    у которого значение есть, но задано выражением; имя с литералом сюда
+    не попадает, даже если в другом месте строки оно стоит с подстановкой.
+    Имя с `{}` и параметр без значения (`?flag`, `?a=`) не идут никуда:
+    правило на них не напишешь.
+    """
+    _, separator, query = url.partition("?")
+    if not separator:
+        return {}, frozenset()
+    literal: dict[str, str] = {}
+    substituted: set[str] = set()
+    for item in query.split("&"):
+        key, has_value, value = item.partition("=")
+        if not key or "{}" in key:
+            continue
+        if has_value and value and "{}" not in value:
+            literal.setdefault(key, value)
+        elif "{}" in value:
+            substituted.add(key)
+    return literal, frozenset(substituted - literal.keys())
 
 
 def _query_value(url: str, name: str) -> str | None:
     """Значение параметра query-строки. `{}` (подстановка) значением не считается."""
-    _, separator, query = url.partition("?")
-    if not separator:
-        return None
-    for item in query.split("&"):
-        key, has_value, value = item.partition("=")
-        if key == name and has_value and value and "{}" not in value:
-            return value
-    return None
+    return query_parameters(url)[0].get(name)
+
+
+def registry_rules(registry: list[RegistryCall] | None) -> dict[str, RegistryCall]:
+    """Маршрут → правило ровно так, как их сверяет прогон.
+
+    Маршрут правила нормализуется **без** `url_rewrite`, маршрут вызова —
+    с преобразованием своего модуля. Поэтому правило пишут в форме после
+    преобразования: `api/items/query` при `add_prefix: /gw` не сработает
+    никогда, и это будет выглядеть как «инструмент не нашёл».
+
+    Два правила на один маршрут — действует последнее: загрузка повтор
+    маршрута не отвергает. Отметка «уже в настройке» у кандидатов читает
+    этот же словарь, чтобы значить «прогон это правило применит».
+    """
+    return {normalize_route(item.route): item for item in (registry or ())}
+
+
+def discriminator_of(item: RawCall, rule: RegistryCall) -> str:
+    """Различитель, который правило даст этому вызову; пустая строка — не найден."""
+    if rule.discriminator_in == "body":
+        return item.body_fields.get(rule.name, "")
+    return _query_value(item.url or "", rule.name) or ""
 
 
 # Схема в начале строки: `https://`, `http://`, `wss://`. Ищется **в начале**,
@@ -687,13 +784,19 @@ def build_calls(
     *,
     rewrite: RewriteRule | None = None,
     registry: list[RegistryCall] | None = None,
+    module: str = "",
 ) -> CallScan:
-    """Превратить факты в ключи связи с учётом конфигурации."""
-    registry_by_route = {normalize_route(item.route): item for item in (registry or ())}
+    """Превратить факты в ключи связи с учётом конфигурации.
+
+    `module` только подписывает пары `resolved`: правило модуля приходит
+    готовым в `rewrite`.
+    """
+    registry_by_route = registry_rules(registry)
 
     calls: list[WebCall] = []
     unresolved: list[RawCall] = []
     registry_unresolved: list[WebCall] = []
+    resolved: list[ResolvedCall] = []
 
     for item in raw:
         if item.url is None:
@@ -702,12 +805,7 @@ def build_calls(
 
         route = normalize_route(item.url, rewrite=rewrite)
         rule = registry_by_route.get(route)
-        discriminator = ""
-        if rule is not None:
-            if rule.discriminator_in == "body":
-                discriminator = item.body_fields.get(rule.name, "")
-            else:
-                discriminator = _query_value(item.url, rule.name) or ""
+        discriminator = discriminator_of(item, rule) if rule is not None else ""
 
         call = WebCall(
             file=item.file,
@@ -717,7 +815,13 @@ def build_calls(
             host=url_host(item.url),
         )
         calls.append(call)
+        resolved.append(ResolvedCall(raw=item, call=call, module=module))
         if rule is not None and not discriminator:
             registry_unresolved.append(call)
 
-    return CallScan(calls=calls, unresolved=unresolved, registry_unresolved=registry_unresolved)
+    return CallScan(
+        calls=calls,
+        unresolved=unresolved,
+        registry_unresolved=registry_unresolved,
+        resolved=resolved,
+    )
