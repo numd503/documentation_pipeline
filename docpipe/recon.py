@@ -20,12 +20,13 @@
 и сравнить два прогона нельзя. Все списки сортируются явным ключом; порядок
 обхода файловой системы источником порядка не является нигде.
 
-Запуск:
+Запуск — командой пакета или этим файлом напрямую (он на одной stdlib,
+поэтому идёт и там, где `docpipe` не установлен):
 
-    python3 tools/recon.py                       # человеку, на stdout
-    python3 tools/recon.py --root ПУТЬ
-    python3 tools/recon.py --json recon.json     # машине (вход R02 и R03)
-    python3 tools/recon.py --json recon.json --text recon.txt
+    docpipe recon --root ПУТЬ                         # человеку, на stdout
+    docpipe recon --root ПУТЬ --json recon.json       # машине (вход R02 и R03)
+    docpipe recon --root ПУТЬ --json recon.json --text recon.txt
+    python3 docpipe/recon.py --root ПУТЬ              # из клона, без установки
 """
 
 from __future__ import annotations

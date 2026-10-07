@@ -80,7 +80,7 @@ def test_json_is_a_valid_report_and_agrees_with_the_text(nested: Path) -> None:
     assert code == 0, output
 
     report = ConfigReport.model_validate_json(output)
-    assert report.schema_version == "1.0"
+    assert report.schema_version == "1.1"
     assert report.problems == []
     by_key = {item.key: item for item in report.inputs}
     assert [item.key for item in report.inputs] == list(INPUT_KEYS)
@@ -326,6 +326,105 @@ def test_missing_target_directory_is_not_a_problem(nested: Path) -> None:
     assert targets["out"].resolved == str(nested / "artifacts" / "doc-tree.json")
     assert code == 0, output
     assert "Всё, что настроено, на месте." in output
+
+
+# --------------------------------------------------------------------------------------
+# Плейсхолдеры установщика (S08 плана настройки, строка 21)
+# --------------------------------------------------------------------------------------
+
+BUNDLE_CONFIG = Path("deploy/cashflow-docspipe/docpipe.yaml")
+
+
+def test_raw_bundle_reports_every_placeholder() -> None:
+    """Файл поставки, позванный мимо установщика, — не «всё на месте».
+
+    `@CONFIG_DIR@/artifacts/doc-tree.json` — законное значение цели записи:
+    прогон создаст каталог `@CONFIG_DIR@` и напишет туда. До проверки это
+    выглядело обычным путём, а `@ENGINE@` давал только «движка нет».
+    Ключи перечислены явно: новый плейсхолдер в поставке обязан попасть
+    в этот список осознанно.
+    """
+    settings = load_config(BUNDLE_CONFIG)
+
+    report = check_config(settings, BUNDLE_CONFIG, Path("."), Path.cwd())
+
+    placeholders = [item for item in report.problems if item.code == "placeholder-left"]
+    assert [item.key for item in placeholders] == [
+        "business_root",
+        "cache_dir",
+        "docs_scan_exclude",
+        "graph.cache_dir",
+        "graph.engine_path",
+        "graph.out",
+        "out",
+        "web.link_out",
+        "web.out",
+        "worklist",
+    ]
+    assert all("незаменённый плейсхолдер @" in item.message for item in placeholders)
+    # Плейсхолдер — причина, «движка нет» — её следствие: второй строкой
+    # о том же ключе была бы подсказка чинить не то.
+    assert "engine-missing" not in {item.code for item in report.problems}
+    assert report.problems[0].code == "placeholder-left"
+
+
+def test_installed_bundle_has_no_placeholder(tmp_path: Path) -> None:
+    """Та же поставка после подстановки установщика проверку проходит."""
+    text = BUNDLE_CONFIG.read_text(encoding="utf-8")
+    for name, value in (
+        ("@CONFIG_DIR@", "docs/ml/docpipe"),
+        ("@CACHE_DIR@", str(tmp_path / "cache")),
+        ("@ENGINE@", str(tmp_path / "engine")),
+    ):
+        text = text.replace(name, value)
+    installed = tmp_path / "docpipe.yaml"
+    installed.write_text(text, encoding="utf-8")
+
+    report = check_config(load_config(installed), installed, Path("."), tmp_path)
+
+    assert "placeholder-left" not in {item.code for item in report.problems}
+    assert "engine-missing" in {item.code for item in report.problems}
+
+
+def test_placeholder_in_an_input_and_a_list_is_named_once(nested: Path) -> None:
+    """У входа плейсхолдер вместо «не найден», в списке — каждый элемент.
+
+    Две строки о плейсхолдерах одного ключа законны (элементов два), а «не
+    найден» у того же входа — нет: чинится всё одной подстановкой.
+    """
+    config = nested / CONFIG
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'rules: "rules.yaml"\nweb:', 'rules: "@CONFIG_DIR@/rules.yaml"\nweb:'
+        )
+        + 'docs_scan_exclude: ["@CONFIG_DIR@/**", "@BUSINESS@/**"]\n'
+        + 'arch_adapters:\n  - {id: regs, adapter: registries, options: {spec: "@SPEC@"}}\n',
+        encoding="utf-8",
+    )
+
+    report = _check(nested)
+    code, output = _invoke()
+
+    assert code == 1
+    assert [(item.code, item.key) for item in report.problems] == [
+        ("placeholder-left", "arch_adapters[regs].options.spec"),
+        ("placeholder-left", "docs_scan_exclude"),
+        ("placeholder-left", "docs_scan_exclude"),
+        ("placeholder-left", "rules"),
+    ]
+    assert "@BUSINESS@" in report.problems[1].message
+    assert "@CONFIG_DIR@" in report.problems[2].message
+    assert "незаменённый плейсхолдер @CONFIG_DIR@" in output
+
+
+@pytest.mark.parametrize("value", ["api/@me@/items", "user@host", "a@b@c", "@Engine@"])
+def test_lowercase_at_pairs_are_not_placeholders(nested: Path, value: str) -> None:
+    """Плейсхолдер установщика — прописное имя в рамке `@`; остальное законно."""
+    _append(nested, f'docs_scan_exclude: ["{value}"]\n')
+
+    report = _check(nested)
+
+    assert report.problems == []
 
 
 # --------------------------------------------------------------------------------------

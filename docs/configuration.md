@@ -15,6 +15,7 @@
 | **`--root`** (корень репозитория) | `docs_root`, `modules_dir`, `business_root`, `cache_dir`, `roots`, `web.roots`, `arch_adapters[].options.path` (адаптер `python_code`) |
 | **входы**: текущий каталог, затем каталог `docpipe.yaml` | `rules`, `web.rules`, `web.pages`, `templates`, `ownership`, `registries`, `arch`, `arch_adapters[].options.spec` (адаптер `registries`) |
 | **цели записи**: только текущий каталог | `out`, `worklist`, `web.out`, `web.link_out`, `graph.out`, `graph.cache_dir` |
+| **бинарь движка**: только текущий каталог, `~` разворачивается | `graph.engine_path` (второй ступени нет: мост запускает и сверяет чек-сумму ровно по этому пути) |
 | не пути: глобы и значения | `enrolled`, `not_enrolled`, `exclude`, `domains`, `doc_layout`, `docs_scan_exclude`, `di_methods`, `dispatch_interfaces`, `web.url_rewrite`, `web.registry_calls` |
 
 Репо-относительные ключи проверяются валидатором: абсолютный путь, `..`
@@ -176,7 +177,8 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 и база, от которой он отсчитан, у движка — есть ли файл.
 
 `--format json` даёт тот же отчёт структурой (`ConfigReport`, `schema_version`
-`1.0`, модуль `docpipe/configcheck.py`): его читает ассистент настройки.
+`1.1` — с кодом `placeholder-left`; модуль `docpipe/configcheck.py`): его
+читает ассистент настройки.
 Пути входов в нём записаны так, как их увидит команда, — относительно `cwd`
 отчёта; остальные разрешённые пути абсолютные. Отчёт — ответ для этой машины,
 а не артефакт: между машинами его не сравнивают.
@@ -186,6 +188,7 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 
 | Код проблемы | Когда |
 |---|---|
+| `placeholder-left` | в значении любого ключа остался плейсхолдер установщика (`@CONFIG_DIR@`, `@CACHE_DIR@`, `@ENGINE@` — прописное имя в рамке `@`): файл поставки позвали мимо `install.sh`. Цель записи с ним выглядит обычным путём, и прогон создал бы каталог `@CONFIG_DIR@`. Остальные проблемы того же значения («не найден», «движка нет») не печатаются — это следствия |
 | `input-missing` | названный вход не найден ни на одной ступени |
 | `root-missing` | каталога из `roots` или `web.roots` нет под `--root`: обход молча дал бы ноль файлов |
 | `adapter-input-missing` | у адаптера нет файла на входе или не задан обязательный параметр |
@@ -251,38 +254,38 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 
 ## Кто что читает
 
-| Ключ | scan | materialize | worklist | docs status / accept / adopt | business | anchors | arch | graph |
-|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
-| `roots` | ✓ | | | | | | | |
-| `enrolled` | ✓ | | | | | | | |
-| `not_enrolled` | ✓ | | | | | | | |
-| `exclude` | ✓ | | | | | | | ✓ |
-| `domains` | ✓ | | | | | | | |
-| `rules` | ✓ | | | | | | | |
-| `cache_dir` | ✓ | | | | | | | |
-| `out` | ✓ | | | | | | | |
-| `doc_layout` | ✓ | ✓ | ✓ | ✓ | | | | |
-| `modules_dir` | ✓ | ✓ | ✓ | ✓ | | | | |
-| `docs_root` | ✓ | ✓ | ✓ | ✓ | | | | |
-| `docs_scan_exclude` | | ✓ | ✓ | ✓ | | | | |
-| `templates` | | ✓ | ✓ | ✓ | ✓ | | | |
-| `ownership` | | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| `registries` | | ○ | ○ | ○ | ✓ | ✓ | | |
-| `dispatch_interfaces` | ✓ | | | | | | | |
-| `di_methods` | ✓ | | | | | | | |
-| `arch` | | | | | | | ✓ | ✓ |
-| `arch_adapters` | | | | | | | ✓ | ✓ |
-| `graph.*` | | | | | | | | ✓ |
-| `business_root` | | ○ | ○ | ○ | ✓ | | | ✓ |
-| `worklist` | | | ✓ | | | | | |
-| `web.roots` | | | | | | | | |
-| `web.rules` | | | | | | | | |
-| `web.pages` | | | | | | | | |
-| `web.modules_dir` | | ✓ | ✓ | ✓ | | | | |
-| `web.out` | | | | | ○ | | | |
-| `web.link_out` | | | | | | | | |
-| `web.url_rewrite` | | | | | | | | |
-| `web.registry_calls` | | | | | | | | |
+| Ключ | scan | web scan | web link | materialize | worklist | docs status / accept / adopt | business | anchors | arch | graph |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+| `roots` | ✓ | | | | | | | | | |
+| `enrolled` | ✓ | | | | | | | | | |
+| `not_enrolled` | ✓ | | | | | | | | | |
+| `exclude` | ✓ | ✓ | | | | | | | | ✓ |
+| `domains` | ✓ | | | | | | | | | |
+| `rules` | ✓ | | | | | | | | | |
+| `cache_dir` | ✓ | ✓ | | | | | | | | |
+| `out` | ✓ | | | | | | | | | |
+| `doc_layout` | ✓ | ✓ | | ✓ | ✓ | ✓ | | | | |
+| `modules_dir` | ✓ | ✓ | | ✓ | ✓ | ✓ | | | | |
+| `docs_root` | ✓ | ✓ | | ✓ | ✓ | ✓ | | | | |
+| `docs_scan_exclude` | | | | ✓ | ✓ | ✓ | | | | |
+| `templates` | | | | ✓ | ✓ | ✓ | ✓ | | | |
+| `ownership` | | | | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| `registries` | | | | ○ | ○ | ○ | ✓ | ✓ | | |
+| `dispatch_interfaces` | ✓ | | | | | | | | | |
+| `di_methods` | ✓ | | | | | | | | | |
+| `arch` | | | | | | | | | ✓ | ✓ |
+| `arch_adapters` | | | | | | | | | ✓ | ✓ |
+| `graph.*` | | | | | | | | | | ✓ |
+| `business_root` | | | | ○ | ○ | ○ | ✓ | | | ✓ |
+| `worklist` | | | | | ✓ | | | | | |
+| `web.roots` | | ✓ | | | | | | | | |
+| `web.rules` | | ✓ | | | | | | | | |
+| `web.pages` | | ✓ | | | | | | | | |
+| `web.modules_dir` | | ✓ | | ✓ | ✓ | ✓ | | | | |
+| `web.out` | | ✓ | | | | | ○ | | | |
+| `web.link_out` | | | ✓ | | | | | | | |
+| `web.url_rewrite` | | ✓ | ✓ | | | | | | | |
+| `web.registry_calls` | | ✓ | | | | | | | | |
 
 ✓ — читается и влияет на результат; ○ — читается мягко: неготовый бизнес-слой
 не роняет шаг 2, раздел «Бизнес-контекст» просто не собирается. Мягко — не
@@ -290,6 +293,24 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 с префиксом `бизнес-ссылки:`, код возврата при этом прежний. Владение для
 селектора `only.team` бизнес-ссылки берут то же, что и план: `--ownership`,
 а без флага — ключ `ownership`.
+
+**`web scan` и `web link` читают разное, и путать их дорого.** `web scan`
+разбирает фронт: обходит `web.roots` с отсевом `exclude`, кэширует разбор
+в `cache_dir`, собирает `doc_path` из `docs_root` + `web.modules_dir` (пустой —
+`modules_dir`) по `doc_layout` и **уже здесь** переписывает адреса вызовов
+по `web.url_rewrite` и различает обращения к реестру по `web.registry_calls`.
+`web link` сводит два готовых манифеста и из настройки читает только
+`web.link_out` и **имена модулей** `web.url_rewrite` — чтобы назвать модули
+без записи. Отсюда ловушка: правка префикса в `url_rewrite` без повторного
+`web scan` не меняет ни одной связи, исчезает только строка «модуль
+не настроен» — и правка выглядит сделанной.
+
+**`enrolled` и `domains` на шаг `web` не действуют.** Каждый модуль фронта
+`enrolled: true` и без домена (`web/modules.py`, `_build`), поэтому
+`--fail-on-undecided` фронта считает нерешённое по всем найденным модулям.
+Область фронта задаётся иначе: какие каталоги обходить — `web.roots`, куда
+не заходить — `exclude` верхнего уровня, что внутри области не документировать —
+отсев секции `web` файла правил (с причиной).
 
 `docpipe setup candidates` колонкой не выделен: виды `di-methods`
 и `dispatch-interfaces` зовут прогон шага 1 и читают ровно ключи столбца
@@ -306,9 +327,22 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 читает только `docpipe graph *`: ни одна команда шага 1, шага 2 или бизнес-слоя
 её не касается, и это то самое свойство, ради которого индекс собирается рядом
 с манифестом, а не внутри него. В обратную сторону граф читает чужие ключи:
-`graph build` — `exclude` (тот же отсев, что у `scan`), `arch` и `arch_adapters`
-(корни и швы из реестра), `graph coverage` — `business_root`. Манифесты шагов 1
-и `web` он берёт не из `out`, а флагами `--manifest` и `--web-manifest`.
+`graph build` — `exclude` (тот же отсев, что у `scan`: встроенный список плюс
+`exclude`), `arch` и `arch_adapters` (корни и швы из реестра), `graph coverage` —
+`business_root`. Манифесты шагов 1 и `web` он берёт не из `out`, а флагами
+`--manifest` и `--web-manifest`.
+
+**Отсев `graph build` — фильтр по выходу движка, а не обход.** Движок разбирает
+репозиторий своим обходом, и узлы из файлов под отсевом отбрасываются потом
+(строка «узлов разбора отсеяно: отсев файлового множества» в отчёте сборки).
+До 08.10.2026 туда шёл один пользовательский `exclude`, без встроенного списка,
+а движок 0.6.0 сам пропускает не всё: `obj/`, `node_modules/`, `dist/` —
+в любом режиме, `bin/` — только в `fast` и `moderate`, а `*.g.cs` разбирает
+всегда. Сгенерированные классы попадали в граф, которого нет в манифесте.
+Обратное тоже есть: собственный список пропусков движка длиннее нашего
+и зависит от `graph.mode` (в `fast` молча пропускаются `migrations`,
+`generated`, `docs`, `samples`, `integration`, файлы `.spec.`/`.test.` и ещё
+три десятка имён) — пункт в [`backlog.md`](backlog.md).
 Реестр для графа `graph build` собирает строго: названный в `arch` файл,
 которого нет, и ошибка любого адаптера — отказ с кодом 2 и перечнем находок
 (подробнее — [`arch-registry.md`](arch-registry.md)). Не задан ни `arch`,
@@ -354,9 +388,11 @@ di_methods: ["AddSingletonAs", "AddTransientAs", "AddScopedAs"]
 
 Умолчание пустое, и это не осторожность: имя, придуманное по одному
 репозиторию, на другом совпадёт не с тем вызовом. Зато **без** ключа
-репозиторий со своей обёрткой даёт ноль регистраций молча — на squidex так
-терялись 314 регистраций из 361, а отчёт показывал 67, потому что
-стандартная форма там тоже встречается. Симптом: связывание по контейнеру
+репозиторий со своей обёрткой даёт ноль регистраций молча — на squidex
+314 вызовов обёрток (275 `AddSingletonAs`, 37 `AddTransientAs`, 2 `AddScopedAs`)
+не давали ни одной: отчёт показывал 67 регистраций вместо 421
+([`manual-run.md`](manual-run.md), §5), потому что стандартная форма там
+тоже встречается. Симптом: связывание по контейнеру
 даёт почти пустой результат при непустом числе регистраций.
 
 Вид времени жизни читается из имени подстрокой (`…Singleton…` → `singleton`).
@@ -462,12 +498,12 @@ docs/front/...     фронт,  единица документации — ст
 ```yaml
 version: "1"
 
-dotnet:            # читают scan, symbols, validate
+dotnet:            # читают scan, symbols, setup candidates
   ruleset_version: "…"
   exclude: {…}
   rules: […]
 
-web:               # читает web scan
+web:               # читают web scan, symbols --lang ts
   ruleset_version: "…"
   exclude: {…}
   rules: […]
@@ -490,13 +526,15 @@ uv run python tools/migrate_rules.py --dotnet rules.yaml --out rules.yaml
 `version` живёт снаружи секций: это свойство формата файла, а не набора.
 `ruleset_version` — внутри каждой, он уходит в манифест и в `business_hash`.
 
-**Секцию `web` читают команды `web scan` и `web link`, а также
-`symbols --lang ts` и `setup candidates` (`features`, `registry-calls`)** —
-они разбирают фронт заново тем же путём, что `web scan`, и потому читают
-`web.rules` (секцию `web` файла правил), `web.roots` и `web.pages`. В таблице
-выше колонок для них нет намеренно: колонка на два ключа шире таблицы, а состав
-секции описан ниже отдельно. Исключение одно: `web.out` мягко читает `business`
-— оттуда берётся манифест фронта для якорей `page`, и отсутствие файла значит
+**Секцию `web` файла правил читают `web scan`, `symbols --lang ts` и `setup candidates`
+(`features`, `registry-calls`)** — последние разбирают фронт заново тем же путём,
+что `web scan`, и потому читают
+`web.rules`, `web.roots` и `web.pages`. `validate` не читает ни конфигурации,
+ни правил: он проверяет готовый манифест. `web link` правил тоже не читает,
+а из секции `web` конфигурации берёт только `link_out` и имена модулей
+`url_rewrite` (столбцы `web scan` и `web link` в таблице «Кто что читает»).
+Ещё один читатель вне шагов фронта: `web.out` мягко читает `business` —
+оттуда берётся манифест фронта для якорей `page`, и отсутствие файла значит
 «страниц ноль», а не отказ.
 
 | Ключ секции `web` | Что задаёт |

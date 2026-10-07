@@ -12,11 +12,16 @@
 """
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
-from docpipe.graph import build, logical_hash, project
+from docpipe import cli
+from docpipe.config import load_config
+from docpipe.emit import DEFAULT_EXCLUDE, exclude_globs
+from docpipe.graph import build, logical_hash, project, read_index, read_meta
 from docpipe.graph import engine as engine_module
 from docpipe.graph.engine import (
     EXPECTED_VERSION,
@@ -350,6 +355,127 @@ def test_engine_skips_whole_directories_without_saying_so(tmp_path: Path) -> Non
     assert indexed == {"src", "clients"}, indexed
     for directory in SKIPPED_DIRECTORIES:
         assert directory not in indexed
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Отсев `graph build` — тот же, что у `scan` (S08 плана настройки, строка 5)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Встроенный отсев `scan` на каждом его шаблоне: что движок пропускает сам
+# и что нет. `bin/` лежит в обоих списках: его пропуск зависит от режима.
+_SCAN_DROPS = {
+    "src/App/Foo.g.cs": "FooGenerated",
+    "src/App/obj/InObj.cs": "InObj",
+    "src/App/bin/InBin.cs": "InBin",
+    "web/node_modules/lib/InNodeModules.ts": "InNodeModules",
+    "web/dist/InDist.ts": "InDist",
+}
+
+
+def _repo_with_scan_drops(root: Path) -> Path:
+    (root / "src" / "App").mkdir(parents=True)
+    (root / "src" / "App" / "Foo.cs").write_text(
+        "namespace App { public class Foo { public int Run() { return 1; } } }\n",
+        encoding="utf-8",
+    )
+    for relative, name in _SCAN_DROPS.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = (
+            f"namespace App {{ public class {name} {{ public int Run() {{ return 1; }} }} }}\n"
+            if relative.endswith(".cs")
+            else f"export class {name} {{ run() {{ return 1; }} }}\n"
+        )
+        path.write_text(body, encoding="utf-8")
+    return root
+
+
+def _indexed_files(engine: Engine, root: Path) -> set[str]:
+    run = engine.index(root)
+    rows = engine.query(run.project, "MATCH (n:File) RETURN n.qualified_name, n.file_path")
+    return {row[-1] for row in rows if row and row[-1]}
+
+
+@engine_required
+def test_engine_parses_what_scan_drops(tmp_path: Path) -> None:
+    """Контрактный тест: встроенный отсев `scan` движок делает не весь.
+
+    `obj/`, `node_modules/`, `dist/` он пропускает сам в любом режиме, а
+    `*.g.cs` разбирает всегда, `bin/` — в режиме `full`. Пока `graph build`
+    отдавал мосту один пользовательский `exclude`, сгенерированные классы
+    попадали в граф, хотя в манифесте их нет. Если следующая версия начнёт
+    пропускать их сама, это упадёт здесь — и отсев в мосте станет избыточным,
+    но не вредным.
+    """
+    repo = _repo_with_scan_drops(tmp_path / "repo")
+
+    fast = _indexed_files(Engine(binary=ENGINE_PATH, cache_dir=tmp_path / "fast"), repo)
+    full = _indexed_files(
+        Engine(binary=ENGINE_PATH, cache_dir=tmp_path / "full", mode="full"), repo
+    )
+
+    assert fast == {"src/App/Foo.cs", "src/App/Foo.g.cs"}, fast
+    assert full == {"src/App/Foo.cs", "src/App/Foo.g.cs", "src/App/bin/InBin.cs"}, full
+
+
+def test_graph_build_hands_the_bridge_the_scan_exclusions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Без движка: предикат, который `graph build` отдаёт мосту, — `exclude_globs`.
+
+    Встроенный список складывается с пользовательским, как у `scan`, а не
+    замещается им: иначе человек, дописавший `exclude: ["vendor/**"]`,
+    получал бы в графе `*.g.cs`, которых нет в манифесте.
+    """
+    seen: dict[str, Callable[[str], bool]] = {}
+
+    def fake_build(
+        _engine: Engine, _root: Path, *, is_excluded: Callable[[str], bool], **_: object
+    ):
+        seen["excluded"] = is_excluded
+        raise EngineError("стоп: дальше движок не нужен")
+
+    monkeypatch.setattr(cli, "build_graph", fake_build)
+    config = tmp_path / "docpipe.yaml"
+    config.write_text(
+        'exclude: ["vendor/**"]\ngraph:\n  engine_path: "/нет/движка"\n', encoding="utf-8"
+    )
+
+    result = CliRunner().invoke(
+        cli.app, ["graph", "build", "--root", str(tmp_path), "--config", str(config)]
+    )
+
+    assert result.exit_code == 2, result.output
+    excluded = seen["excluded"]
+    assert all(excluded(path) for path in _SCAN_DROPS), _SCAN_DROPS
+    assert excluded("vendor/Lib.cs")
+    assert not excluded("src/App/Foo.cs")
+    assert set(exclude_globs(load_config(config))) >= {*DEFAULT_EXCLUDE, "vendor/**"}
+
+
+@engine_required
+def test_generated_file_does_not_reach_the_index(tmp_path: Path) -> None:
+    """Сквозной прогон: `Foo.g.cs` в индекс не попадает, и отсев виден в отчёте."""
+    repo = _repo_with_scan_drops(tmp_path / "repo")
+    out = tmp_path / "graph.db"
+    config = tmp_path / "docpipe.yaml"
+    config.write_text(
+        "graph:\n"
+        f'  engine_path: "{ENGINE_PATH}"\n'
+        f'  out: "{out}"\n'
+        f'  cache_dir: "{tmp_path / "engine-cache"}"\n',
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli.app, ["graph", "build", "--root", str(repo), "--config", str(config)]
+    )
+
+    assert result.exit_code == 0, result.output
+    files = {node.file for node in read_index(out).nodes}
+    assert "src/App/Foo.cs" in files
+    assert not any(file.endswith(".g.cs") for file in files), files
+    assert read_meta(out).report.get("узлов разбора отсеяно: отсев файлового множества", 0) > 0
 
 
 # ──────────────────────────────────────────────────────────────────────────────

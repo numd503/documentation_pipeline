@@ -16,6 +16,8 @@
 от `cwd` и `--root` этой машины, и сравнивать его между машинами незачем.
 """
 
+import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Final, Literal
 
@@ -23,9 +25,16 @@ from pydantic import BaseModel, ConfigDict
 
 from docpipe.config import DocpipeConfig, candidate_inputs
 
-SCHEMA_VERSION: Final = "1.0"
+# 1.1 — код проблемы `placeholder-left` (S08 плана настройки).
+SCHEMA_VERSION: Final = "1.1"
 
-ProblemCode = Literal["input-missing", "root-missing", "adapter-input-missing", "engine-missing"]
+ProblemCode = Literal[
+    "placeholder-left",
+    "input-missing",
+    "root-missing",
+    "adapter-input-missing",
+    "engine-missing",
+]
 AdapterOption = Literal["spec", "path"]
 AdapterBase = Literal["config", "root"]
 
@@ -70,9 +79,17 @@ ADAPTER_INPUTS: Final[dict[str, tuple[AdapterOption, AdapterBase]]] = {
     "python_code": ("path", "root"),
 }
 
+# Плейсхолдер установщика: `@CONFIG_DIR@`, `@CACHE_DIR@`, `@ENGINE@`. Имя —
+# прописными, как у подстановок autoconf и `install.sh`: пара `@` вокруг
+# строчного слова в пути или маршруте законна, а прописное имя в такой
+# рамке — только недоделанная подстановка.
+PLACEHOLDER: Final = re.compile(r"@[A-Z][A-Z0-9_]*@")
+
 # Порядок проблем — порядок разделов отчёта, чтобы сводка читалась сверху вниз
-# так же, как сам отчёт.
+# так же, как сам отчёт. Плейсхолдер — первым: он причина, а «не найден»
+# и «нет движка» у того же ключа — её следствия.
 _PROBLEM_ORDER: Final[tuple[ProblemCode, ...]] = (
+    "placeholder-left",
     "input-missing",
     "root-missing",
     "adapter-input-missing",
@@ -183,7 +200,7 @@ class ConfigProblem(_Frozen):
 
 
 class ConfigReport(_Frozen):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["1.1"] = SCHEMA_VERSION
     config: str | None
     cwd: str
     root: str
@@ -207,6 +224,58 @@ def _key_value(settings: DocpipeConfig, key: str) -> object:
     section, _, name = key.partition(".")
     holder: object = settings if not name else getattr(settings, section)
     return getattr(holder, name or section)
+
+
+def _string_values(value: object, key: str) -> Iterator[tuple[str, str]]:
+    """Все строковые значения настройки с путём ключа: `(ключ, значение)`.
+
+    Путь ключа — тот же, каким его называют остальные проблемы: элемент
+    списка строк — ключом списка (`docs_scan_exclude`), запись адаптера —
+    по `id` (`arch_adapters[regs].options.spec`), прочие записи списков —
+    `[]` (`web.url_rewrite[].strip_prefix`). Ключи словарей значениями
+    не считаются: в `domains` это глобы, а не пути из подстановки.
+    """
+    if isinstance(value, str):
+        yield key, value
+    elif isinstance(value, dict):
+        for name, item in value.items():
+            yield from _string_values(item, f"{key}.{name}" if key else str(name))
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                ident = item.get("id")
+                yield from _string_values(item, f"{key}[{ident if isinstance(ident, str) else ''}]")
+            else:
+                yield from _string_values(item, key)
+
+
+def _placeholders(settings: DocpipeConfig) -> list[ConfigProblem]:
+    """Незаменённые плейсхолдеры установщика — в любом ключе, не только в путях.
+
+    `@CONFIG_DIR@/artifacts/doc-tree.json` — законное значение цели записи:
+    прогон создаст каталог `@CONFIG_DIR@` в текущем и напишет туда, а человек
+    будет искать манифест там, где его нет. `@ENGINE@` до этой проверки
+    ловился только как «движка нет», и причина — файл поставки позвали
+    напрямую, мимо установщика, — не называлась.
+    """
+    found: list[ConfigProblem] = []
+    raw = settings.model_dump(mode="json", by_alias=True)
+    for key, value in _string_values(raw, ""):
+        names = sorted(set(PLACEHOLDER.findall(value)))
+        if not names:
+            continue
+        found.append(
+            ConfigProblem(
+                code="placeholder-left",
+                key=key,
+                message=(
+                    f"{key}: {value!r} — незаменённый плейсхолдер {', '.join(names)}. "
+                    "Его подставляет установщик; файл из поставки читают только "
+                    "после установки"
+                ),
+            )
+        )
+    return found
 
 
 def _first_existing(candidates: list[Path], cwd: Path) -> Path | None:
@@ -285,19 +354,26 @@ def check_config(
 ) -> ConfigReport:
     """Разрешить каждый путь настройки так, как его разрешит команда из `cwd` с `--root`.
 
-    Проблема — только то, что действительно ломает прогон: ненайденный вход,
-    корень обхода без каталога, вход адаптера без файла, названный, но
-    отсутствующий движок. Каталог цели записи, которого ещё нет, проблемой
-    не считается: его создаст первый прогон.
+    Проблема — только то, что действительно ломает прогон: незаменённый
+    плейсхолдер установщика, ненайденный вход, корень обхода без каталога,
+    вход адаптера без файла, названный, но отсутствующий движок. Каталог цели
+    записи, которого ещё нет, проблемой не считается: его создаст первый прогон.
+
+    Значение с плейсхолдером даёт одну проблему — `placeholder-left`, а не
+    ещё и «не найден» или «движка нет»: то следствия, и чинится всё одной
+    подстановкой. Разрешение такого пути в разделах отчёта остаётся.
     """
     absolute_root = (cwd / root).resolve()
-    problems: list[ConfigProblem] = []
+    problems: list[ConfigProblem] = _placeholders(settings)
+
+    def placeholder(value: str) -> bool:
+        return PLACEHOLDER.search(value) is not None
 
     inputs = [
         _check_input(key, str(_key_value(settings, key) or ""), config, cwd) for key in INPUT_KEYS
     ]
     for item in inputs:
-        if item.value and item.found is None:
+        if item.value and item.found is None and not placeholder(item.value):
             problems.append(
                 ConfigProblem(
                     code="input-missing",
@@ -347,7 +423,7 @@ def check_config(
                 key=roots_key, entry=shown, resolved=str(resolved), exists=resolved.is_dir()
             )
             roots.append(check)
-            if not check.exists:
+            if not check.exists and not placeholder(shown):
                 problems.append(
                     ConfigProblem(
                         code="root-missing",
@@ -367,7 +443,7 @@ def check_config(
         if checked is None:
             continue
         adapter_inputs.append(checked)
-        if checked.exists:
+        if checked.exists or placeholder(checked.value):
             continue
         key = f"arch_adapters[{checked.adapter_id}].options.{checked.option}"
         if not checked.value:
@@ -380,7 +456,7 @@ def check_config(
         problems.append(ConfigProblem(code="adapter-input-missing", key=key, message=message))
 
     engine = _check_engine(settings, cwd)
-    if engine.configured and not engine.exists:
+    if engine.configured and not engine.exists and not placeholder(settings.graph.engine_path):
         problems.append(
             ConfigProblem(
                 code="engine-missing",
@@ -404,7 +480,9 @@ def check_config(
         engine=engine,
         modules_root=settings.modules_root,
         web_modules_root=settings.web_modules_root if settings.web.modules_dir else None,
-        problems=sorted(problems, key=lambda item: (_PROBLEM_ORDER.index(item.code), item.key)),
+        problems=sorted(
+            problems, key=lambda item: (_PROBLEM_ORDER.index(item.code), item.key, item.message)
+        ),
     )
 
 

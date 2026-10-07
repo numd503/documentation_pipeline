@@ -588,6 +588,9 @@ def test_installed_gitignore_covers_run_artifacts(tmp_path: Path) -> None:
 
     assert "artifacts/" in text
     assert "*.new" in text
+    # Сидкар — своей строкой: комментарий разрешает убрать `artifacts/`, чтобы
+    # коммитить манифест, а время и хост сидкара коммитить нельзя никогда.
+    assert "*.run.json" in text.splitlines()
 
 
 # --------------------------------------------------------------------------------------

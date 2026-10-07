@@ -82,6 +82,15 @@ EDGE_TYPES: Final[tuple[str, ...]] = ("CALLS", "INHERITS", "IMPLEMENTS")
 # выгрузки, скрипты миграции — живёт ровно там. Символ, объявленный
 # в `tools/`, есть в манифесте и отсутствует в графе, и без этого списка
 # число «есть в манифесте — нет в графе» выглядит шумом разбора.
+#
+# Список снят в режиме `fast` (умолчание `graph.mode`) и неполон. Исходники
+# 0.6.0 (`src/discover/discover.c`) и прогон 08.10.2026 говорят: в `fast`
+# и `moderate` пропускается ещё 36 имён каталогов (`migrations`, `generated`,
+# `docs`, `samples`, `integration`, `e2e`, `public`, `assets`…, сравнение
+# с учётом регистра) и файлы `.spec.`, `.test.`, `.d.ts`, `mock_`; в любом
+# режиме — 68 имён, среди них `target`, `temp`, `tmp`, `env`, `venv`; в `full`
+# разбираются `tools`, `scripts`, `build`, `bin` — из пяти остаётся `vendor`.
+# Пункт в `docs/backlog.md`.
 SKIPPED_DIRECTORIES: Final[frozenset[str]] = frozenset(
     {"tools", "scripts", "build", "vendor", "bin"}
 )

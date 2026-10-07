@@ -10259,3 +10259,39 @@ Golden и прежние тесты без изменений.
   вне git, исходники не тронуты); флага `--no-cache` у команды нет.
 
 **Проверка:** команда S18 — 61 passed; время `web scan` +1–6 %; полная — ruff и mypy чисты.
+
+---
+
+## S08 — справочники сверены с кодом (08.10.2026)
+
+**Изменено:** `docpipe/cli.py` (`graph build`), `docpipe/configcheck.py`, `docpipe/graph/engine.py`,
+`docpipe/graph/api.py`, `docpipe/recon.py`, `docpipe/dotnet/di.py`, `docpipe/materialize/plan.py`,
+`docpipe.example.yaml`, `deploy/cashflow-docspipe/{docpipe.yaml,README.md}`,
+`deploy/{gitignore,README.md}`, `README.md`, `CASHFLOW.md`, `CLAUDE.md`,
+`docs/{configuration,web,graph-implementation-plan,module-review,backlog}.md`, тесты
+`test_graph_bridge.py` (+3), `test_config_check.py` (+7), `test_deploy_bundle.py`.
+
+Все 21 строка таблицы S08 сверены с кодом: 18 — правка текста, строка 14 и половина
+строки 6 уже были правдой после S04 и S16. Код правился в двух строках: `graph build`
+отсеивает тем же `exclude_globs`, что `scan` (строка 5); новый код проблемы
+`placeholder-left` в `config check`, `ConfigReport` 1.1 (строка 21) — сырой бандл даёт его
+на 10 ключах. `explain.py` в `module-review.md` переведён в «развивается» (потребители —
+`symbols`, S23, S27).
+
+**Находки.**
+- Движок 0.6.0 сам пропускает `obj/`, `node_modules/`, `dist/` в любом режиме, `bin/` — только
+  в `fast`/`moderate`, а `*.g.cs` разбирает всегда: сгенерированные классы попадали в граф
+  мимо манифеста.
+- Обратное шире задачи: в `fast` движок молча пропускает ещё 36 имён каталогов
+  (`migrations`, `generated`, `docs`, `samples`, `integration`, `e2e`, `public`, `assets`…)
+  и файлы `.spec.`/`.test.`/`.d.ts`; имена — с учётом регистра (`Migrations` EF разбирается).
+  `SKIPPED_DIRECTORIES` моста (5 имён) неполон и зависит от режима — пункт в бэклоге.
+- `url_rewrite` применяется при `web scan`, а `web link` читает только имена модулей:
+  правка префикса без повторного `web scan` выглядит сделанной и не меняет ни одной связи.
+- Плейсхолдер — только прописное имя в рамке `@` (`api/@me@`, `user@host` законны);
+  `placeholder-left` подавляет «не найден» и `engine-missing` у того же значения.
+- Squidex перемерен: 67/35 и 421/345, у обёрток 354 регистрации, у 310 сервис ≠ реализация;
+  «361» в `di.py` и `configuration.md` было устаревшим.
+
+**Проверка:** `grep tools/recon.py docpipe/` пуст; после сведения с S13/S14/S17/S22 —
+ruff и mypy чисты, 2567 passed.

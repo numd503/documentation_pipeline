@@ -56,7 +56,7 @@ from docpipe.configcheck import format_report as format_config_report
 from docpipe.diff import diff_manifests, format_changes
 from docpipe.discovery import is_excluded
 from docpipe.documents import accepted_block, write_atomic
-from docpipe.emit import ScanResult, run_meta_path, write_manifest, write_run_meta
+from docpipe.emit import ScanResult, exclude_globs, run_meta_path, write_manifest, write_run_meta
 from docpipe.emit import run as run_scan
 from docpipe.explain import ANY, format_selection, select, selection_json
 from docpipe.graph import build as build_graph
@@ -1967,7 +1967,13 @@ def graph_build(
         )
         raise typer.Exit(code=2)
 
-    ruleset_excludes = settings.exclude_patterns
+    # Тот же отсев, что у `scan`: встроенный список плюс `exclude`, а не один
+    # `exclude`. Движок пропускает часть встроенного сам (`obj/`, `node_modules/`,
+    # `dist/` — в любом режиме), но `*.g.cs` разбирает всегда, а `bin/` — в режиме
+    # `full`: сгенерированные классы попадали в граф, которого нет в манифесте,
+    # и сопоставление считало их «есть в графе — нет в манифесте». Замерено
+    # 08.10.2026 на 0.6.0 (`test_graph_bridge.py`).
+    excludes = exclude_globs(settings)
     engine = Engine(
         binary=Path(settings.graph.engine_path).expanduser(),
         cache_dir=Path(settings.graph.cache_dir),
@@ -1976,7 +1982,7 @@ def graph_build(
     )
 
     def excluded(path: str) -> bool:
-        return is_excluded(path, ruleset_excludes)
+        return is_excluded(path, excludes)
 
     # `None`, а не пустой реестр, когда реестр не настроен: сборка по `None`
     # не заводит ни швов, ни узлов данных из реестра, и паспорт индекса
