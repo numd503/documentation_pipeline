@@ -1,9 +1,9 @@
-"""MCP-сервер: доставка форм вопроса агенту (G12).
+"""MCP-сервер графа: доставка форм вопроса агенту (G12).
 
-Протокол реализован руками, без библиотеки, и это решение, а не лень.
-Ограничение среды записано в плане трижды: прогон без установки зависимостей.
-Сервер, которому нужен `pip install`, в закрытом контуре не запустится ни разу,
-а весь протокол здесь — три метода JSON-RPC поверх stdio.
+Здесь только то, чем этот сервер отличается от другого: инструменты, их
+описания и индекс. Протокол — JSON-RPC, согласование версии, изоляция
+ошибок — общий для всех серверов и живёт в `docpipe.mcp` (S26); `handle`
+и `serve` ниже — тонкие обёртки над ним, оставленные ради прежних имён.
 
 Три свойства, каждое из которых ломается молча:
 
@@ -15,18 +15,15 @@
 - **каждый ответ несёт признак неполноты**, относящийся к этому ответу.
 """
 
-import json
-import sys
 from pathlib import Path
 from typing import Any, Final, TextIO
 
+from docpipe import mcp as protocol
 from docpipe.graph.api import affects, card, overview, reaches, resolve, why
 from docpipe.graph.api import path as path_form
 from docpipe.graph.model import GraphIndex, GraphMeta
 from docpipe.graph.reach import Reachability
 from docpipe.graph.store import IndexVersionError, read_index, read_meta, read_reach
-
-PROTOCOL: Final[str] = "2024-11-05"
 
 # Инструкция «как здесь работать». Без неё агент зовёт не то и заключает,
 # что инструмент бесполезен.
@@ -212,58 +209,33 @@ def call(server: Server, name: str, arguments: dict[str, Any]) -> dict[str, Any]
     return {"error": f"инструмент {name!r} известен, но не разобран: это дефект сервера"}
 
 
-def handle(server: Server, request: dict[str, Any]) -> dict[str, Any] | None:
-    """Обработать один запрос JSON-RPC. `None` — уведомление, ответа не нужно."""
-    method = request.get("method", "")
-    request_id = request.get("id")
+class GraphTools:
+    """Формы графа как набор инструментов общего протокола (`docpipe.mcp.ToolSet`).
 
-    if method == "initialize":
-        result: dict[str, Any] = {
-            "protocolVersion": PROTOCOL,
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "docpipe-graph", "version": "1"},
-            "instructions": INSTRUCTIONS,
-        }
-    elif method == "tools/list":
-        result = {"tools": tools()}
-    elif method == "tools/call":
-        parameters = request.get("params", {})
-        answer = call(server, parameters.get("name", ""), parameters.get("arguments", {}) or {})
-        result = {
-            "content": [{"type": "text", "text": json.dumps(answer, ensure_ascii=False, indent=2)}],
-            "isError": "error" in answer,
-        }
-    elif method.startswith("notifications/"):
-        return None
-    elif method == "ping":
-        result = {}
-    else:
-        return {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "error": {"code": -32601, "message": f"метод {method!r} не поддержан"},
-        }
+    Состояния не держит: индекс и его поколение — в `Server`, поэтому обёртку
+    можно собирать на каждый запрос, и сверка поколения от этого не меняется.
+    """
 
-    if request_id is None:
-        return None
-    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+    server_name: Final[str] = "docpipe-graph"
+    instructions: Final[str] = INSTRUCTIONS
+
+    def __init__(self, server: Server) -> None:
+        self.server = server
+
+    def tools(self) -> list[dict[str, Any]]:
+        return tools()
+
+    def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return call(self.server, name, arguments)
+
+
+def handle(server: Server, request: Any) -> dict[str, Any] | None:
+    """Обработать один запрос JSON-RPC формами графа. `None` — ответа не нужно."""
+    return protocol.handle(GraphTools(server), request)
 
 
 def serve(
     server: Server, stream_in: TextIO | None = None, stream_out: TextIO | None = None
 ) -> None:
-    """Цикл stdio. Одна строка — один JSON-RPC."""
-    source = stream_in or sys.stdin
-    sink = stream_out or sys.stdout
-    for line in source:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            request = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        answer = handle(server, request)
-        if answer is not None:
-            sink.write(json.dumps(answer, ensure_ascii=False) + "\n")
-            sink.flush()
+    """Цикл stdio формами графа. Одна строка — один JSON-RPC."""
+    protocol.serve(GraphTools(server), stream_in, stream_out)
