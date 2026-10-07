@@ -11,14 +11,15 @@
 для CLI и сервера настройки (S27): вид → нужный прогон → отчёт.
 """
 
+import posixpath
 import re
 from collections import Counter, defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from docpipe.classify import load_ruleset
 from docpipe.config import DocpipeConfig, ScopeConflict, resolve_input
@@ -27,7 +28,20 @@ from docpipe.dotnet.facts import bare_type
 from docpipe.emit import ScanResult, dispatch_name, dispatch_names, split_type_arguments
 from docpipe.emit import run as run_scan
 from docpipe.hashing import stable_json_dumps
-from docpipe.model import Construction, Member, RegistrationCall, SourceSpan, Symbol
+from docpipe.model import (
+    Construction,
+    DocNode,
+    Manifest,
+    Member,
+    RegistrationCall,
+    SourceSpan,
+    Symbol,
+)
+from docpipe.web.absorb import FEATURE_KIND, PAGE_KIND, reachable_from
+from docpipe.web.overrides import Overrides, load_page_overrides
+from docpipe.web.pages import index_by_fqn
+from docpipe.web.tree import WebScanResult
+from docpipe.web.tree import run as run_web_scan
 
 # Длина страницы по умолчанию. Агент контура обрезает вывод инструмента,
 # и «таких нет» без `total` неотличимо от «не показали» (правило 5 плана).
@@ -45,9 +59,27 @@ MIN_CALLS_WITH_TYPES: Final = 2
 MIN_IMPLEMENTATIONS: Final = 2
 MIN_REQUEST_TYPES: Final = 2
 
+# Раздел без маршрута: каталог, где лежат общие узлы — до каждого дотягиваются
+# хотя бы две страницы — хотя бы двух видов. Порога по страницам сверх двух
+# нет по той же причине, что у поглощения (`web/absorb.py`): «общий» — это
+# «появился второй потребитель». Два вида — признак «своё состояние и свои
+# сервисы»: один общий сервис в `shared/services/` — общий сервис, а не раздел.
+MIN_PAGES: Final = 2
+MIN_KINDS: Final = 2
+
+# На сколько каталогов вверх подниматься от файла общего узла. Раздел обычно
+# раскладывают на `state/`, `api/`, `services/` под одним каталогом — это
+# шаг-два; выше трёх кандидатом становился бы каталог всего приложения.
+MAX_LEVELS: Final = 3
+
 _TOP_RECEIVERS: Final = 3
 _TOP_PACKAGES: Final = 3
 _EXAMPLES: Final = 3
+
+# Маршрутов в кандидате показывается не больше: каталог, до которого
+# дотягиваются все страницы приложения, иначе съел бы ответ инструмента
+# (правило 5 плана). Сколько их всего — `page_count`.
+_PAGES_SHOWN: Final = 10
 
 
 class _Base(BaseModel):
@@ -572,12 +604,246 @@ def format_dispatch_interfaces(report: DispatchCandidates) -> str:
 
 
 # --------------------------------------------------------------------------------------
+# Кандидаты в разделы без маршрута (`features` в `pages.yaml`)
+# --------------------------------------------------------------------------------------
+
+
+class FeatureCandidate(_Base):
+    """Каталог, похожий на раздел без маршрута: своё состояние и сервисы, общие для страниц.
+
+    Без раздела общий узел остаётся отдельным документом: страницей он
+    не поглощается, потому что до него дотягиваются несколько (`web/absorb.py`).
+    Объявить раздел может только человек (`docs/pages.md`, P16), а вопрос
+    «этот каталог — раздел?» строится отсюда.
+
+    `nodes` и `kinds` — общие узлы под каталогом (до каждого дотягиваются
+    две страницы и больше) и их виды. Именно они делают каталог кандидатом.
+
+    `pages` — по маршруту на страницу (наименьший, если их несколько),
+    до десяти; страницы — те, что дотягиваются до любого узла под каталогом:
+    ровно этот список после объявления напечатает раздел «Откуда
+    открывается» в документе раздела (`materialize/build.py`). Сколько
+    страниц всего — `page_count`. Невосстановленный маршрут — с `?` впереди,
+    как в `web pages --format csv`.
+
+    `declared` — каталог уже накрыт `features[].path` из `pages.yaml`: это
+    сам объявленный каталог или лежит под ним.
+
+    `examples` — до трёх `файл:строка` общих узлов.
+    """
+
+    path: str
+    pages: list[str]
+    page_count: int
+    nodes: int
+    kinds: dict[str, int]
+    declared: bool
+    examples: list[str]
+
+
+class FeatureCandidates(_Base):
+    """Отчёт `setup candidates features`.
+
+    `pages_total` и `shared_nodes` — база, от которой считаются кандидаты.
+    Достижимость считается от страниц, и без них молчит: ноль кандидатов
+    в репозитории, где таблица роутов не собралась, неотличим от
+    репозитория, где разделов нет.
+    """
+
+    schema_version: Literal["1.0"] = "1.0"
+    pages_total: int
+    shared_nodes: int
+    total: int
+    offset: int
+    items: list[FeatureCandidate]
+
+
+def _source(node: DocNode) -> SourceSpan | None:
+    """Где узел объявлен: первый из `sources`, как у границы раздела (`web/absorb.py`)."""
+    if node.symbol is None or not node.symbol.sources:
+        return None
+    return node.symbol.sources[0]
+
+
+def _within(path: str, directory: str) -> bool:
+    """`path` — сам каталог или лежит под ним, по границе сегмента.
+
+    Подстрокой нельзя: `…/orders` накрыл бы `…/orders-report`, — та же
+    ловушка, что у `Feature.prefix`. Пустой каталог — корень репозитория.
+    """
+    return not directory or path == directory or path.startswith(directory + "/")
+
+
+def _ancestors(directory: str, root: str) -> Iterator[str]:
+    """Каталог файла и его предки: не выше `MAX_LEVELS` шагов и не выше корня модуля.
+
+    Корень модуля — ключ модуля фронта (`Symbol.module`): каталог-граница,
+    к которому привязан файл. Выше него лежит чужой модуль или корень
+    репозитория, и раздел оттуда объединил бы два приложения. Пустой путь
+    кандидатом не бывает: `features[].path` пустым не объявить.
+    """
+    current = directory
+    for _ in range(MAX_LEVELS + 1):
+        if not current:
+            return
+        yield current
+        if current == root or not _within(current, root):
+            return
+        current = posixpath.dirname(current)
+
+
+def _route_of(page: DocNode) -> str:
+    """Маршрут страницы для человека: наименьший из её маршрутов, `/orders/{}`."""
+    routes = sorted(
+        ("?" if entry.route_unresolved else "") + "/" + entry.path for entry in page.routes
+    )
+    return routes[0] if routes else page.title
+
+
+def feature_candidates(
+    manifest: Manifest,
+    overrides: Overrides,
+    *,
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
+) -> FeatureCandidates:
+    """Кандидаты в `features` по достижимости страниц манифеста фронта.
+
+    Достижимость — `absorb.reachable_from`, тот же расчёт, которым
+    поглощение решает «одна страница или несколько» и документ раздела
+    считает «Откуда открывается». В `web/pages.py` есть ещё две
+    (по зависимостям и по парам с глубиной) — с ними кандидат разошёлся бы
+    с тем, что потом поглотит объявленный раздел.
+
+    Считается по `uses`, а не по `absorbed_by`: пустое `absorbed_by` значит
+    и «две страницы», и «ни одной», а объявленный раздел его меняет —
+    кандидат перестал бы видеть сам себя сразу после объявления.
+
+    Для каждого общего узла — каталог его файла и предки (`_ancestors`):
+    первый, где общие узлы оказались двух видов и больше, — кандидат.
+    Признак — разнообразие **видов**, а не имена каталогов: `state/` и `api/`
+    не стандарт (в `WebWorkspace` это `services/`, `state/`,
+    `cf-api/resources/`), а виды зависят от правил `web`.
+
+    Порядок — по пути: вложенные кандидаты (`src/app` и `src/app/orders`)
+    стоят рядом, и видно, что один накрывает другой. Признака, который ставил
+    бы один каталог выше другого, у этого вида нет — решают страницы и виды.
+    """
+    by_fqn = index_by_fqn(manifest)
+    pages = sorted(
+        (node for node in manifest.nodes if node.kind == PAGE_KIND), key=lambda node: node.id
+    )
+
+    # Узел → страницы, которые до него дотягиваются, и где он объявлен.
+    reached_by: defaultdict[str, set[str]] = defaultdict(set)
+    sources: dict[str, SourceSpan] = {}
+    kinds: dict[str, str] = {}
+    roots: dict[str, str] = {}
+    for page in pages:
+        for fqn in reachable_from(page, by_fqn):
+            node = by_fqn.get(fqn)
+            # Страница внутрь раздела не уходит (у неё свой якорь), у узла
+            # раздела нет символа; узел без файла каталогу не принадлежит.
+            if node is None or node.kind in (PAGE_KIND, FEATURE_KIND):
+                continue
+            source = _source(node)
+            if source is None or node.symbol is None:
+                continue
+            reached_by[node.id].add(page.id)
+            sources[node.id] = source
+            kinds[node.id] = node.kind
+            roots[node.id] = node.symbol.module
+
+    shared = sorted(node_id for node_id, owners in reached_by.items() if len(owners) >= MIN_PAGES)
+
+    def shared_under(directory: str) -> list[str]:
+        return [node_id for node_id in shared if _within(sources[node_id].path, directory)]
+
+    paths: set[str] = set()
+    for node_id in shared:
+        for directory in _ancestors(posixpath.dirname(sources[node_id].path), roots[node_id]):
+            if len({kinds[other] for other in shared_under(directory)}) >= MIN_KINDS:
+                paths.add(directory)
+                break
+
+    routes = {page.id: _route_of(page) for page in pages}
+    found: list[FeatureCandidate] = []
+    for directory in sorted(paths):
+        inside = shared_under(directory)
+        opened = {
+            page_id
+            for node_id, owners in reached_by.items()
+            if _within(sources[node_id].path, directory)
+            for page_id in owners
+        }
+        located = sorted((sources[node_id].path, sources[node_id].start) for node_id in inside)
+        found.append(
+            FeatureCandidate(
+                path=directory,
+                pages=sorted(routes[page_id] for page_id in opened)[:_PAGES_SHOWN],
+                page_count=len(opened),
+                nodes=len(inside),
+                kinds=dict(sorted(Counter(kinds[node_id] for node_id in inside).items())),
+                declared=any(
+                    (directory + "/").startswith(feature.prefix) for feature in overrides.features
+                ),
+                examples=[f"{path}:{line}" for path, line in located[:_EXAMPLES]],
+            )
+        )
+
+    return FeatureCandidates(
+        pages_total=len(pages),
+        shared_nodes=len(shared),
+        total=len(found),
+        offset=offset,
+        items=_page(found, limit, offset),
+    )
+
+
+def format_features(report: FeatureCandidates) -> str:
+    lines = [
+        f"Кандидаты в разделы (features в pages.yaml): {report.total} "
+        f"(каталоги, где общие узлы — до каждого дотягиваются не меньше {MIN_PAGES} страниц — "
+        f"не меньше {MIN_KINDS} видов; подъём от файла не выше {MAX_LEVELS} каталогов "
+        "и корня модуля)."
+    ]
+    if report.pages_total == 0:
+        lines.append(
+            "Страниц нет: достижимость считается от страниц, и ноль кандидатов ничего "
+            "не говорит. Сначала — `docpipe web pages`: таблица роутов не собралась "
+            "или фронта в корне нет."
+        )
+    elif report.pages_total < MIN_PAGES:
+        lines.append("Страница одна: общих узлов не бывает, и кандидатов не будет.")
+    else:
+        lines.append(f"Страниц {report.pages_total}; общих узлов {report.shared_nodes}.")
+
+    for item in report.items:
+        mark = "  [уже объявлен в pages.yaml]" if item.declared else ""
+        kinds = ", ".join(f"{kind} {count}" for kind, count in sorted(item.kinds.items()))
+        more = " …" if item.page_count > len(item.pages) else ""
+        lines += [
+            "",
+            f"{item.path}{mark}",
+            f"  общих узлов {item.nodes}: {kinds}",
+            f"  открывается со страниц ({item.page_count}): {', '.join(item.pages)}{more}",
+            f"  примеры: {', '.join(item.examples)}",
+        ]
+        if not item.declared:
+            lines.append(f'  в pages.yaml: features[].path: "{item.path}" (name, reason — ваши)')
+
+    lines.append("")
+    lines.append(_page_line(report.total, report.offset, len(report.items)))
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------------------
 # Вид кандидатов → прогон → отчёт
 # --------------------------------------------------------------------------------------
 
-# Объединение отчётов всех видов: следующие задачи (S13–S14) дописывают сюда
+# Объединение отчётов всех видов: следующие задачи (S13) дописывают сюда
 # свои модели, а в `_KINDS` — свои функции.
-type CandidateReport = DiMethodCandidates | DispatchCandidates
+type CandidateReport = DiMethodCandidates | DispatchCandidates | FeatureCandidates
 
 
 @dataclass(frozen=True)
@@ -617,9 +883,43 @@ def _dispatch_interfaces(inputs: CandidateInputs, limit: int, offset: int) -> Ca
     return dispatch_candidates(_scan(inputs), inputs.settings, limit=limit, offset=offset)
 
 
+def _web_scan(inputs: CandidateInputs) -> tuple[WebScanResult, Overrides]:
+    """Прогон шага `web` тем же путём, что у `web scan`: правила, `pages.yaml`, кэш.
+
+    `pages.yaml` читается тем же `load_page_overrides`: без объявленных
+    разделов отметка `declared` не значила бы ничего, а названный
+    и ненайденный файл — отказ, как у `web scan`, а не пустые правила.
+    """
+    try:
+        ruleset = load_ruleset(resolve_input(inputs.settings.web.rules, inputs.config), "web")
+    except (OSError, ValueError) as exc:
+        raise InputError(f"набор правил фронта не читается: {exc}") from exc
+    try:
+        overrides = load_page_overrides(None, inputs.settings, inputs.config)
+    except (OSError, ValueError) as exc:
+        raise InputError(f"ручной состав страниц не читается: {exc}") from exc
+    cache_dir = inputs.root / inputs.settings.cache_dir if inputs.use_cache else None
+    try:
+        return run_web_scan(inputs.root, inputs.settings, ruleset, cache_dir, overrides), overrides
+    except ValidationError:
+        # Модель, не собравшаяся внутри прогона, — сбой, а не вход: под
+        # «ошибкой конфигурации» он потерял бы трассировку.
+        raise
+    except ValueError as exc:
+        # Неоднозначное правило снятия — тот же отказ, что у `web scan`:
+        # выбор наугад значил бы, что инструмент сам решает, какую страницу убрать.
+        raise InputError(f"ошибка в ручном составе страниц: {exc}") from exc
+
+
+def _features(inputs: CandidateInputs, limit: int, offset: int) -> CandidateReport:
+    result, overrides = _web_scan(inputs)
+    return feature_candidates(result.manifest, overrides, limit=limit, offset=offset)
+
+
 _KINDS: Final[dict[str, Callable[[CandidateInputs, int, int], CandidateReport]]] = {
     "di-methods": _di_methods,
     "dispatch-interfaces": _dispatch_interfaces,
+    "features": _features,
 }
 
 KINDS: Final[tuple[str, ...]] = tuple(sorted(_KINDS))
@@ -641,6 +941,8 @@ def format_candidates(report: CandidateReport) -> str:
     """Текст для человека. Вид отчёта определяется моделью, а не флагом."""
     if isinstance(report, DispatchCandidates):
         return format_dispatch_interfaces(report)
+    if isinstance(report, FeatureCandidates):
+        return format_features(report)
     return format_di_methods(report)
 
 

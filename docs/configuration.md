@@ -291,10 +291,12 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 селектора `only.team` бизнес-ссылки берут то же, что и план: `--ownership`,
 а без флага — ключ `ownership`.
 
-`docpipe setup candidates` колонкой не выделен: он зовёт прогон шага 1
-и читает ровно ключи столбца `scan`, а `di_methods` (вид `di-methods`)
-и `dispatch_interfaces` (вид `dispatch-interfaces`) — ещё раз, чтобы
-пометить уже перечисленные (`configured`).
+`docpipe setup candidates` колонкой не выделен: виды `di-methods`
+и `dispatch-interfaces` зовут прогон шага 1 и читают ровно ключи столбца
+`scan`, а `di_methods` и `dispatch_interfaces` — ещё раз, чтобы пометить
+уже перечисленные (`configured`). Вид `features` зовёт прогон шага `web`
+тем же путём, что `web scan` (секция `web`, включая `web.pages`), и по
+`features` из `pages.yaml` помечает уже объявленные (`declared`).
 
 Секцию `graph` (`engine_path`, `engine_sha256`, `mode`, `out`, `cache_dir`)
 читает только `docpipe graph *`: ни одна команда шага 1, шага 2 или бизнес-слоя
@@ -440,10 +442,13 @@ docs/front/...     фронт,  единица документации — ст
 `resolve_input` — `web scan` отказывает с кодом 2 и перечисляет оба
 проверенных пути. Раньше ключ без файла молча давал пустые правила.
 
-Читают ключ оба прогона фронта: `web scan` и `symbols --lang ts`. Второй
-до этого шёл без правил `pages.yaml` и считал страницы по одной таблице
-роутов — снятая руками страница продолжала делить сервисы с соседними,
-и состояние `page_covered` расходилось с манифестом фронта.
+Читают ключ все прогоны фронта: `web scan`, `symbols --lang ts`
+и `setup candidates features` — одним загрузчиком
+(`web/overrides.load_page_overrides`). `symbols` до этого шёл без правил
+`pages.yaml` и считал страницы по одной таблице роутов — снятая руками
+страница продолжала делить сервисы с соседними, и состояние `page_covered`
+расходилось с манифестом фронта. Кандидаты в разделы без файла не узнали бы
+об объявленных: `declared` был бы `false` у всех.
 
 ## Файл правил: один файл, секция на шаг
 
@@ -482,9 +487,9 @@ uv run python tools/migrate_rules.py --dotnet rules.yaml --out rules.yaml
 `ruleset_version` — внутри каждой, он уходит в манифест и в `business_hash`.
 
 **Секцию `web` читают команды `web scan` и `web link`, а также
-`symbols --lang ts`** — та разбирает фронт заново тем же путём, что `web scan`,
-и потому читает `web.rules` (секцию `web` файла правил), `web.roots`
-и `web.pages`. В таблице
+`symbols --lang ts` и `setup candidates features`** — они разбирают фронт
+заново тем же путём, что `web scan`, и потому читают `web.rules` (секцию
+`web` файла правил), `web.roots` и `web.pages`. В таблице
 выше колонок для них нет намеренно: колонка на два ключа шире таблицы, а состав
 секции описан ниже отдельно. Исключение одно: `web.out` мягко читает `business`
 — оттуда берётся манифест фронта для якорей `page`, и отсутствие файла значит

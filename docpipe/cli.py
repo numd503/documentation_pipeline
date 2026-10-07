@@ -152,7 +152,7 @@ from docpipe.step2 import Step2Error, Step2Inputs, check_teams, load_manifest, p
 from docpipe.web.link import CATEGORIES as LINK_CATEGORIES
 from docpipe.web.link import build_report as build_link_report
 from docpipe.web.link import format_report as format_link_report
-from docpipe.web.overrides import Overrides, StaleRule, load_overrides
+from docpipe.web.overrides import StaleRule, load_page_overrides
 from docpipe.web.pages import DEFAULT_DEPTH
 from docpipe.web.pages import FORMATS as PAGE_FORMATS
 from docpipe.web.pages import build_report as build_pages_report
@@ -416,35 +416,6 @@ def _warn_incomplete_scan(manifest: Manifest, meta: RunMeta, *, written: bool) -
         )
 
 
-def _load_page_overrides(
-    pages: Path | None, settings: DocpipeConfig, config: Path | None
-) -> Overrides:
-    """Ручной состав страниц. Ключ пуст — пустые правила, а не отказ.
-
-    Репозиторий, где обход находит страницы сам, ничего не дописывает руками,
-    и требовать от него файл значило бы делать настройку обязательной там,
-    где она не нужна. Но **названный** файл обязан существовать — и флагом
-    `--pages`, и ключом `web.pages`: молча проигнорировать его значит
-    потерять решения человека. Ключ раньше так и игнорировался — файла
-    по разрешённому пути нет, и прогон шёл с пустыми правилами.
-
-    Зовут её все прогоны фронта (`web scan`, `symbols --lang ts`): два прогона,
-    читающие состав страниц по-разному, считали бы страницы по-разному.
-    """
-    if pages is not None:
-        return load_overrides(pages)
-    if not settings.web.pages:
-        return Overrides()
-    candidates = candidate_inputs(settings.web.pages, config)
-    found = next((path for path in candidates if path.is_file()), None)
-    if found is None:
-        tried = ", ".join(str(path) for path in candidates)
-        raise FileNotFoundError(
-            f"`web.pages`: файл {settings.web.pages!r} не найден; искали: {tried}"
-        )
-    return load_overrides(found)
-
-
 def _format(value: str, allowed: tuple[str, ...]) -> str:
     """Проверить значение `--format`: неизвестное — код 2 с перечнем допустимых.
 
@@ -651,7 +622,7 @@ def symbols(
         # Тот же ручной состав страниц, что у `web scan`: без него `symbols`
         # считал бы страницы по одной таблице роутов, и состояние
         # `page_covered` расходилось бы с манифестом фронта.
-        overrides = _load_page_overrides(None, settings, config) if lang == "ts" else None
+        overrides = load_page_overrides(None, settings, config) if lang == "ts" else None
     except (OSError, ValueError) as exc:
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -841,7 +812,7 @@ def web_scan(
     try:
         settings = load_config(config)
         ruleset = load_ruleset(rules or resolve_input(settings.web.rules, config), "web")
-        overrides = _load_page_overrides(pages, settings, config)
+        overrides = load_page_overrides(pages, settings, config)
     except (OSError, ValueError) as exc:
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -3492,10 +3463,16 @@ def setup_candidates(
     типов-запросов, встречаются ли эти типы аргументом других баз и где
     их создают.
 
-    Решение — за человеком; команда ничего не пишет, а значение вносится
-    в `di_methods` или `dispatch_interfaces` руками или агентом.
+    `features` — каталоги фронта, похожие на раздел без маршрута: общие узлы
+    (до них дотягиваются две страницы и больше) там двух видов и больше —
+    своё состояние и свои сервисы. С каких страниц открывается и объявлен ли
+    уже в `pages.yaml` (`web.pages`).
 
-    Прогон идёт через кэш разбора, как `scan`: её зовут после каждой правки.
+    Решение — за человеком; команда ничего не пишет, а значение вносится
+    в `di_methods`, `dispatch_interfaces` или `features` руками или агентом.
+
+    Прогон идёт через кэш разбора, как `scan` и `web scan`: её зовут после
+    каждой правки.
     """
     if kind not in CANDIDATE_KINDS:
         raise typer.BadParameter(

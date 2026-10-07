@@ -1,0 +1,18 @@
+/* To learn more about this file see: https://angular.io/config/tsconfig. */
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "baseUrl": "./",
+    // Страницы импортируют общий каталог через алиас: так пишут боевые фронты,
+    // и связь страницы с разделом обязана пережить резолв алиаса.
+    "paths": {
+      "@app/*": ["src/app/*"]
+    },
+    "strict": true,
+    "experimentalDecorators": true,
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+  },
+  "include": ["src/**/*.ts"]
+}

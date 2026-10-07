@@ -25,6 +25,7 @@ from typing import Final, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from docpipe.config import DocpipeConfig, candidate_inputs
 from docpipe.route import normalize_route
 from docpipe.ruleset import reject_unknown_keys
 
@@ -226,3 +227,35 @@ def load_overrides(path: Path) -> Overrides:
         remove=[RemovePage.model_validate(item) for item in body.get("remove") or []],
         features=[Feature.model_validate(item) for item in features],
     )
+
+
+def load_page_overrides(
+    pages: Path | None, settings: DocpipeConfig, config: Path | None
+) -> Overrides:
+    """Ручной состав страниц прогона: флаг `--pages` или ключ `web.pages`.
+
+    Ключ пуст — пустые правила, а не отказ. Репозиторий, где обход находит
+    страницы сам, ничего не дописывает руками, и требовать от него файл
+    значило бы делать настройку обязательной там, где она не нужна. Но
+    **названный** файл обязан существовать — и флагом, и ключом: молча
+    проигнорировать его значит потерять решения человека. Ключ раньше так
+    и игнорировался — файла по разрешённому пути нет, и прогон шёл
+    с пустыми правилами.
+
+    Зовут её все прогоны фронта (`web scan`, `symbols --lang ts`,
+    `setup candidates features`), поэтому она здесь, а не в CLI: два
+    прогона, читающие состав страниц по-разному, считали бы страницы
+    по-разному, а кандидат в раздел не узнал бы об объявленном.
+    """
+    if pages is not None:
+        return load_overrides(pages)
+    if not settings.web.pages:
+        return Overrides()
+    candidates = candidate_inputs(settings.web.pages, config)
+    found = next((path for path in candidates if path.is_file()), None)
+    if found is None:
+        tried = ", ".join(str(path) for path in candidates)
+        raise FileNotFoundError(
+            f"`web.pages`: файл {settings.web.pages!r} не найден; искали: {tried}"
+        )
+    return load_overrides(found)

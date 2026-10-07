@@ -169,7 +169,7 @@ S04, S06 и S11 плана настройки).
 | Модуль | Категория | Потребитель | Признак смерти | Почему |
 |---|---|---|---|---|
 | `setup/__init__.py` | развивается | пакет | пакет удалён | — |
-| `setup/candidates.py` | развивается | `docpipe setup candidates`; `setup serve` (S27) | агент контура настраивает `docpipe` без кандидатов: ни скилл `setup`, ни сервер настройки не зовут `setup candidates` | настройку ведёт ассистент (`purpose.md`), а ключи вроде `di_methods` нельзя заполнить умолчанием — вопрос строится из счёта вызовов. Виды: `di-methods` (S11), `dispatch-interfaces` (S12); добавляют S13–S14 |
+| `setup/candidates.py` | развивается | `docpipe setup candidates`; `setup serve` (S27) | агент контура настраивает `docpipe` без кандидатов: ни скилл `setup`, ни сервер настройки не зовут `setup candidates` | настройку ведёт ассистент (`purpose.md`), а ключи вроде `di_methods` нельзя заполнить умолчанием — вопрос строится из счёта вызовов. Виды: `di-methods` (S11), `dispatch-interfaces` (S12), `features` (S14); добавляет S13 |
 
 ## .NET (L1)
 
@@ -221,9 +221,9 @@ S04, S06 и S11 плана настройки).
 | `web/templates.py` | развивается | `web/tree` → `web scan` | — | вызовы из Angular-шаблонов (`(click)`, `| async`) — рёбра «страница → сервис», которых в `.ts` не видно (G14) |
 | `web/tree.py` | развивается | `web scan` | — | сквозной прогон шага `web` |
 | `web/link.py` | развивается | `web link` | — | связь фронт↔бэк; в документы пока не попадает (бэклог «Фронт↔бэк в документах»); 06.10 назначен единственным источником шва для документов и графа, см. «Требует решения» |
-| `web/pages.py` | развивается | `web pages`, `materialize/build` (раздел «Что зовёт страница»), `business/resolve` | — | страница — единица документации |
-| `web/absorb.py` | развивается | `web/tree`, `materialize/build` | страница перестала быть единицей документации | состав документа-агрегата; единственное место, где устаревание уже распространяется по связям |
-| `web/overrides.py` | **разделяется**, см. ниже | `web scan`, `web pages`, `web/absorb` | — | `pages.yaml`: ручной состав и разделы — разные вещи |
+| `web/pages.py` | развивается | `web pages`, `materialize/build` (раздел «Что зовёт страница»), `business/resolve`, `setup/candidates` (S14: `index_by_fqn`) | — | страница — единица документации |
+| `web/absorb.py` | развивается | `web/tree`, `materialize/build`, `setup/candidates` (S14: `reachable_from`) | страница перестала быть единицей документации | состав документа-агрегата; единственное место, где устаревание уже распространяется по связям |
+| `web/overrides.py` | **разделяется**, см. ниже | `web scan`, `web pages`, `web/absorb`; `load_page_overrides` — `web scan`, `symbols --lang ts`, `setup candidates features` | — | `pages.yaml`: ручной состав и разделы — разные вещи |
 
 **`web/overrides.py` мельче модуля.**
 

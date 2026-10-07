@@ -1,0 +1,21 @@
+{
+  "name": "orders-web",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "start": "ng serve",
+    "build": "ng build"
+  },
+  "dependencies": {
+    "@angular/common": "17.3.12",
+    "@angular/core": "17.3.12",
+    "@angular/platform-browser": "17.3.12",
+    "@angular/router": "17.3.12",
+    "@ngxs/store": "^3.8.2",
+    "rxjs": "7.8.1"
+  },
+  "devDependencies": {
+    "@angular/cli": "17.3.8",
+    "typescript": "5.4.5"
+  }
+}
