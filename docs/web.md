@@ -28,6 +28,7 @@ uv run docpipe web scan --root . --out artifacts/doc-tree.web.json
 
 # настройка набора правил: счётчики и срезы, ничего не пишет
 uv run docpipe web scan --root . --stats
+uv run docpipe web scan --root . --stats --format json   # то же структурой
 
 # с ручным составом страниц; в CI — с отказом на протухшее правило
 uv run docpipe web scan --root . --pages pages.yaml --fail-on-stale-overrides
@@ -97,6 +98,21 @@ docpipe web scan --root . --stats          # посмотреть срезы
 docpipe web scan --root . --stats          # повторить
 docpipe web scan --root . --fail-on-undecided   # закрепить в CI
 ```
+
+Срезов шесть, как у `scan --stats`. Для фронта главный из них — «последнее
+слово»: словарь «окончаний имён» зашит под .NET, и `Component`, `Guard`,
+`State`, `Interceptor` уходят у него в «(прочее)», а последнее слово
+CamelCase имени берётся из самого имени (`authInterceptor` → `Interceptor`).
+
+`--format json` печатает тот же отчёт структурой той же схемы, что
+у `scan --stats` (`schema_version` `1.0`), с `lang: "ts"`. На
+`tests/fixtures/WebWorkspace` блок `decisions` — 25 документируем,
+4 не документируем, 0 без решения и 5 `page_covered`. Два поля
+фронта отличаются от .NET: `stale_overrides` — правила `pages.yaml`,
+не легшие ни на что (`kind`, `key`, `reason`; в stderr они печатаются
+по-прежнему), а `scope` всегда `null`, потому что скоуп-прогона у шага
+`web` нет. `--top` усекает `items` каждого среза, `total` среза — число
+строк до усечения. `--format json` без `--stats` — отказ с кодом 2.
 
 **4. Заполнить `url_rewrite` — по записи на модуль.** Отсутствие записи это
 не «преобразования нет», а ненастроенный модуль, и `web link` называет его

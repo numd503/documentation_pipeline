@@ -9958,3 +9958,33 @@ git отказал целиком, ничего не добавив, а выво
 
 **Проверка:** команда S16 — 142 passed; повторный `web scan` фикстуры — байт в байт;
 полная — ruff и mypy чисты.
+
+---
+
+## S05 — JSON у `scan --stats` и `web scan --stats`; срез «последнее слово» (07.10.2026)
+
+**Создано:** `tests/test_stats_report.py` (30). **Изменено:** `docpipe/stats.py`,
+`docpipe/hashing.py`, `docpipe/cli.py`, `README.md`, `docs/web.md`.
+
+`build_stats_report` → `StatsReport` (`schema_version` 1.0); у `scan` и `web scan` —
+`--format text|json` (JSON — только вместе с `--stats`). Виды (`kinds`) и шесть состояний
+(`decisions`) разведены, `documented` — сумма видов. Срезы — с латинскими ключами
+по таблице `BREAKDOWN_KEYS`, все шесть всегда; `--top` усекает `items`, `total` — до
+усечения. `stale_overrides` (только web), `scope` (у .NET через `scope_info`, у web —
+`null`), `parse_error_files`. Новый срез «последнее слово» по нерешённому, разбиение —
+публичная `hashing.camel_words`; на неё переведён `slugify` (сверен с прежним на 24 именах).
+
+**Отклонения и находки.**
+- `CliRunner.invoke(...).output` смешивает stdout и stderr: предупреждения о протухших
+  правилах ломали `json.loads` ровно там, где JSON нужен; тесты читают `stdout`.
+- `--format json` без `--stats` и отрицательный `--top` — код 2.
+- Имя с последним словом `I` (или без латиницы) в срез не попадает — сумма среза
+  может быть чуть меньше числа нерешённых.
+- Срез без латинского ключа в `BREAKDOWN_KEYS` — `ValueError`, а не молчаливый пропуск.
+- `Migration20240101` — одно слово (по спецификации): миграции с датой в имени класса
+  срез не сгруппирует.
+- Открыто: текстовый `web scan --stats` не называет файлы с ошибками разбора (они есть
+  в JSON и в режиме записи).
+
+**Проверка:** SampleSolution 6/1/1/2 при `total` 10; WebWorkspace 25/4/0, `page_covered` 5;
+протухшее правило — в `stale_overrides`; полная — ниже, после S06 и S12.

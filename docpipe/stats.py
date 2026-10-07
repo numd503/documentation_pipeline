@@ -14,12 +14,16 @@
 """
 
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Final, Literal, Protocol
+
+from pydantic import BaseModel, ConfigDict
 
 from docpipe.classify import ExcludeRule, Ruleset, classify, exclusion_of
-from docpipe.model import DocNode, Manifest, Symbol
+from docpipe.hashing import camel_words
+from docpipe.model import DocNode, Lang, Manifest, RunMeta, Symbol
 
 # Сколько строк показывать в каждом срезе по нерешённому по умолчанию.
 # Переопределяется флагом `--top`: на репозитории с сотнями проектов срез
@@ -244,9 +248,15 @@ def _breakdown(symbols: list[Symbol]) -> dict[str, list[tuple[str, int]]]:
     """Срезы по символам, про которые решения нет.
 
     Одного счётчика для настройки мало: «7142 без решения» не говорит,
-    какие правила писать. Эти пять срезов говорят — на ABP базовые типы сразу
+    какие правила писать. Эти шесть срезов говорят — на ABP базовые типы сразу
     показывают `ITransientDependency` (997 типов, больше, чем покрывает весь
     набор по умолчанию), а модули — что половина непокрытого это тесты и примеры.
+
+    «Последнее слово» стоит рядом с «окончаниями имён», а не вместо них.
+    Окончания знают только зашитый словарь .NET, и конвенции проекта
+    (`*Rq`, `*Dm`) и фронта (`Component`, `Guard`, `State`) уходят у них
+    в «(прочее)» — на боевом репозитории 3446 типов, за которые не зацепиться.
+    Последнее слово берётся из самого имени и словаря не требует.
     """
     if not symbols:
         return {}
@@ -257,6 +267,7 @@ def _breakdown(symbols: list[Symbol]) -> dict[str, list[tuple[str, int]]]:
             next((suffix for suffix in _SUFFIXES if symbol.name.endswith(suffix)), "(прочее)")
             for symbol in symbols
         ),
+        "последнее слово": _top(word for symbol in symbols if (word := last_word(symbol.name))),
         "базовые типы": _top(base for symbol in symbols for base in symbol.base_type_closure),
         "атрибуты": _top(attribute.name for symbol in symbols for attribute in symbol.attributes),
         "namespace": _top(symbol.namespace or "(глобальный)" for symbol in symbols),
@@ -264,6 +275,19 @@ def _breakdown(symbols: list[Symbol]) -> dict[str, list[tuple[str, int]]]:
     # Пустой срез (например, ни у одного непокрытого типа нет атрибутов)
     # только зашумляет вывод.
     return {title: rows for title, rows in sections.items() if rows}
+
+
+def last_word(name: str) -> str:
+    """Последнее слово CamelCase имени; пусто, если зацепиться не за что.
+
+    Одиночное `I` словом не считается: это префикс интерфейса, а не конвенция
+    имени, и строка «I» в срезе ни на какое правило не указывает. Цифры
+    остаются при слове (`Migration20240101`) — так режет `camel_words`,
+    общая с именем файла документа.
+    """
+    words = camel_words(name)
+    word = words[-1] if words else ""
+    return "" if word == "I" else word
 
 
 def _top(values: Iterable[str]) -> list[tuple[str, int]]:
@@ -422,6 +446,181 @@ def format_report(stats: Stats, top: int = TOP) -> str:
     blocks = [format_decisions(stats), format_kinds(stats), format_skipped(stats)]
     blocks.append(format_breakdown(stats, top))
     return "\n\n".join(block for block in blocks if block)
+
+
+# --------------------------------------------------------------------------------------
+# Отчёт структурой: `scan --stats --format json`, `web scan --stats --format json`
+# --------------------------------------------------------------------------------------
+
+STATS_SCHEMA_VERSION: Final = "1.0"
+
+BreakdownKey = Literal[
+    "modules", "suffixes", "last_words", "base_types", "attributes", "namespaces"
+]
+
+# Срезы `Stats.breakdown` называются по-русски: ключи идут в текст отчёта
+# и на них опираются тесты. В JSON ключи латинские и стабильные, поэтому
+# соответствие — таблица здесь, а не переименование словаря. Срез, забытый
+# в таблице, выпал бы из JSON молча; `build_stats_report` на нём отказывает.
+BREAKDOWN_KEYS: Final[dict[str, BreakdownKey]] = {
+    "модули": "modules",
+    "окончания имён": "suffixes",
+    "последнее слово": "last_words",
+    "базовые типы": "base_types",
+    "атрибуты": "attributes",
+    "namespace": "namespaces",
+}
+
+# Ключи блока решений. `documented` — сумма по видам: в `Stats.counts`
+# документируемые лежат по видам, а не одним числом.
+DECISION_KEYS: Final[tuple[str, ...]] = (
+    DOCUMENTED,
+    NOT_DOCUMENTED,
+    UNDECIDED,
+    INTERFACE_COVERED,
+    PAGE_COVERED,
+    NOT_ENROLLED,
+)
+
+
+class _Report(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class Slice(_Report):
+    """Срез по нерешённому. `items` усечены до `--top`, `total` — число строк до усечения.
+
+    Без `total` усечённый срез неотличим от полного: агент контура прочтёт
+    «топ-15» как «их пятнадцать» — ровно то, от чего текст защищает строкой
+    «и ещё 476».
+    """
+
+    total: int
+    items: list[tuple[str, int]]
+
+
+class SkippedRule(_Report):
+    """Решение «не документируем»: какое правило, почему и сколько символов отсеяло."""
+
+    rule_id: str
+    reason: str
+    count: int
+
+
+class StaleOverride(_Report):
+    """Правило `pages.yaml`, не легшее ни на что. Только у фронта."""
+
+    kind: str
+    key: str
+    reason: str
+
+
+class ScopeInfo(_Report):
+    """Чем неполон прогон .NET: скоуп и файлы вне скоупа, взятые из кэша или потерянные.
+
+    Числа скоуп-прогона без этой пометки выглядят как числа всего репозитория,
+    а граф наследования у него собран не целиком.
+    """
+
+    partial: bool
+    restored_from_cache: int
+    missing_from_cache: int
+
+
+class StatsReport(_Report):
+    """Состояние решений прогона структурой — то же, что текст `--stats`.
+
+    Виды и особые состояния разведены: в `Stats.counts` они лежат одним
+    словарём, и потребитель JSON иначе обязан был бы знать, какие ключи
+    там не виды. `decisions` содержит все шесть ключей, нулевые тоже:
+    отсутствие ключа читалось бы как «не посчитано».
+    """
+
+    schema_version: Literal["1.0"] = STATS_SCHEMA_VERSION
+    lang: Lang
+    total: int
+    decisions: dict[str, int]
+    kinds: list[tuple[str, int]]
+    skipped: list[SkippedRule]
+    breakdown: dict[BreakdownKey, Slice]
+    stale_overrides: list[StaleOverride]
+    scope: ScopeInfo | None
+    parse_error_files: list[str]
+
+
+class _Stale(Protocol):
+    """То, что отчёт берёт у протухшего правила `pages.yaml`.
+
+    Протокол, а не `web.overrides.StaleRule`: счётчики — общий слой, и
+    зависимость от шага `web` развернула бы стрелку между модулями.
+    """
+
+    @property
+    def kind(self) -> str: ...
+
+    @property
+    def key(self) -> str: ...
+
+    @property
+    def reason(self) -> str: ...
+
+
+def scope_info(manifest: Manifest, meta: RunMeta) -> ScopeInfo:
+    """Пометка о неполноте прогона .NET — из манифеста и сидкара этого же прогона."""
+    return ScopeInfo(
+        partial=manifest.partial is not None,
+        restored_from_cache=meta.stats.get("restored_from_cache", 0),
+        missing_from_cache=meta.stats.get("missing_from_cache", 0),
+    )
+
+
+def build_stats_report(
+    stats: Stats,
+    *,
+    lang: Lang,
+    top: int = TOP,
+    stale: Sequence[_Stale] = (),
+    scope: ScopeInfo | None = None,
+    parse_error_files: Sequence[str] = (),
+) -> StatsReport:
+    """Отчёт `--stats` моделью. Его же позовёт инструмент сервера настройки.
+
+    `top` усекает срезы так же, как в тексте; `total` каждого среза — до
+    усечения. Все шесть срезов присутствуют всегда, пустые — с нулём: агенту
+    «среза нет» и «в срезе ничего» незачем различать по наличию ключа.
+    """
+    if top < 0:
+        raise ValueError(f"top не бывает отрицательным: {top}")
+    if unknown := sorted(set(stats.breakdown) - set(BREAKDOWN_KEYS)):
+        raise ValueError(f"срез без латинского ключа в BREAKDOWN_KEYS: {', '.join(unknown)}")
+
+    kinds = kind_counts(stats)
+    decisions = {key: stats.counts.get(key, 0) for key in DECISION_KEYS}
+    decisions[DOCUMENTED] = sum(kinds.values())
+
+    return StatsReport(
+        lang=lang,
+        total=stats.total,
+        decisions=decisions,
+        kinds=sorted(kinds.items(), key=lambda item: item[0]),
+        skipped=[
+            SkippedRule(rule_id=rule_id, reason=reason, count=count)
+            for rule_id, reason, count in stats.skipped
+        ],
+        breakdown={
+            key: Slice(
+                total=len(rows := stats.breakdown.get(title, [])),
+                items=rows[:top],
+            )
+            for title, key in BREAKDOWN_KEYS.items()
+        },
+        stale_overrides=sorted(
+            (StaleOverride(kind=rule.kind, key=rule.key, reason=rule.reason) for rule in stale),
+            key=lambda rule: (rule.kind, rule.key, rule.reason),
+        ),
+        scope=scope,
+        parse_error_files=sorted(parse_error_files),
+    )
 
 
 # --------------------------------------------------------------------------------------

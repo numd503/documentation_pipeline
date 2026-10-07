@@ -139,10 +139,13 @@ from docpipe.stats import (
     TOP,
     UNDECIDED,
     Stats,
+    StatsReport,
+    build_stats_report,
     collect_stats,
     format_kinds,
     format_report,
     plural,
+    scope_info,
     stats_from_manifest,
     validate_manifest,
 )
@@ -264,12 +267,16 @@ def scan(
         int,
         typer.Option("--top", help="Сколько строк показывать в каждом срезе --stats."),
     ] = TOP,
+    output_format: Annotated[
+        str, typer.Option("--format", help="Формат отчёта --stats: text или json.")
+    ] = "text",
 ) -> None:
     """Построить дерево документации по исходникам .NET.
 
     Пишет два файла: детерминированный манифест и сидкар `<out>.run.json`
     с метаданными прогона. Всё недетерминированное — только в сидкаре.
     """
+    output_format = _stats_format(output_format, top, show_stats=show_stats)
     if not root.is_dir():
         raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
 
@@ -315,7 +322,18 @@ def scan(
     # Кэш разбора при этом пишется (`cache_dir` от `--root`, по умолчанию
     # `.docpipe/cache`): его выключает только `--no-cache`.
     if show_stats:
-        typer.echo(format_report(result.stats, top))
+        if output_format == "json":
+            _echo_stats_json(
+                build_stats_report(
+                    result.stats,
+                    lang="cs",
+                    top=top,
+                    scope=scope_info(manifest, meta),
+                    parse_error_files=meta.parse_error_files,
+                )
+            )
+        else:
+            typer.echo(format_report(result.stats, top))
         _check_undecided(result.stats, fail_on_undecided)
         return
 
@@ -418,6 +436,27 @@ def _format(value: str, allowed: tuple[str, ...]) -> str:
             f"{value!r}; допустимы: {', '.join(allowed)}", param_hint="--format"
         )
     return value
+
+
+def _stats_format(value: str, top: int, *, show_stats: bool) -> str:
+    """Проверить `--format` и `--top` прогона: до разбора, а не после него.
+
+    JSON бывает только у `--stats`. Без отказа `--format json` у прогона
+    с записью напечатал бы строку «Записано: …» — тот же текст вместо JSON,
+    от которого защищает `_format`, и скрипт упал бы на разборе вывода.
+    Отрицательный `--top` молча отрезал последние строки среза и врал
+    в «и ещё N».
+    """
+    value = _format(value, ("text", "json"))
+    if value == "json" and not show_stats:
+        raise typer.BadParameter("json — только вместе с --stats", param_hint="--format")
+    if top < 0:
+        raise typer.BadParameter("не бывает отрицательным", param_hint="--top")
+    return value
+
+
+def _echo_stats_json(report: StatsReport) -> None:
+    typer.echo(stable_json_dumps(report.model_dump(mode="json")).rstrip("\n"))
 
 
 def _check_undecided(stats: Stats, fail: bool) -> None:
@@ -740,6 +779,9 @@ def web_scan(
         int,
         typer.Option("--top", help="Сколько строк показывать в каждом срезе --stats."),
     ] = TOP,
+    output_format: Annotated[
+        str, typer.Option("--format", help="Формат отчёта --stats: text или json.")
+    ] = "text",
 ) -> None:
     """Построить дерево документации по исходникам фронтенда.
 
@@ -747,6 +789,7 @@ def web_scan(
     Манифест той же схемы, что у шага 1, — `materialize`, `docs status`
     и бизнес-слой работают от него, не зная про язык.
     """
+    output_format = _stats_format(output_format, top, show_stats=show_stats)
     if not root.is_dir():
         raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
 
@@ -784,7 +827,19 @@ def web_scan(
         },
     )
     if show_stats:
-        typer.echo(format_report(statistics, top))
+        if output_format == "json":
+            # Скоупа у шага `web` нет: `scope` в отчёте — `None`, а не «не частичный».
+            _echo_stats_json(
+                build_stats_report(
+                    statistics,
+                    lang="ts",
+                    top=top,
+                    stale=result.overrides.stale,
+                    parse_error_files=result.meta.parse_error_files,
+                )
+            )
+        else:
+            typer.echo(format_report(statistics, top))
         # Протухшие правила — до возврата: `--stats` и есть цикл настройки,
         # а правило `pages.yaml`, переставшее совпадать, исчезает вместе
         # со страницей и иначе не оставляет следа ни в одном отчёте.

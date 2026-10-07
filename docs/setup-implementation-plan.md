@@ -1,6 +1,6 @@
 # Настройка с ассистентом: план (S01–S32)
 
-> **Статус: в работе** (план от 07.10.2026): ✅ S01, S02, S03, S04, S10, S11, S15, S16, S26.
+> **Статус: в работе** (план от 07.10.2026): ✅ S01, S02, S03, S04, S05, S10, S11, S15, S16, S26.
 > [`setup-assistant-analysis.md`](setup-assistant-analysis.md); цель —
 > [`purpose.md`](../purpose.md), раздел «Настройка с ассистентом». При споре
 > плана с `purpose.md` прав `purpose.md`; при расхождении плана с кодом
@@ -196,7 +196,7 @@ T04–T20). Тест фикстуры проверяет наличие **кон
 | S02 | ✅ Загрузка настройки без молчания | — | M |
 | S03 | ✅ Прогоны без молчания | — | M |
 | S04 | ✅ `config check`: функция, JSON, коды возврата | — | S |
-| S05 | JSON у `scan --stats` и `web scan --stats`; срез «последнее слово» | — | M |
+| S05 | ✅ JSON у `scan --stats` и `web scan --stats`; срез «последнее слово» | — | M |
 | S06 | Вход шага 2 — в библиотеку; JSON у команд шага 2 и `arch validate`; сверка схем | — | M |
 | S07 | `symbols`: причина, страница, правило-победитель, `--path` | — | S |
 | S08 | Справочники сверить с кодом | S02–S07 | S |
@@ -639,7 +639,7 @@ uv run docpipe config check --config deploy/cashflow-docspipe/docpipe.yaml --roo
 
 ---
 
-## S05 — JSON у `scan --stats` и `web scan --stats`; срез «последнее слово»
+## S05 — JSON у `scan --stats` и `web scan --stats`; срез «последнее слово» ✅
 
 **Цель:** вопрос интервью «120 типов в `*.Migrations` — документировать?»
 строится из числа, которое агент получает структурой, а не разбором текста.
@@ -669,6 +669,23 @@ class StatsReport:  schema_version: Literal["1.0"]; lang: Literal["cs", "ts"]; t
 в одном словаре — в отчёте они разведены по `_SPECIAL` (`stats.py:87`).
 `scan --stats --format json` и `web scan --stats --format json` печатают
 отчёт; `--top` действует и на JSON (усечение срезов, `total` — до усечения).
+
+> **Уточнено при реализации.** Полная сигнатура —
+> `build_stats_report(stats, *, lang, top=TOP, stale=(), scope=None,
+> parse_error_files=())`: списка файлов с ошибками разбора в `Stats` нет,
+> его передаёт вызывающий из `RunMeta`. `scope` у .NET собирает
+> `stats.scope_info(manifest, meta)` — одна функция на CLI и сервер (S27);
+> у `web` скоупа нет, и там `None`, а не «не частичный». `stale` — протокол
+> с `kind`/`key`/`reason`, а не `web.overrides.StaleRule`: счётчики — общий
+> слой и от шага `web` не зависят. В отчёте всегда все шесть ключей
+> `decisions` и все шесть срезов (пустой — `total: 0`): отсутствие ключа
+> читалось бы как «не посчитано». `--format json` без `--stats` и
+> отрицательный `--top` — код 2.
+
+> **Ловушка. `CliRunner.invoke(...).output` смешивает stdout и stderr.**
+> Предупреждения о протухших правилах `pages.yaml` и о неполноте прогона
+> идут в stderr, и `json.loads(result.output)` падает ровно на тех прогонах,
+> ради которых JSON и нужен. Тесты JSON читают `result.stdout`.
 
 **Новый срез «последнее слово имени»** — по `undecided`, как остальные срезы
 (`_breakdown`, `stats.py:243-266`): последнее слово CamelCase имени символа.
