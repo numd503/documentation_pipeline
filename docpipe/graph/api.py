@@ -348,6 +348,10 @@ def path(index: GraphIndex, source: str, target: str, depth: int = 12) -> dict[s
     }
 
 
+# Списки раздела `composition.projects` разведки, которые `overview` пересказывает числом.
+_PROJECT_LISTS = ("dotnet_projects", "solutions", "fronts", "proxy_files")
+
+
 def overview(root: Path, recon: Path | None = None) -> dict[str, Any]:
     """Что это за репозиторий: чем собран, что читать первым, где центр.
 
@@ -381,12 +385,22 @@ def _recon_summary(report: dict[str, Any]) -> dict[str, Any]:
     composition = blocks.get("composition", {})
     archaeology = blocks.get("archaeology", {})
     structure = blocks.get("structure", {})
+    projects = composition.get("projects")
     return {
         "available": True,
         "repo": report.get("repo", ""),
         "stacks": composition.get("stacks", []),
         "languages": composition.get("languages", [])[:5],
         "build_files": [row["pattern"] for row in composition.get("build_files", [])][:10],
+        # Числа, а не списки: ответ инструмента ограничен по размеру, а полные
+        # списки лежат в самом отчёте разведки (`composition.projects`, схема 2).
+        # У готового отчёта схемы 1 раздела нет, и `None` здесь честнее нулей:
+        # ноль читался бы как «проектов в репозитории нет».
+        "projects": (
+            {key: len(projects.get(key, [])) for key in _PROJECT_LISTS}
+            if isinstance(projects, dict)
+            else None
+        ),
         "read_first": [row["path"] for row in archaeology.get("hotspots", [])][:10],
         "center": [row["path"] for row in structure.get("center", [])][:10],
         "registries": blocks.get("registries", {}).get("found", 0),

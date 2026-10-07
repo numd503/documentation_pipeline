@@ -9746,3 +9746,39 @@ git отказал целиком, ничего не добавив, а выво
 **Проверка:** `test_mcp_protocol` + `test_graph_mcp` — 42 passed (`test_graph_mcp` без
 правки); полная — ruff и mypy чисты; живой stdio-прогон `graph serve`: `limit: "abc"` —
 `isError`, `params: null` и `[1]` — −32600, после них `tools/list` отвечает.
+
+---
+
+## S10 — разведка: полные списки проектов и фронтов (07.10.2026)
+
+**Изменено:** `docpipe/recon.py`, `docpipe/graph/api.py`, `tests/test_recon.py` (+8),
+`.gigacode/skills/recon/SKILL.md`, `docs/graph-implementation-plan.md` (R01),
+`docs/setup-implementation-plan.md` (S10: ловушки и отклонения).
+
+Схема `docpipe.recon/2`: в блоке `composition` — раздел `projects` (`dotnet_projects`,
+`solutions`, `fronts`, `proxy_files`) и `paths` у строк `build_files`. Списки и таблица
+сборки — отдельный проход с узким отсевом `.git`, `node_modules`, `bin`, `obj`, `dist`
+(широкий отсев разведки прятал nx/lerna в `packages/`). Шаблоны — без учёта регистра,
+в трёх видах; маски `proxy.conf*` (`.json`, `.js`, `.mjs`, `.cjs`). Свой разбор JSONC —
+копия сканера `docpipe.web` (разведка — один файл на stdlib), их равенство держит тест.
+`proxyConfig` — из `options` и всех `configurations` цели `serve`, у nx — от каталога
+`nx.json`; у фронта `config_readable` — иначе неразобранный `angular.json` неотличим
+от фронта без прокси. `overview` отдаёт `projects` числами (у схемы 1 — `None`).
+
+**Отклонения и находки.**
+- Таблица `build_files` считается тем же широким проходом, что и `projects`, — иначе
+  строка `*.csproj` и `dotnet_projects` называли бы разное число. На abp `project.json`
+  2 → 17, `package.json` 98 → 116.
+- Строки `uv.lock` и `poetry.lock` были мёртвыми с R01: суффикс `.lock` из
+  `EXCLUDED_SUFFIXES` вычёркивал их раньше подсчёта.
+- Второй проход замедлил разведку на копии abp с 2,1 до 3,0 с; после компиляции шаблонов
+  один раз и `relative_to` раз на каталог — 2,0 с. Остальные пять блоков совпали
+  с прежней версией.
+- `angular_core: false` не значит «не Angular»: библиотека nx со своим `package.json`
+  даёт `false` (на abp — 15 из 17 проектов nx); сказано в скилле.
+- Вне S10: `web/modules.py` склеивает `proxyConfig` nx с каталогом проекта, а пути nx —
+  от корня workspace; пункт в бэклоге.
+
+**Проверка:** `test_recon` — 28 passed; `docpipe recon --root tests/fixtures/WebWorkspace` —
+схема 2, два фронта; abp — 671 `.csproj`, 30 решений, 23 фронта; полная — ruff и mypy
+чисты.

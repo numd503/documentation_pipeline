@@ -375,7 +375,7 @@ def test_cli_writes_both_forms(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(json_out.read_text(encoding="utf-8"))
-    assert payload["schema"] == "docpipe.recon/1"
+    assert payload["schema"] == "docpipe.recon/2"
     assert "РАЗВЕДКА РЕПОЗИТОРИЯ" in text_out.read_text(encoding="utf-8")
 
 
@@ -444,6 +444,11 @@ def test_runs_as_a_single_copied_file(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True)
     (repo / "src" / "app.py").write_text("def main():\n    pass\n", encoding="utf-8")
+    (repo / "angular.json").write_text(
+        '{\n  // комментарий\n  "projects": {"app": {"architect": {"serve": '
+        '{"options": {"proxyConfig": "proxy.conf.json"}}}}},\n}\n',
+        encoding="utf-8",
+    )
 
     proc = subprocess.run(
         [sys.executable, str(copied), "--root", str(repo), "--json", str(tmp_path / "r.json")],
@@ -453,4 +458,244 @@ def test_runs_as_a_single_copied_file(tmp_path: Path) -> None:
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["blocks"]
+    payload = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert payload["blocks"]
+    # Списки проектов собраны своим разбором JSONC, а не разбором `docpipe.web`:
+    # копия файла без пакета рядом обязана прочитать `angular.json` с комментарием.
+    composition = next(b for b in payload["blocks"] if b["id"] == "composition")["data"]
+    assert composition["projects"]["fronts"][0]["proxy_configs"] == ["proxy.conf.json"]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Полные списки проектов и фронтов (S10 плана настройки)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# `angular.json`, каким его оставляют люди: комментарии обоих видов, висящие
+# запятые, `//` внутри строки и прокси, объявленный только в `configurations`.
+ANGULAR_JSONC = """{
+  // ng new пишет сюда комментарии, руками дописывают ещё
+  "$schema": "http://json.schemastore.org/angular-cli",
+  "projects": {
+    "admin": {
+      "root": "",
+      "sourceRoot": "src",
+      "architect": {
+        "serve": {
+          "options": { "proxyConfig": "proxy.conf.json", },
+          /* прокси разработки — только в configurations */
+          "configurations": {
+            "development": { "proxyConfig": "proxy.conf.dev.json" },
+          },
+        },
+      },
+    },
+    "reports": {
+      "root": "projects/reports",
+      "architect": { "serve": { "options": { "proxyConfig": "proxy.conf.json" } } },
+    },
+  },
+}
+"""
+
+
+def projects_repo(root: Path) -> Path:
+    """Репозиторий, где каждый проект прячется от широкого отсева по-своему."""
+    return make_repo(
+        root,
+        {
+            "App.slnx": '<Solution>\n  <Project Path="src/Api/Api.csproj" />\n</Solution>\n',
+            "src/Api/Api.csproj": '<Project Sdk="Microsoft.NET.Sdk" />\n',
+            # Суффикс в верхнем регистре и каталог `packages/` сразу: широкий
+            # отсев выкинул бы каталог, а сравнение суффикса с учётом регистра — имя.
+            "packages/Tools/Tools.CSPROJ": '<Project Sdk="Microsoft.NET.Sdk" />\n',
+            "apps/admin/angular.json": ANGULAR_JSONC,
+            "apps/admin/package.json": '{"dependencies": {"@angular/core": "17.3.0"}}\n',
+            "apps/admin/proxy.conf.json": (
+                '{"/api": {"target": "http://localhost:5000", "pathRewrite": {"^/api": ""}}}\n'
+            ),
+            "apps/admin/proxy.conf.dev.json": "{}\n",
+            # nx-workspace в `packages/`: так раскладывают nx и lerna.
+            "packages/nx.json": "{}\n",
+            "packages/package.json": '{"devDependencies": {"@angular/core": "17.3.0"}}\n',
+            "packages/shop/project.json": (
+                '{"name": "shop", "targets": {"serve": {"options": '
+                '{"proxyConfig": "shop/proxy.conf.js"}}}}\n'
+            ),
+            "packages/shop/proxy.conf.js": "module.exports = {};\n",
+            "packages/api-node/project.json": '{"name": "api-node"}\n',
+            "packages/api-node/package.json": '{"dependencies": {"express": "4.19.0"}}\n',
+            # `project.json` вне workspace nx — старый формат .NET, а не фронт.
+            "legacy/project.json": '{"frameworks": {"dnx451": {}}}\n',
+            # Зависимости и выход сборки — не проекты, даже под git.
+            "node_modules/lib/angular.json": '{"projects": {}}\n',
+            "node_modules/lib/package.json": "{}\n",
+            "bin/Old/Old.csproj": "<Project />\n",
+        },
+    )
+
+
+def composition_of(report: dict) -> dict:
+    return next(b for b in report["blocks"] if b["id"] == "composition")["data"]
+
+
+def test_projects_are_listed_in_full(recon: ModuleType, tmp_path: Path) -> None:
+    """Черновик `roots`, `enrolled`, `web.roots` и `url_rewrite` строится
+    по полному списку, и в нём есть всё, что широкий отсев разведки прячет.
+
+    Каждый файл репозитория выше закрывает одну дыру: `packages/` (nx и lerna),
+    суффикс в верхнем регистре, `angular.json` с комментариями, прокси только
+    в `configurations`, путь `proxyConfig` nx от корня workspace,
+    `project.json` вне nx и `node_modules`.
+    """
+    projects_repo(tmp_path)
+    composition = composition_of(recon.build_report(tmp_path, 12, 5, []))
+
+    assert composition["projects"] == {
+        "dotnet_projects": ["packages/Tools/Tools.CSPROJ", "src/Api/Api.csproj"],
+        "solutions": ["App.slnx"],
+        "fronts": [
+            {
+                "path": "apps/admin",
+                "kind": "angular",
+                "config": "apps/admin/angular.json",
+                "angular_core": True,
+                "proxy_configs": ["apps/admin/proxy.conf.dev.json", "apps/admin/proxy.conf.json"],
+                "config_readable": True,
+            },
+            {
+                "path": "packages/api-node",
+                "kind": "nx",
+                "config": "packages/api-node/project.json",
+                "angular_core": False,
+                "proxy_configs": [],
+                "config_readable": True,
+            },
+            {
+                "path": "packages/shop",
+                "kind": "nx",
+                "config": "packages/shop/project.json",
+                "angular_core": True,
+                "proxy_configs": ["packages/shop/proxy.conf.js"],
+                "config_readable": True,
+            },
+        ],
+        "proxy_files": [
+            "apps/admin/proxy.conf.dev.json",
+            "apps/admin/proxy.conf.json",
+            "packages/shop/proxy.conf.js",
+        ],
+    }
+
+    # Таблица сборки и списки проектов — один проход: строка `*.csproj`
+    # не называет другого числа, чем `dotnet_projects`.
+    rows = {row["pattern"]: row for row in composition["build_files"]}
+    assert rows["*.csproj"]["paths"] == composition["projects"]["dotnet_projects"]
+    assert rows["nx.json"]["paths"] == ["packages/nx.json"]
+    assert rows["proxy.conf*.json"]["paths"] == [
+        "apps/admin/proxy.conf.dev.json",
+        "apps/admin/proxy.conf.json",
+    ]
+    assert rows["proxy.conf*.js"]["paths"] == ["packages/shop/proxy.conf.js"]
+
+
+def test_build_files_list_every_path_next_to_examples(recon: ModuleType, tmp_path: Path) -> None:
+    """Пять примеров — человеку, полный список — черновику настройки."""
+    make_repo(
+        tmp_path,
+        {f"src/P{index}/P{index}.csproj": "<Project />\n" for index in range(7)},
+    )
+    composition = composition_of(recon.build_report(tmp_path, 12, 5, []))
+    row = next(row for row in composition["build_files"] if row["pattern"] == "*.csproj")
+    expected = [f"src/P{index}/P{index}.csproj" for index in range(7)]
+    assert row["count"] == 7
+    assert row["examples"] == expected[:5]
+    assert row["paths"] == expected
+
+
+def test_lock_files_reach_the_build_table(recon: ModuleType, tmp_path: Path) -> None:
+    """Строки `uv.lock` и `poetry.lock` в таблице сборки были мёртвыми.
+
+    Суффикс `.lock` широкий отсев снимает ради счёта строк, и таблица сборки,
+    считавшаяся по тому же списку, не находила эти файлы никогда.
+    """
+    make_repo(tmp_path, {"pyproject.toml": "[project]\nname = 'x'\n", "uv.lock": "version = 1\n"})
+    composition = composition_of(recon.build_report(tmp_path, 12, 5, []))
+    assert "uv.lock" in {row["pattern"] for row in composition["build_files"]}
+
+
+def test_unreadable_front_config_is_listed_and_named(recon: ModuleType, tmp_path: Path) -> None:
+    """Неразобранный `angular.json` — фронт с пометкой, а не пропуск.
+
+    Без пометки пустой список прокси читался бы как «прокси не объявлен».
+    """
+    make_repo(tmp_path, {"web/angular.json": '{"projects": {\n'})
+    report = recon.build_report(tmp_path, 12, 5, [])
+    (front,) = composition_of(report)["projects"]["fronts"]
+    assert front["config"] == "web/angular.json"
+    assert front["config_readable"] is False
+    assert front["proxy_configs"] == []
+    assert "web/angular.json (не разобран)" in recon.render_text(report)
+
+
+def test_text_form_names_project_counts(recon: ModuleType, tmp_path: Path) -> None:
+    projects_repo(tmp_path)
+    text = recon.render_text(recon.build_report(tmp_path, 12, 5, []))
+    assert "проектов .csproj: 2, решений: 1, фронтов: 3, файлов прокси: 3" in text
+    assert "packages/shop/proxy.conf.js" in text
+
+
+def test_projects_two_runs_are_identical(recon: ModuleType, tmp_path: Path) -> None:
+    projects_repo(tmp_path)
+    first = recon.build_report(tmp_path, 12, 5, [])
+    second = recon.build_report(tmp_path, 12, 5, [])
+    assert json.dumps(first, ensure_ascii=False) == json.dumps(second, ensure_ascii=False)
+    assert recon.render_text(first) == recon.render_text(second)
+
+
+def test_jsonc_parser_matches_the_web_one(recon: ModuleType) -> None:
+    """Своя копия разбора JSONC и разбор `docpipe.web` дают равные словари.
+
+    Импортировать разбор фронта разведке нельзя — она запускается копией
+    одного файла, — поэтому копии две, и разойтись им не даёт этот тест.
+    `//` внутри `"http://…"` — та ловушка, ради которой разбор — сканер.
+    """
+    from docpipe.web.resolve import parse_jsonc
+
+    fixture = RECON_PATH.parent.parent / "tests" / "fixtures" / "WebWorkspace" / "angular.json"
+    for text in (fixture.read_text(encoding="utf-8"), ANGULAR_JSONC):
+        assert recon.parse_jsonc(text) == parse_jsonc(text)
+    assert recon.parse_jsonc(ANGULAR_JSONC)["$schema"] == "http://json.schemastore.org/angular-cli"
+
+
+def test_overview_counts_projects_and_tells_an_old_report_apart(tmp_path: Path) -> None:
+    """`overview` пересказывает раздел числами и не принимает его отсутствие за ноль.
+
+    У отчёта схемы 1 раздела `projects` нет; нули там читались бы как
+    «проектов в репозитории нет».
+    """
+    from docpipe.graph.api import overview
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    projects_repo(repo)
+    answer = overview(repo)
+    assert answer["projects"] == {
+        "dotnet_projects": 2,
+        "solutions": 1,
+        "fronts": 3,
+        "proxy_files": 3,
+    }
+
+    old = tmp_path / "recon-v1.json"
+    old.write_text(
+        json.dumps(
+            {
+                "schema": "docpipe.recon/1",
+                "blocks": [{"id": "composition", "data": {"build_files": [{"pattern": "*.sln"}]}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    answer = overview(repo, old)
+    assert answer["build_files"] == ["*.sln"]
+    assert answer["projects"] is None

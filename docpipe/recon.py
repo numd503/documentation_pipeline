@@ -31,8 +31,10 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -43,7 +45,10 @@ from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-SCHEMA = "docpipe.recon/1"
+# Вторая версия добавила раздел `projects` и полный список `paths` у файлов
+# сборки (S10 плана настройки). Новое поле двигает версию: потребитель,
+# сверяющий схему, иначе прочитал бы отсутствие раздела как «проектов нет».
+SCHEMA = "docpipe.recon/2"
 
 # Двоичное — отдельный «язык», а не «прочее». Считать в нём строки нельзя:
 # `\n` в PNG встречается, и на abp такой счёт дал 2,4 млн «строк» картинок
@@ -233,6 +238,15 @@ EXCLUDED_SEGMENTS = frozenset(
     }
 )
 
+# Узкий отсев для файлов сборки и списков проектов. Широкий `EXCLUDED_SEGMENTS`
+# верен для счёта строк и литералов, но для вопроса «какие здесь проекты» он
+# лжёт: `packages/` и `build/` в нём ради вендоринга, а nx и lerna держат
+# в `packages/*` сами проекты. Черновик `roots`, `enrolled` и `web.roots`,
+# собранный по широкому отсеву, не увидел бы их вовсе, и выглядело бы это
+# как «фронтов нет». Здесь остаются только каталоги, где проекта точно нет:
+# служебный каталог git, зависимости npm и выход сборки .NET и фронта.
+BUILD_SKIP = frozenset({".git", "node_modules", "bin", "obj", "dist"})
+
 EXCLUDED_SUFFIXES = (
     ".min.js",
     ".min.css",
@@ -294,7 +308,19 @@ BINARY_EXTS = frozenset(
 # ──────────────────────────────────────────────────────────────────────────────
 # Файлы сборки: что именно из них следует. Пара (имя → что это значит) —
 # ответ на «чем собран репозиторий», а не список найденного.
+#
+# Шаблон бывает трёх видов: `*.ext` (суффикс), точное имя и маска по имени
+# файла (`proxy.conf*.json`). Все три сравниваются без учёта регистра: точное
+# имя так сравнивалось всегда, а суффикс — нет, и `Foo.CSPROJ` пропадал
+# из списка проектов молча, при том что `package.json` в любом регистре
+# находился. Две половины одной таблицы не должны расходиться в этом.
 # ──────────────────────────────────────────────────────────────────────────────
+
+# Маски файлов прокси dev-сервера. Имя у них не закреплено (`proxy.conf.json`,
+# `proxy.conf.dev.json`, `proxy.config.js`), поэтому точного имени мало,
+# а из этих файлов заполняется `web.url_rewrite`: срезает ли прокси префикс
+# по дороге к бэкенду, из кода фронта не вывести.
+PROXY_MASKS: tuple[str, ...] = ("proxy.conf*.json", "proxy.conf*.js", "proxy.conf*.[cm]js")
 
 BUILD_FILES: tuple[tuple[str, str, str], ...] = (
     ("*.sln", "решение .NET (классический формат)", "dotnet"),
@@ -313,6 +339,10 @@ BUILD_FILES: tuple[tuple[str, str, str], ...] = (
     ("angular.json", "рабочая область Angular", "node"),
     ("project.json", "проект nx", "node"),
     ("tsconfig.json", "настройка компилятора TypeScript", "node"),
+    *(
+        (mask, "прокси dev-сервера фронта: куда и с каким префиксом", "node")
+        for mask in PROXY_MASKS
+    ),
     ("pyproject.toml", "пакет Python (PEP 518)", "python"),
     ("setup.py", "пакет Python (setuptools)", "python"),
     ("setup.cfg", "настройка пакета Python", "python"),
@@ -457,6 +487,13 @@ def git_available(root: Path) -> bool:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _user_excluded(path: str, parts: tuple[str, ...], extra: Iterable[str]) -> bool:
+    name = parts[-1] if parts else path
+    return any(
+        pattern in parts or path.startswith(pattern) or name.endswith(pattern) for pattern in extra
+    )
+
+
 def is_excluded(path: str, extra: Iterable[str]) -> bool:
     parts = PurePosixPath(path).parts
     # Сравнение по СЕГМЕНТАМ, а не глобом: `**/obj/**` не ловит `obj/x.cs`
@@ -466,28 +503,61 @@ def is_excluded(path: str, extra: Iterable[str]) -> bool:
     name = parts[-1] if parts else path
     if any(name.endswith(suffix) for suffix in EXCLUDED_SUFFIXES):
         return True
-    return any(
-        pattern in parts or path.startswith(pattern) or name.endswith(pattern) for pattern in extra
-    )
+    return _user_excluded(path, parts, extra)
+
+
+def _raw_files(root: Path, use_git: bool, prune: frozenset[str]) -> list[str]:
+    """Все файлы репозитория до отсева, отсортированные.
+
+    Через `git ls-files`, если репозиторий под git: иначе в счётчики попадёт
+    вывод сборки, которого в репозитории нет. Без git каталоги из `prune`
+    не обходятся вовсе — `node_modules` на сотню тысяч файлов иначе съел бы
+    весь бюджет прогона ещё до чтения.
+    """
+    if use_git:
+        code, out = run_git(root, ["ls-files", "-z"])
+        return sorted(p for p in out.split("\0") if p) if code == 0 else []
+    raw: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in prune]
+        # Относительный путь — раз на каталог, а не на файл: `relative_to`
+        # на каждый файл в двух проходах стоил на копии abp без git больше
+        # полусекунды из двух.
+        relative = Path(dirpath).relative_to(root).as_posix()
+        prefix = "" if relative == "." else f"{relative}/"
+        raw.extend(prefix + filename for filename in filenames)
+    return sorted(raw)
+
+
+def list_build_paths(root: Path, use_git: bool, extra_excludes: list[str]) -> list[str]:
+    """Файлы для таблицы сборки и списков проектов — отдельный проход.
+
+    Отдельный, а не тот же список, что у остальных блоков: широкий отсев
+    прячет `packages/` и `build/`, где у nx и lerna лежат проекты (см.
+    `BUILD_SKIP`). Суффиксы `EXCLUDED_SUFFIXES` здесь тоже не действуют:
+    `.lock` в них ради счёта строк, а из таблицы сборки он молча вычёркивал
+    `uv.lock` и `poetry.lock`, хотя строки для них в ней были. Отсев,
+    названный человеком через `--exclude`, соблюдается: это его решение.
+    """
+    kept: list[str] = []
+    for path in _raw_files(root, use_git, BUILD_SKIP):
+        # `split`, а не `PurePosixPath`: путь из `git ls-files` уже POSIX,
+        # а объект пути на каждый из двадцати тысяч файлов заметен в бюджете.
+        parts = tuple(path.split("/"))
+        if any(part in BUILD_SKIP for part in parts[:-1]):
+            continue
+        if extra_excludes and _user_excluded(path, parts, extra_excludes):
+            continue
+        kept.append(path)
+    return kept
 
 
 def list_files(root: Path, use_git: bool, extra_excludes: list[str]) -> tuple[list[str], list[str]]:
     """Список файлов репозитория и список отсеянных путей.
 
-    Через `git ls-files`, если репозиторий под git: иначе в счётчики попадёт
-    вывод сборки, которого в репозитории нет. Порядок — явный `sorted()`,
-    никогда не порядок обхода.
+    Порядок — явный `sorted()`, никогда не порядок обхода.
     """
-    if use_git:
-        code, out = run_git(root, ["ls-files", "-z"])
-        raw = [p for p in out.split("\0") if p] if code == 0 else []
-    else:
-        raw = []
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in EXCLUDED_SEGMENTS]
-            for filename in filenames:
-                full = Path(dirpath) / filename
-                raw.append(full.relative_to(root).as_posix())
+    raw = _raw_files(root, use_git, EXCLUDED_SEGMENTS)
 
     kept: list[str] = []
     dropped: list[str] = []
@@ -745,7 +815,270 @@ def scan_files(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def block_composition(facts: list[FileFacts], files: list[str]) -> dict[str, Any]:
+def parse_jsonc(text: str) -> Any:
+    """Разобрать JSON с комментариями и висящими запятыми.
+
+    `angular.json` и `tsconfig.json` — не JSON: `ng new` и `nx` пишут в них
+    комментарии, а руками дописывают `//` и висящие запятые, и `json.loads`
+    на таком файле бросает исключение. Это копия разбора из `docpipe.web`,
+    а не импорт: разведка — один файл на стандартной библиотеке, и запуск
+    копией этого файла на машине без пакета — её главный сценарий. Тест
+    сверяет, что обе копии дают одинаковые словари.
+
+    Комментарии вырезаются сканером, а не регулярным выражением: `//` внутри
+    строки (`"target": "http://host"`) выражение приняло бы за начало
+    комментария и съело бы остаток строки.
+    """
+    out: list[str] = []
+    index = 0
+    length = len(text)
+    in_string = False
+
+    while index < length:
+        char = text[index]
+
+        if in_string:
+            out.append(char)
+            if char == "\\" and index + 1 < length:
+                out.append(text[index + 1])
+                index += 2
+                continue
+            if char == '"':
+                in_string = False
+            index += 1
+            continue
+
+        if char == '"':
+            in_string = True
+            out.append(char)
+            index += 1
+            continue
+
+        if char == "/" and index + 1 < length and text[index + 1] == "/":
+            while index < length and text[index] != "\n":
+                index += 1
+            continue
+
+        if char == "/" and index + 1 < length and text[index + 1] == "*":
+            index += 2
+            while index + 1 < length and not (text[index] == "*" and text[index + 1] == "/"):
+                index += 1
+            index += 2
+            continue
+
+        if char in "}]":
+            # Висящая запятая снимается здесь, вне строки, поэтому запятая
+            # внутри значения не пострадает.
+            while out and out[-1].isspace():
+                out.pop()
+            if out and out[-1] == ",":
+                out.pop()
+
+        out.append(char)
+        index += 1
+
+    return json.loads("".join(out))
+
+
+def _read_jsonc(path: Path) -> tuple[Any, bool]:
+    """Содержимое JSONC-файла и признак, что его удалось разобрать.
+
+    Признак идёт в отчёт, а не теряется: у неразобранного `angular.json`
+    список прокси пуст, и без признака это читалось бы как «прокси не
+    объявлен».
+    """
+    try:
+        if path.stat().st_size > MAX_FILE_BYTES:
+            return None, False
+        return parse_jsonc(path.read_bytes().decode("utf-8-sig", errors="replace")), True
+    except (OSError, ValueError, RecursionError):
+        return None, False
+
+
+def match_build_files(paths: list[str]) -> dict[str, list[str]]:
+    """Шаблон `BUILD_FILES` → все подходящие пути, отсортированные.
+
+    Шаблоны разбираются на три вида один раз, а не на каждой паре «шаблон,
+    файл»: сорок шаблонов на двадцать тысяч файлов — почти миллион проверок,
+    и разбор шаблона внутри каждой стоил на abp около 0,4 с. Таблица сборки
+    и раздел `projects` читают один и тот же ответ, поэтому разойтись в числе
+    проектов не могут.
+    """
+    exact: dict[str, str] = {}
+    suffixes: list[tuple[str, str]] = []
+    masks: list[tuple[re.Pattern[str], str]] = []
+    for pattern, _, _ in BUILD_FILES:
+        lowered = pattern.lower()
+        if lowered.startswith("*.") and not any(ch in lowered[2:] for ch in "*?["):
+            suffixes.append((lowered[1:], pattern))
+        elif any(ch in lowered for ch in "*?["):
+            # Та же маска, что у `fnmatch.fnmatchcase`, а не у `fnmatch`:
+            # второй сводит регистр по правилам ОС, и один репозиторий дал бы
+            # разные списки на Windows и на Linux. Регистр сведён здесь явно.
+            masks.append((re.compile(fnmatch.translate(lowered)), pattern))
+        else:
+            exact[lowered] = pattern
+
+    hits: dict[str, list[str]] = defaultdict(list)
+    for path in paths:
+        name = path.rsplit("/", 1)[-1].lower()
+        pattern_hit = exact.get(name)
+        if pattern_hit is not None:
+            hits[pattern_hit].append(path)
+        for suffix, pattern in suffixes:
+            if name.endswith(suffix):
+                hits[pattern].append(path)
+        for regex, pattern in masks:
+            if regex.match(name):
+                hits[pattern].append(path)
+    return {pattern: sorted(found) for pattern, found in hits.items()}
+
+
+def _join(*parts: str) -> str:
+    joined = posixpath.join(*[part for part in parts if part])
+    normalized = posixpath.normpath(joined) if joined else ""
+    return "" if normalized == "." else normalized
+
+
+def _within(path: str, directory: str) -> bool:
+    """Лежит ли путь внутри каталога. По сегментам: `nx-app2/x` не внутри `nx-app`."""
+    if not directory:
+        return True
+    segments = directory.split("/")
+    return path.split("/")[: len(segments)] == segments
+
+
+def _declared_proxies(project: Any) -> list[str]:
+    """Значения `proxyConfig` цели `serve`: в `options` и во всех `configurations`.
+
+    `architect` — имя у Angular CLI, `targets` — у nx; смотрятся оба.
+    `configurations` тоже: `proxyConfig` нередко объявлен только у
+    `development`, и одни `options` дали бы пустой список при объявленном
+    прокси.
+    """
+    if not isinstance(project, dict):
+        return []
+    found: list[str] = []
+    for section in ("architect", "targets"):
+        targets = project.get(section)
+        serve = targets.get("serve") if isinstance(targets, dict) else None
+        if not isinstance(serve, dict):
+            continue
+        blocks: list[Any] = [serve.get("options")]
+        configurations = serve.get("configurations")
+        if isinstance(configurations, dict):
+            blocks.extend(configurations[name] for name in sorted(configurations))
+        for block in blocks:
+            value = block.get("proxyConfig") if isinstance(block, dict) else None
+            if isinstance(value, str) and value.strip():
+                found.append(value.strip().replace("\\", "/"))
+    return found
+
+
+def _has_angular_core(root: Path, directory: str, packages: dict[str, str]) -> bool:
+    """`@angular/core` в зависимостях ближайшего вверх по дереву `package.json`.
+
+    Ближайшего, как это делает сам npm: у nx-проекта своего `package.json`
+    обычно нет, и стек он наследует от корня workspace. Поиск — по списку
+    файлов, а не обходом диска: порядок обхода источником ответа не бывает.
+    """
+    current = directory
+    while True:
+        package = packages.get(current)
+        if package is not None:
+            data, _ = _read_jsonc(root / package)
+            if not isinstance(data, dict):
+                return False
+            return any(
+                isinstance(data.get(section), dict) and "@angular/core" in data[section]
+                for section in ("dependencies", "devDependencies", "peerDependencies")
+            )
+        if not current:
+            return False
+        current = posixpath.dirname(current)
+
+
+def collect_projects(root: Path, hits: dict[str, list[str]]) -> dict[str, Any]:
+    """Полные списки проектов .NET, решений, фронтов и файлов прокси.
+
+    Полные, а не пять примеров: из них строится черновик `roots`, `enrolled`,
+    `web.roots` и `web.url_rewrite`, и проект, не попавший в пример, выпал
+    бы из настройки без единого сообщения. Отбор фронтов — тот же, что
+    у `docpipe.web` при разборе: `angular.json` — фронт всегда, `project.json`
+    — только внутри workspace nx (без `nx.json` выше по дереву это может быть
+    `project.json` старого формата .NET). Один фронт — один файл объявления:
+    многопроектный `angular.json` даёт одну запись, и прокси всех его
+    проектов собраны в ней.
+
+    `hits` — ответ `match_build_files`: списки берутся из той же таблицы,
+    что и строки `build_files`, а не сопоставляются второй раз.
+    """
+
+    def named(pattern: str) -> list[str]:
+        return hits.get(pattern, [])
+
+    packages: dict[str, str] = {}
+    for path in named("package.json"):
+        packages.setdefault(posixpath.dirname(path), path)
+    nx_roots = sorted({posixpath.dirname(path) for path in named("nx.json")})
+
+    fronts: list[dict[str, Any]] = []
+    for config in named("angular.json"):
+        directory = posixpath.dirname(config)
+        data, readable = _read_jsonc(root / config)
+        projects = data.get("projects") if isinstance(data, dict) else None
+        proxies: set[str] = set()
+        if isinstance(projects, dict):
+            for name in sorted(projects):
+                # Angular CLI разрешает `proxyConfig` от каталога `angular.json`.
+                proxies.update(
+                    _join(directory, value) for value in _declared_proxies(projects[name])
+                )
+        fronts.append(
+            {
+                "path": directory or ".",
+                "kind": "angular",
+                "config": config,
+                "angular_core": _has_angular_core(root, directory, packages),
+                "proxy_configs": sorted(proxies),
+                "config_readable": readable,
+            }
+        )
+    for config in named("project.json"):
+        workspaces = [workspace for workspace in nx_roots if _within(config, workspace)]
+        if not workspaces:
+            continue
+        # Вложенные workspace бывают; проект принадлежит ближнему.
+        workspace = max(workspaces, key=len)
+        directory = posixpath.dirname(config)
+        data, readable = _read_jsonc(root / config)
+        # Пути в `project.json` nx заданы от корня workspace, а не от проекта —
+        # та же ловушка, что у `sourceRoot`: склейка с каталогом проекта дала
+        # бы правдоподобный и несуществующий путь.
+        proxies = {_join(workspace, value) for value in _declared_proxies(data)}
+        fronts.append(
+            {
+                "path": directory or ".",
+                "kind": "nx",
+                "config": config,
+                "angular_core": _has_angular_core(root, directory, packages),
+                "proxy_configs": sorted(proxies),
+                "config_readable": readable,
+            }
+        )
+    fronts.sort(key=lambda front: (str(front["path"]), str(front["config"])))
+
+    return {
+        "dotnet_projects": named("*.csproj"),
+        "solutions": sorted({*named("*.sln"), *named("*.slnx")}),
+        "fronts": fronts,
+        "proxy_files": sorted({path for mask in PROXY_MASKS for path in named(mask)}),
+    }
+
+
+def block_composition(
+    root: Path, facts: list[FileFacts], files: list[str], build_paths: list[str]
+) -> dict[str, Any]:
     by_lang: dict[str, list[FileFacts]] = defaultdict(list)
     for item in facts:
         by_lang[item.lang or "прочее"].append(item)
@@ -765,19 +1098,16 @@ def block_composition(facts: list[FileFacts], files: list[str]) -> dict[str, Any
         key=lambda row: (-int(row["lines"]), str(row["language"])),
     )
 
-    names = {path: PurePosixPath(path).name for path in files}
+    # Таблица сборки считается по тому же проходу, что и `projects`: иначе
+    # строка `*.csproj` и список `dotnet_projects` одного блока называли бы
+    # разное число проектов, и агенту пришлось бы гадать, какой верить.
+    matched = match_build_files(build_paths)
     build: list[dict[str, Any]] = []
     stacks: set[str] = set()
     for pattern, means, stack in BUILD_FILES:
-        if pattern.startswith("*."):
-            suffix = pattern[1:]
-            hits = [path for path, name in names.items() if name.endswith(suffix)]
-        else:
-            lowered = pattern.lower()
-            hits = [path for path, name in names.items() if name.lower() == lowered]
+        hits = matched.get(pattern, [])
         if not hits:
             continue
-        hits.sort()
         stacks.add(stack)
         build.append(
             {
@@ -786,6 +1116,9 @@ def block_composition(facts: list[FileFacts], files: list[str]) -> dict[str, Any
                 "stack": stack,
                 "count": len(hits),
                 "examples": hits[:5],
+                # Полный список рядом с примерами: черновик настройки строится
+                # по нему, а пять примеров человеку — для глаз.
+                "paths": hits,
             }
         )
 
@@ -831,6 +1164,7 @@ def block_composition(facts: list[FileFacts], files: list[str]) -> dict[str, Any
                 unknown.items(), key=lambda kv: (-unknown_lines[kv[0]], kv[0])
             )[:10]
         ],
+        "projects": collect_projects(root, matched),
     }
 
 
@@ -1571,6 +1905,7 @@ QUESTIONS: tuple[tuple[str, str], ...] = (
 def build_report(root: Path, months: int, top: int, extra_excludes: list[str]) -> dict[str, Any]:
     use_git = git_available(root)
     files, dropped = list_files(root, use_git, extra_excludes)
+    build_paths = list_build_paths(root, use_git, extra_excludes)
     facts, too_big, unreadable, minified = scan_files(root, files)
     head = head_info(root) if use_git else None
 
@@ -1579,7 +1914,7 @@ def build_report(root: Path, months: int, top: int, extra_excludes: list[str]) -
     import_specifiers = {spec for item in facts for spec in item.imports}
 
     data = {
-        "composition": block_composition(facts, files),
+        "composition": block_composition(root, facts, files, build_paths),
         "archaeology": block_archaeology(root, facts, head, months, top),
         "structure": block_structure(facts, top),
         "registries": block_registries(facts, counts, examples, declarations, top),
@@ -1639,6 +1974,49 @@ def _rows(rows: list[dict[str, Any]], columns: list[tuple[str, str]], empty: str
     return out
 
 
+# Сколько фронтов печатать человеку. В машинной форме список полный всегда:
+# черновик настройки строится по нему, а таблица на сто проектов nx глазами
+# не читается.
+TEXT_FRONTS_LIMIT = 20
+
+
+def _render_projects(projects: dict[str, Any]) -> list[str]:
+    lines = [
+        "",
+        "  Проекты и фронты (полные списки — в JSON, раздел composition.projects):",
+        f"    проектов .csproj: {len(projects['dotnet_projects'])}, "
+        f"решений: {len(projects['solutions'])}, фронтов: {len(projects['fronts'])}, "
+        f"файлов прокси: {len(projects['proxy_files'])}",
+    ]
+    rows = [
+        {
+            "path": front["path"],
+            "kind": front["kind"],
+            "config": front["config"] + ("" if front["config_readable"] else " (не разобран)"),
+            "angular": "да" if front["angular_core"] else "нет",
+            "proxy": ", ".join(front["proxy_configs"]) or "—",
+        }
+        for front in projects["fronts"][:TEXT_FRONTS_LIMIT]
+    ]
+    lines.extend(
+        _rows(
+            rows,
+            [
+                ("path", "каталог"),
+                ("kind", "вид"),
+                ("config", "объявлен в"),
+                ("angular", "@angular/core"),
+                ("proxy", "proxyConfig"),
+            ],
+            "фронтов не найдено: нет ни angular.json, ни project.json внутри workspace nx",
+        )
+    )
+    hidden = len(projects["fronts"]) - len(rows)
+    if hidden > 0:
+        lines.append(f"  … и ещё {hidden} — в JSON")
+    return lines
+
+
 def render_text(report: dict[str, Any]) -> str:
     blocks = {block["id"]: block for block in report["blocks"]}
     lines: list[str] = []
@@ -1681,6 +2059,7 @@ def render_text(report: dict[str, Any]) -> str:
             "файлов сборки не найдено — репозиторий не собирается ничем известным",
         )
     )
+    lines.extend(_render_projects(composition["projects"]))
     lines.append("")
     lines.append("  Не опознано по расширению (чем это может быть — вопрос к человеку):")
     lines.extend(
