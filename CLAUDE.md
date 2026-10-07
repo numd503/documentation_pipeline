@@ -113,7 +113,7 @@ uv run docpipe scan --root tests/fixtures/SampleSolution --out /tmp/dt.json
 uv run docpipe materialize /tmp/dt.json --root /tmp/docs
 uv run docpipe docs status /tmp/dt.json --root /tmp/docs
 
-# разведка репозитория, который видишь впервые (R01); скилл поверх неё — `.qwen/skills/recon`
+# разведка репозитория, который видишь впервые (R01); скилл поверх неё — `.gigacode/skills/recon`
 uv run docpipe recon --root ПУТЬ --json recon.json --text recon.txt
 
 # нормализованный реестр архитектурных элементов (R03, R04)
@@ -205,7 +205,8 @@ Debian) прошла **только** эта версия; остальные з
 по MCP (правило Р13 — весь контакт заперт в мосте). Регистрация серверов в
 `.mcp.json` нужна только агенту для ручной разведки и на код не влияет.
 Наш собственный сервер (`docpipe graph serve`) агенту контура — gigacode,
-форк qwen code — прописывает `install.sh`: `.qwen/settings.json` клона,
+форк qwen code со своими каталогами — прописывает `install.sh`:
+`.gigacode/settings.json` клона (`.qwen/` gigacode не читает),
 полный путь к запускалке, `cwd` — корень продукта (см. G12 в плане графа).
 
 ## Поставка: инструмент на машине, настройка в репозитории
@@ -248,8 +249,10 @@ Debian) прошла **только** эта версия; остальные з
 17 красных тестов; журнал от 07.08 записал это «предсуществующим». Стоит теперь
 `/examples/`, а тест сверяет, что ничего из `templates/` не игнорируется.
 Той же природы строка `.claude/`: она закрыла скилл разведки, и R02 числился
-сделанным, не попав в git ни разу. Скилл теперь в `.qwen/skills/recon`
-(агент на контуре — gigacode, форк qwen code), для Claude Code — ссылка.
+сделанным, не попав в git ни разу. Скилл теперь в `.gigacode/skills/recon`
+(агент на контуре — gigacode, форк qwen code; `.qwen/` он не читает, и до
+07.10 скилл с MCP-записью лежали там, то есть на контуре были невидимы),
+для Claude Code — ссылка.
 
 ## Жёсткие правила
 

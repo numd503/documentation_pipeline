@@ -321,11 +321,12 @@ EOF
 
     # --- MCP-сервер для агента ------------------------------------------------
     # Формы вопроса графа агент получает через `docpipe graph serve` — MCP-сервер
-    # на stdio. Агент на контуре — gigacode, форк qwen code: проектные
-    # MCP-серверы он берёт из `.qwen/settings.json` каталога, откуда его
-    # запустили, а запускают его из корня клона — там же лежит скилл
-    # `.qwen/skills/recon`. Поэтому файл пишется в клон, а не в ~/.qwen:
-    # пользовательский контекст на контуре держат чистым.
+    # на stdio. Агент на контуре — gigacode, форк qwen code со своими
+    # каталогами: проектные MCP-серверы он берёт из `.gigacode/settings.json`
+    # каталога, откуда его запустили, а запускают его из корня клона — там же
+    # лежит скилл `.gigacode/skills/recon`. `.qwen/` он не читает вовсе.
+    # Файл пишется в клон, а не в ~/.gigacode: пользовательский контекст
+    # на контуре держат чистым.
     #
     # Пути абсолютные и машинные — файл вне git. Запускалка названа полным
     # путём: агент поднимает сервер со своим PATH, и каталога uv в нём может
@@ -349,8 +350,17 @@ EOF
   }
 }
 EOF
-    keep_configured "$mcp_tmp" "$SOURCE/.qwen/settings.json" ".qwen/settings.json клона (MCP-сервер docpipe)"
+    mkdir -p "$SOURCE/.gigacode"
+    keep_configured "$mcp_tmp" "$SOURCE/.gigacode/settings.json" ".gigacode/settings.json клона (MCP-сервер docpipe)"
     rm -f "$mcp_tmp"
+
+    # До 07.10.2026 запись лежала в `.qwen/settings.json`, которого gigacode
+    # не читает. Старый файл не удаляется: в нём могут быть чужие серверы, —
+    # но молчать о нём нельзя, иначе человек будет чинить не тот файл.
+    if [ -f "$SOURCE/.qwen/settings.json" ] && grep -q '"docpipe"' "$SOURCE/.qwen/settings.json"; then
+        echo "Внимание: .qwen/settings.json клона агент контура (gigacode) не читает;" >&2
+        echo "запись MCP-сервера docpipe теперь в .gigacode/settings.json, старый файл можно удалить." >&2
+    fi
 fi
 
 cat <<EOF

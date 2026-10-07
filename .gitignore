@@ -40,16 +40,16 @@ artifacts/
 # Рабочие каталоги Claude Code: к проекту не относятся — кроме скиллов.
 # Строка `.claude/` закрывала каталог целиком, и скилл разведки (R02) ни разу
 # не попал в git: в свежем клоне его не было, а test_recon_skill падал.
-# Сам скилл лежит в `.qwen/skills/` (агент на контуре — gigacode, форк qwen
-# code); здесь — ссылка на него для Claude Code.
+# Сам скилл лежит в `.gigacode/skills/` (агент на контуре — gigacode, форк
+# qwen code со своими каталогами); здесь — ссылка на него для Claude Code.
 /.claude/*
 !/.claude/skills/
 
-# Подключение MCP-сервера docpipe для gigacode (qwen code): install.sh пишет его
-# в клон с абсолютными путями этой машины, поэтому в git ему не место.
-# Скиллы рядом, в `.qwen/skills/`, — в git.
-/.qwen/settings.json
-/.qwen/settings.json.new
+# Подключение MCP-сервера docpipe для gigacode: install.sh пишет его в клон
+# с абсолютными путями этой машины, поэтому в git ему не место. Скиллы рядом,
+# в `.gigacode/skills/`, — в git. Каталог `.qwen/` gigacode не читает.
+/.gigacode/settings.json
+/.gigacode/settings.json.new
 
 # Машинно-локальное: настройки редактора и регистрация MCP-серверов.
 # К проекту не относятся и у каждого свои.

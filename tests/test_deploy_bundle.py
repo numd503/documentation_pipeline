@@ -667,22 +667,29 @@ def _install_tool(
     *,
     index: str = "",
     uv_toml: str | None = None,
-    qwen_settings: str | None = None,
+    agent_settings: str | None = None,
+    legacy_settings: str | None = None,
+    stderr: list[str] | None = None,
 ) -> tuple[Path, list[tuple[str, str]]]:
     """Прогнать установку инструмента с заглушкой вместо uv.
 
     Установщик пишет `uv.toml` в СВОЙ клон, поэтому гоняется копия: в настоящем
     клоне тест затёр бы рабочие настройки uv. Возвращает копию клона и вызовы
-    uv парами (UV_CACHE_DIR, аргументы).
+    uv парами (UV_CACHE_DIR, аргументы); вывод в stderr — в `stderr`, если передан.
+    `legacy_settings` — прежнее место записи (`.qwen/settings.json`), которого
+    агент контура не читает.
     """
     clone = tmp_path / "clone"
     shutil.copytree(DEPLOY, clone / "deploy")
     shutil.copytree(ROOT / "templates", clone / "templates")
     if uv_toml is not None:
         (clone / "uv.toml").write_text(uv_toml, encoding="utf-8")
-    if qwen_settings is not None:
+    if agent_settings is not None:
+        (clone / ".gigacode").mkdir()
+        (clone / ".gigacode" / "settings.json").write_text(agent_settings, encoding="utf-8")
+    if legacy_settings is not None:
         (clone / ".qwen").mkdir()
-        (clone / ".qwen" / "settings.json").write_text(qwen_settings, encoding="utf-8")
+        (clone / ".qwen" / "settings.json").write_text(legacy_settings, encoding="utf-8")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stub = bin_dir / "uv"
@@ -708,7 +715,9 @@ def _install_tool(
     ]
     if index:
         command += ["--index", index]
-    subprocess.run(command, capture_output=True, text=True, check=True, env=env)
+    result = subprocess.run(command, capture_output=True, text=True, check=True, env=env)
+    if stderr is not None:
+        stderr.append(result.stderr)
     calls = [tuple(line.split("\t", 1)) for line in log.read_text(encoding="utf-8").splitlines()]
     return clone, [(cache, args) for cache, args in calls]
 
@@ -808,12 +817,12 @@ def test_documentation_leads_with_the_configuration_check(relative: str) -> None
 
 
 # --------------------------------------------------------------------------------------
-# MCP-сервер для агента контура (gigacode, форк qwen code)
+# MCP-сервер для агента контура (gigacode, форк qwen code со своими каталогами)
 # --------------------------------------------------------------------------------------
 
 
 def test_mcp_server_is_registered_in_the_clone_not_in_home(tmp_path: Path) -> None:
-    """Проектный `.qwen/settings.json` клона, а не `~/.qwen` и не репозиторий продукта.
+    """Проектный `.gigacode/settings.json` клона, а не `~/.gigacode` и не репозиторий продукта.
 
     Агента запускают из корня клона, там же лежит скилл разведки. Запускалка —
     полным путём: агент поднимает сервер со своим PATH. `cwd` — корень продукта,
@@ -822,7 +831,7 @@ def test_mcp_server_is_registered_in_the_clone_not_in_home(tmp_path: Path) -> No
     clone, _ = _install_tool(tmp_path)
     repo = tmp_path / "repo"
 
-    settings = json.loads((clone / ".qwen" / "settings.json").read_text(encoding="utf-8"))
+    settings = json.loads((clone / ".gigacode" / "settings.json").read_text(encoding="utf-8"))
     server = settings["mcpServers"]["docpipe"]
     config = repo / CONFIG_DIR / "docpipe.yaml"
     assert server == {
@@ -832,17 +841,35 @@ def test_mcp_server_is_registered_in_the_clone_not_in_home(tmp_path: Path) -> No
     }
     # Путь указывает на настоящую установленную конфигурацию, а не на выдуманную.
     assert config.is_file()
-    assert not (repo / ".qwen").exists()
+    assert not (repo / ".gigacode").exists()
+    # gigacode не читает `.qwen/`: запись туда была бы невидима на контуре.
+    assert not (clone / ".qwen").exists()
 
 
 def test_edited_agent_settings_are_kept(tmp_path: Path) -> None:
-    """В `.qwen/settings.json` клона могли дописать своё — затирать нельзя."""
+    """В `.gigacode/settings.json` клона могли дописать своё — затирать нельзя."""
     own = '{"mcpServers": {}, "model": {"name": "своя"}}\n'
-    clone, _ = _install_tool(tmp_path, qwen_settings=own)
+    clone, _ = _install_tool(tmp_path, agent_settings=own)
 
-    assert (clone / ".qwen" / "settings.json").read_text(encoding="utf-8") == own
-    proposed = json.loads((clone / ".qwen" / "settings.json.new").read_text(encoding="utf-8"))
+    assert (clone / ".gigacode" / "settings.json").read_text(encoding="utf-8") == own
+    proposed = json.loads((clone / ".gigacode" / "settings.json.new").read_text(encoding="utf-8"))
     assert "docpipe" in proposed["mcpServers"]
+
+
+def test_legacy_agent_settings_are_named_not_removed(tmp_path: Path) -> None:
+    """Запись прежних установок лежит в `.qwen/settings.json`, которого gigacode не читает.
+
+    Удалять файл нельзя — в нём могут быть чужие серверы, — но и молчать нельзя:
+    человек, увидевший там `docpipe`, будет чинить не тот файл.
+    """
+    legacy = '{"mcpServers": {"docpipe": {"command": "старая"}}}\n'
+    errors: list[str] = []
+    clone, _ = _install_tool(tmp_path, legacy_settings=legacy, stderr=errors)
+
+    assert (clone / ".qwen" / "settings.json").read_text(encoding="utf-8") == legacy
+    assert (clone / ".gigacode" / "settings.json").is_file()
+    assert ".qwen/settings.json" in errors[0]
+    assert ".gigacode/settings.json" in errors[0]
 
 
 def test_agent_settings_stay_out_of_git_and_skills_stay_in() -> None:
@@ -854,6 +881,6 @@ def test_agent_settings_stay_out_of_git_and_skills_stay_in() -> None:
         check = ["git", "check-ignore", "--no-index", "-q", path]
         return subprocess.run(check, cwd=ROOT).returncode == 0
 
-    assert ignored(".qwen/settings.json")
-    assert ignored(".qwen/settings.json.new")
-    assert not ignored(".qwen/skills/recon/SKILL.md")
+    assert ignored(".gigacode/settings.json")
+    assert ignored(".gigacode/settings.json.new")
+    assert not ignored(".gigacode/skills/recon/SKILL.md")

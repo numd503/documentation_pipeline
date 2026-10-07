@@ -183,7 +183,7 @@ alias docpipe="PYTHONPATH=$CLONE uv run --no-sync --project $CLONE python -m doc
 ```
 
 MCP-сервер графа для gigacode установщик с `--no-tool` не прописывает:
-запускалки нет, команда другая. Тогда `.qwen/settings.json` клона пишется
+запускалки нет, команда другая. Тогда `.gigacode/settings.json` клона пишется
 руками — пути абсолютные, в том числе к самому `uv` (`command -v uv`: агент
 поднимает сервер со своим `PATH`), `cwd` обязательно корень продукта (оттуда
 отсчитывается `graph.out`):

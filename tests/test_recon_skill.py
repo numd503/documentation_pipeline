@@ -19,10 +19,11 @@ import yaml
 
 from docpipe.arch import check_document
 
-# Агент на целевой машине — gigacode, форк qwen code: проектные скиллы он ищет
-# в `.qwen/skills/<имя>/SKILL.md`. Claude Code, которым ведётся разработка,
-# видит тот же файл через ссылку `.claude/skills/recon`.
-SKILL = Path(".qwen/skills/recon/SKILL.md")
+# Агент на целевой машине — gigacode, форк qwen code со своими каталогами:
+# проектные скиллы он ищет в `.gigacode/skills/<имя>/SKILL.md`, а `.qwen/`
+# не читает. Claude Code, которым ведётся разработка, видит тот же файл через
+# ссылку `.claude/skills/recon`.
+SKILL = Path(".gigacode/skills/recon/SKILL.md")
 CLAUDE_LINK = Path(".claude/skills/recon")
 
 
