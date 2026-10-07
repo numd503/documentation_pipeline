@@ -148,8 +148,8 @@ from docpipe.stats import (
 from docpipe.step2 import Step2Error, Step2Inputs, check_teams, load_manifest, prepare
 from docpipe.web.calls import WrapperConflict
 from docpipe.web.link import CATEGORIES as LINK_CATEGORIES
-from docpipe.web.link import build_report as build_link_report
 from docpipe.web.link import format_report as format_link_report
+from docpipe.web.link import report_for_settings as link_report_for_settings
 from docpipe.web.overrides import StaleRule, load_page_overrides
 from docpipe.web.pages import DEFAULT_DEPTH
 from docpipe.web.pages import FORMATS as PAGE_FORMATS
@@ -965,7 +965,8 @@ def web_link(
     Пять категорий, и только последняя — дефект. Остальные печатаются всегда
     и кода возврата не меняют, пока не названы в `--fail-on`: линт, красный
     с первого дня, выключат на второй, и вместе с ним пропадут работающие
-    проверки.
+    проверки. Концы без пары, о которых решила секция `link` настройки, —
+    отдельные три категории, и в `--fail-on` их нет: решение — не находка.
     """
     output_format = _format(output_format, ("text", "json"))
     try:
@@ -985,7 +986,7 @@ def web_link(
         )
         raise typer.Exit(code=2)
 
-    report = build_link_report(first, second, {rule.module for rule in settings.web.url_rewrite})
+    report = link_report_for_settings(first, second, settings)
     destination = out or Path(settings.web.link_out)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(stable_json_dumps(report.model_dump(mode="json")), encoding="utf-8")

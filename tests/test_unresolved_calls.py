@@ -319,15 +319,16 @@ def test_link_report_on_the_fixture_counts_unresolved(
     frontend: WebScanResult, settings: DocpipeConfig
 ) -> None:
     report = build_report(_backend(), frontend.manifest)
-    assert report.schema_version == "1.2"
+    assert report.schema_version == "1.3"
     assert report.counts["calls_unresolved"] == 9
     assert report.unconfigured_modules == ["seam-web"]
     assert "не восстановлено и в связь не идёт ещё 9" in format_report(report)
 
 
-def test_link_report_version_is_1_2() -> None:
-    # S17: 1.1 (`unresolved_endpoints`); S18: 1.2 (`counts.calls_unresolved`).
-    assert LinkReport().schema_version == "1.2"
+def test_link_report_version() -> None:
+    # S17: 1.1 (`unresolved_endpoints`); S18: 1.2 (`counts.calls_unresolved`);
+    # S20: 1.3 (решения секции `link`).
+    assert LinkReport().schema_version == "1.3"
 
 
 # --------------------------------------------------------------------------------------

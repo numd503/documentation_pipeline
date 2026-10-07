@@ -528,7 +528,14 @@ LINK_COUNTS: Final = {
     # S18: новый счётчик, 9 — ровно `Manifest.unresolved_calls`: построитель
     # (`list`, `get`), база конкатенации (`legacy`), изменяемое поле (редактор),
     # гипермедиа (`fetch`) и четыре тела обёрток в `http-extensions.ts`.
+    # S20: те же 9 — теперь это невосстановленные **без решения**: секции
+    # `link` в настройке фикстуры нет, и `declared_unresolvable` ноль.
     "calls_unresolved": 9,
+    # S20: три новых счётчика решений секции `link` — без неё нули
+    # (числа с правилами — `tests/test_link_decisions.py`).
+    "external_targets": 0,
+    "external_callers": 0,
+    "declared_unresolvable": 0,
 }
 
 

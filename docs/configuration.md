@@ -22,7 +22,7 @@
 | **входы**: текущий каталог, затем каталог `docpipe.yaml` | `rules`, `web.rules`, `web.pages`, `templates`, `ownership`, `registries`, `arch`, `arch_adapters[].options.spec` (адаптер `registries`) |
 | **цели записи**: только текущий каталог | `out`, `worklist`, `web.out`, `web.link_out`, `graph.out`, `graph.cache_dir` |
 | **бинарь движка**: только текущий каталог, `~` разворачивается | `graph.engine_path` (второй ступени нет: мост запускает и сверяет чек-сумму ровно по этому пути) |
-| не пути: глобы и значения | `enrolled`, `not_enrolled`, `exclude`, `domains`, `doc_layout`, `docs_scan_exclude`, `di_methods`, `dispatch_interfaces`, `web.url_rewrite`, `web.registry_calls`, `web.http_wrappers`, `web.url_builders` |
+| не пути: глобы и значения | `enrolled`, `not_enrolled`, `exclude`, `domains`, `doc_layout`, `docs_scan_exclude`, `di_methods`, `dispatch_interfaces`, `web.url_rewrite`, `web.registry_calls`, `web.http_wrappers`, `web.url_builders`, `link.*` |
 
 Репо-относительные ключи проверяются валидатором: абсолютный путь, `..`
 и `\` отвергаются при загрузке. Причина у `docs_root`, `modules_dir`
@@ -84,11 +84,12 @@ enrolled:
 `enrolled: []`, если список и правда пуст, или удалите ключ, если нужно
 умолчание (оно названо в сообщении). Правило действует для всех ключей-списков
 верхнего уровня (`roots`, `enrolled`, `not_enrolled`, `exclude`, `docs_scan_exclude`,
-`dispatch_interfaces`, `di_methods`, `arch_adapters`) и секции `web`
-(`roots`, `url_rewrite`, `registry_calls`, `http_wrappers`, `url_builders`);
+`dispatch_interfaces`, `di_methods`, `arch_adapters`), секции `web`
+(`roots`, `url_rewrite`, `registry_calls`, `http_wrappers`, `url_builders`)
+и секции `link` (`external_targets`, `external_callers`, `unresolvable`);
 перечень строится по модели,
 так что новый ключ-список попадает под него сам. Словарь без записей
-(`domains:`, `web:`, `graph:` с одними комментариями) по-прежнему значит
+(`domains:`, `web:`, `graph:`, `link:` с одними комментариями) по-прежнему значит
 умолчание: у словарей оно совпадает с пустым значением.
 
 **Повтор — отказ.** Два `arch_adapters` с одним `id` неразличимы в счётчиках
@@ -135,8 +136,9 @@ web:
 | `di_methods`, `dispatch_interfaces` | `"Имя"` | `name`, `reason` |
 | `web.roots` | `"путь"` | `path`, `reason` |
 | `web.url_rewrite[]`, `web.registry_calls[]`, `web.http_wrappers[]`, `web.url_builders[]` | — | поле `reason` рядом с прежними |
+| `link.external_targets[]`, `link.external_callers[]`, `link.unresolvable[]` | **нет** | `reason` — обязательна (S20) |
 
-`reason` у всех, кроме `not_enrolled`, необязателен. Форма выбирается по виду
+`reason` у всех, кроме `not_enrolled` и записей секции `link`, необязателен. Форма выбирается по виду
 записи: словарь — вторая, иначе — короткая; опечатка в ключе записи
 (`reson:`) даёт одну ошибку про этот ключ. Путь `web.roots` проверяется
 одинаково в обеих формах: абсолютный, `..` и `\` — отказ.
@@ -305,6 +307,7 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 | `web.registry_calls` | | ✓ | | | | | | | | |
 | `web.http_wrappers` | | ✓ | | | | | | | | |
 | `web.url_builders` | | ✓ | | | | | | | | |
+| `link` | | | ✓ | | | | | | | |
 
 ✓ — читается и влияет на результат; ○ — читается мягко: неготовый бизнес-слой
 не роняет шаг 2, раздел «Бизнес-контекст» просто не собирается. Мягко — не
@@ -321,8 +324,10 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 здесь же вызовы через обёртки становятся вызовами (`web.http_wrappers`),
 а адрес от построителя получает путь (`web.url_builders`).
 `web link` сводит два готовых манифеста и из настройки читает только
-`web.link_out` и **имена модулей** `web.url_rewrite` — чтобы назвать модули
-без записи. Отсюда ловушка: правка префикса в `url_rewrite` без повторного
+`web.link_out`, **имена модулей** `web.url_rewrite` — чтобы назвать модули
+без записи, — и секцию `link` верхнего уровня (решения о концах без пары).
+Секция `link` на разбор не влияет: её правка видна в следующем `web link`
+без повторного `web scan`. Отсюда же ловушка: правка префикса в `url_rewrite` без повторного
 `web scan` не меняет ни одной связи, исчезает только строка «модуль
 не настроен» — и правка выглядит сделанной. То же с `http_wrappers`
 и `url_builders`: их `web link` не читает вовсе.
@@ -355,9 +360,12 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 коду под целью. Сверх того он читает **причины** записей (`exclude`,
 `enrolled`, `not_enrolled`, `di_methods`, `dispatch_interfaces`,
 `web.roots`, `web.url_rewrite`, `web.registry_calls`, `web.http_wrappers`,
-`web.url_builders`; у ключей со второй
-формой — через свойства `*_entries`, а не сырые поля) и печатает их рядом
-с решением.
+`web.url_builders`, записи секции `link`; у ключей со второй формой — через
+свойства `*_entries`, а не сырые поля) и печатает их рядом с решением.
+Записи `link.external_targets` и `link.external_callers` решают только
+о конце без пары, поэтому для них `setup explain` сводит оба прогона
+(`SetupContext.link`) — и только когда запись совпала с кодом под целью:
+иначе ответ о файле фронта запускал бы шаг 1.
 
 Секцию `graph` (`engine_path`, `engine_sha256`, `mode`, `out`, `cache_dir`)
 читает только `docpipe graph *`: ни одна команда шага 1, шага 2 или бизнес-слоя
@@ -634,6 +642,45 @@ uv run python tools/migrate_rules.py --dotnet rules.yaml --out rules.yaml
 `business` — команды `new`, `build`, `status`, `accept`, `lint`
 (`templates` из них читает только `new`). `anchors` — `list` и `explain`
 (`ownership` читает только `explain`).
+
+## Концы шва без пары: секция `link`
+
+Решения человека о трёх видах конца шва, у которых пары нет не из-за разбора:
+вызов во внешний адрес (`external_targets`), эндпоинт, который зовут извне
+(`external_callers`), вызов, адрес которого статически не восстановить
+(`unresolvable`). Секция верхнего уровня, а не часть `web`: шов — связь двух
+языков, и следующие правила связей лягут сюда же.
+
+```yaml
+link:
+  external_targets:
+    - host: "ext.example.org"           # или route: "auth/**" — ровно одно из двух
+      reason: "лента партнёра, не наш бэк"
+  external_callers:
+    - route: "content/{app}/**"
+      http_method: GET                   # пусто — любой метод
+      reason: "публичный API для SDK"
+  unresolvable:
+    - path: "**/links.service.ts"
+      reason: "гипермедиа: адрес из ответа сервера"
+```
+
+| Ключ | Что задаёт | Проверка при загрузке |
+|---|---|---|
+| `external_targets[].host` | маска хоста абсолютного адреса вызова, без регистра | без схемы, порта и пути; ровно одно из `host`/`route` |
+| `external_targets[].route` | маска маршрута ключа вызова (после `web.url_rewrite`) | не пуста после нормализации |
+| `external_callers[].route` | маска маршрута эндпоинта, с префиксом базы | не пуста |
+| `external_callers[].http_method` | глагол; пусто — любой | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS` |
+| `unresolvable[].path` | глоб файла невосстановленного вызова от `--root` | репо-относительный: абсолютный, `..`, `\` — отказ |
+| `*.reason` | почему так решено | обязательна и непуста; строки вместо записи нет |
+| `external_targets[].document`, `external_callers[].document` | документировать ли конец; `false` и `true` по умолчанию | тип |
+
+Решение действует только на конец **без пары**: вызов со связью и эндпоинт
+с вызывающим правило не трогает. Сработала первая совпавшая запись в порядке
+файла; одно условие дважды — отказ загрузки. Маска маршрута нормализуется
+как ключ (подстановки → `{}`, регистр, крайние `/`), но не функцией
+`route.normalize_route`: та отрезала бы её по `?`, а здесь это знак глоба.
+Что получается в отчёте — [`web.md`](web.md), раздел «Концы без пары».
 
 ## Что замерзает в манифесте
 

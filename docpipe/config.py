@@ -592,6 +592,306 @@ class GraphConfig(BaseModel):
         return checked
 
 
+# --------------------------------------------------------------------------------------
+# Секция `link`: концы шва без пары (S20, П-3)
+# --------------------------------------------------------------------------------------
+#
+# У каждого конца шва без пары есть место для решения человека с причиной:
+# эндпоинт, который зовут извне; вызов во внешний адрес; вызов, который
+# статически не восстановить. Без этого «эндпоинт без вызывающего» не получал
+# решения никогда — ни правило разбора, ни обёртка его не закроют, потому что
+# дефекта разбора там нет.
+#
+# Причина обязательна у всех трёх: это решения «документируем или нет, и
+# почему», и запись без неё — то безымянное число, от которого ушли в отчёте
+# классификации (прецедент — `AddPage` в `web/overrides.py`). Короткой формы
+# у секции нет: она новая, и совместимость ей держать не с чем.
+#
+# Правило, которое срабатывает, — первое совпавшее в порядке файла, как
+# у `scope_entry`. Две записи с одним и тем же условием — отказ загрузки:
+# вторая не применялась бы никогда, и правка в ней выглядела бы сделанной
+# (та же ловушка, что у повтора модуля в `web.url_rewrite`).
+
+# Глаголы, которые бывают у эндпоинта .NET. Опечатка (`GTE`) иначе не совпала
+# бы ни с чем, и эндпоинт остался бы «без вызывающего» при записанном решении.
+_HTTP_VERBS: frozenset[str] = frozenset(
+    {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+)
+
+# Подстановка в маршруте правила: `{app}`, `{id:guid}`, `${id}` — как
+# у `route.normalize_route`, чтобы правило можно было списать с атрибута.
+_PLACEHOLDER = re.compile(r"\$\{[^{}]*\}|\{[^{}]*\}")
+_SLASHES = re.compile(r"/{2,}")
+
+
+def route_pattern(value: str) -> str:
+    """Маска маршрута в форме ключа связи: `/Content/{app}/**` → `content/{}/**`.
+
+    Не `route.normalize_route`: та отрезает query по `?`, а здесь `?` — знак
+    глоба («один символ»), и `api/v?/**` превратился бы в `api/v`. Остальные
+    шаги те же — подстановки в `{}` (и `:id` Angular), без крайних `/`,
+    нижний регистр, — иначе маска, списанная с атрибута `[Route]`, не совпала бы
+    с ключом, который из того же атрибута собрал разбор.
+    """
+    route = _PLACEHOLDER.sub("{}", value.strip())
+    route = "/".join(
+        "{}" if segment.startswith(":") and len(segment) > 1 else segment
+        for segment in route.split("/")
+    )
+    return _SLASHES.sub("/", route).strip("/").lower()
+
+
+def _require_reason(value: Any, where: str, label: str, field: str) -> Any:
+    """Подсказка вместо «Field required» и «valid dictionary»: решение без причины не принимается.
+
+    Строка на месте записи — самая естественная ошибка: у соседних ключей
+    (`exclude`, `enrolled`) короткая форма законна, а здесь её нет.
+    """
+    if isinstance(value, str):
+        raise ValueError(
+            f"{where}: у записи {value!r} нет причины — короткой формы у ключа нет;"
+            f' пишите `- {field}: "{value}"` и `reason: "…"`'
+        )
+    if isinstance(value, dict) and "reason" not in value:
+        raise ValueError(
+            f"{where}: у записи {label} нет `reason` — решение «документируем или нет»"
+            " без причины не принимается"
+        )
+    return value
+
+
+def _check_reason(value: str, where: str) -> str:
+    if not value.strip():
+        raise ValueError(f"{where}: `reason` пустой — причина обязательна")
+    return value
+
+
+class ExternalTarget(_Decision):
+    """Вызов фронта во внешний адрес: эндпоинта в этом бэке у него нет и не будет.
+
+    Ровно одно из двух условий. `host` — маска хоста абсолютного адреса
+    (`WebCall.host`): `ext.example.org`, `*.github.com`; у относительного
+    адреса хоста нет, и такое правило его не накроет. `route` — маска
+    маршрута ключа вызова (после `web.url_rewrite`, как в отчёте), для своего
+    адреса, который обслуживает не этот бэк (шлюз, соседняя система).
+
+    Правило действует **только на вызов без эндпоинта**: вызов, которому
+    эндпоинт нашёлся (точно или «почти»), остаётся связью. `document` —
+    описывать ли такой вызов в документе (по умолчанию нет: внешний адресат
+    — не наш контракт); в отчёт идёт как есть, в документы — пункт бэклога
+    «Фронт↔бэк в документах».
+    """
+
+    host: str = ""
+    route: str = ""
+    reason: str
+    document: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reason_given(cls, value: Any) -> Any:
+        label = repr(value.get("host") or value.get("route")) if isinstance(value, dict) else ""
+        return _require_reason(value, "link.external_targets", label, "host")
+
+    @model_validator(mode="after")
+    def _check(self) -> "ExternalTarget":
+        _check_reason(self.reason, "link.external_targets")
+        if bool(self.host.strip()) == bool(self.route.strip()):
+            raise ValueError(
+                "link.external_targets: у записи ровно одно из `host` и `route` —"
+                f" дано host={self.host!r}, route={self.route!r}"
+            )
+        if any(char in self.host for char in "/:"):
+            # `WebCall.host` — хост без схемы, порта и пути; маска с ними
+            # не совпала бы ни с одним вызовом, и решение молча не действовало бы.
+            raise ValueError(
+                f"link.external_targets: `host` — только имя хоста без схемы, порта"
+                f" и пути, дано {self.host!r}"
+            )
+        if self.route.strip() and not route_pattern(self.route):
+            raise ValueError(
+                f"link.external_targets: `route` {self.route!r} пуст после нормализации —"
+                " маска накрыла бы только адрес `/`"
+            )
+        return self
+
+    @property
+    def host_pattern(self) -> str:
+        return self.host.strip().lower()
+
+    @property
+    def label(self) -> str:
+        """Условие записи как написано — им запись называют в отчёте и в `setup explain`."""
+        return self.host or self.route
+
+    def matches(self, host: str, route: str) -> bool:
+        """Совпал ли вызов: хост — по `host`, нормализованный маршрут ключа — по `route`."""
+        if self.host_pattern:
+            return bool(host) and matches_glob(host.lower(), self.host_pattern)
+        return matches_glob(route, route_pattern(self.route))
+
+
+class ExternalCaller(_Decision):
+    """Эндпоинт бэка, который зовут извне: SDK, интеграции, другой сервис.
+
+    `route` — маска маршрута эндпоинта в форме ключа связи (`content/**`,
+    `content/{app}/**`); `http_method` пуст — любой метод. Эндпоинт с методом
+    `*` (`[Route]` без глагола) совпадает с правилом любого метода — так же,
+    как он связывается с вызовом любого метода. Действует **только на эндпоинт
+    без вызывающего**: зовёт его и фронт — это связь. `document` по умолчанию
+    да: публичный API — контракт, и описывать его нужно.
+    """
+
+    route: str
+    http_method: str = ""
+    reason: str
+    document: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reason_given(cls, value: Any) -> Any:
+        label = repr(value.get("route")) if isinstance(value, dict) else ""
+        return _require_reason(value, "link.external_callers", label, "route")
+
+    @model_validator(mode="after")
+    def _check(self) -> "ExternalCaller":
+        _check_reason(self.reason, "link.external_callers")
+        if not route_pattern(self.route):
+            raise ValueError("link.external_callers: `route` пустой — маска маршрута обязательна")
+        method = self.http_method.strip().upper()
+        if method and method not in _HTTP_VERBS:
+            raise ValueError(
+                f"link.external_callers: неизвестный `http_method` {self.http_method!r};"
+                f" допустимы: {', '.join(sorted(_HTTP_VERBS))} или пусто — любой"
+            )
+        return self
+
+    @property
+    def method(self) -> str:
+        return self.http_method.strip().upper()
+
+    @property
+    def label(self) -> str:
+        return f"{self.method} {self.route}" if self.method else self.route
+
+    def matches(self, http_method: str, route: str) -> bool:
+        if self.method and http_method not in (self.method, "*"):
+            return False
+        return matches_glob(route, route_pattern(self.route))
+
+
+class Unresolvable(_Decision):
+    """Вызов, адрес которого статически не восстановить: гипермедиа, адрес из данных.
+
+    `path` — глоб файла вызова от `--root` (`**/links.service.ts`).
+    Накрывает только невосстановленные вызовы (`Manifest.unresolved_calls`):
+    восстановленный вызов в том же файле остаётся вызовом.
+    """
+
+    path: str
+    reason: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reason_given(cls, value: Any) -> Any:
+        label = repr(value.get("path")) if isinstance(value, dict) else ""
+        return _require_reason(value, "link.unresolvable", label, "path")
+
+    @field_validator("path")
+    @classmethod
+    def _check_path(cls, value: str) -> str:
+        # Путь файла вызова — репо-относительный POSIX: `\`, абсолютный путь
+        # и `./` в начале не совпали бы ни с одним файлом.
+        checked = _repo_relative(value.strip(), "link.unresolvable")
+        if not checked:
+            raise ValueError("link.unresolvable: `path` пустой — глоб файла обязателен")
+        return checked
+
+    @model_validator(mode="after")
+    def _check(self) -> "Unresolvable":
+        _check_reason(self.reason, "link.unresolvable")
+        return self
+
+    @property
+    def label(self) -> str:
+        return self.path
+
+    def matches(self, file: str) -> bool:
+        return matches_glob(file, self.path)
+
+
+def _repeated(labels: Iterable[str]) -> list[str]:
+    return sorted(label for label, count in Counter(labels).items() if count > 1)
+
+
+class LinkConfig(BaseModel):
+    """Секция `link` в `docpipe.yaml`: решения человека о концах шва без пары.
+
+    Читает её `web link` (категории `external_targets`, `external_callers`,
+    `declared_unresolvable`) и `setup explain`; на разбор она не влияет —
+    правка не требует повторного `web scan`. Это первый случай общего формата
+    правил связей между языками (П-3): связь — правило в настройке, а не код.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    external_targets: list[ExternalTarget] = Field(default_factory=list)
+    external_callers: list[ExternalCaller] = Field(default_factory=list)
+    unresolvable: list[Unresolvable] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_repeats(self) -> "LinkConfig":
+        """Одно условие — одна запись: сработала бы только первая."""
+        found = {
+            "external_targets": _repeated(
+                f"host {item.host_pattern}" if item.host_pattern else route_pattern(item.route)
+                for item in self.external_targets
+            ),
+            "external_callers": _repeated(
+                f"{item.method} {route_pattern(item.route)}" for item in self.external_callers
+            ),
+            "unresolvable": _repeated(item.path for item in self.unresolvable),
+        }
+        problems = [
+            f"link.{key}: {', '.join(map(repr, items))}" for key, items in found.items() if items
+        ]
+        if problems:
+            raise ValueError(
+                "одно условие записано дважды — сработала бы только первая запись:"
+                f" {'; '.join(problems)}"
+            )
+        return self
+
+    def target_for(self, host: str, route: str) -> tuple[int, ExternalTarget] | None:
+        """Первая запись `external_targets`, накрывшая вызов, и её номер (с нуля)."""
+        return next(
+            (
+                (index, item)
+                for index, item in enumerate(self.external_targets)
+                if item.matches(host, route)
+            ),
+            None,
+        )
+
+    def caller_for(self, http_method: str, route: str) -> tuple[int, ExternalCaller] | None:
+        """Первая запись `external_callers`, накрывшая эндпоинт, и её номер (с нуля)."""
+        return next(
+            (
+                (index, item)
+                for index, item in enumerate(self.external_callers)
+                if item.matches(http_method, route)
+            ),
+            None,
+        )
+
+    def unresolvable_for(self, file: str) -> tuple[int, Unresolvable] | None:
+        """Первая запись `unresolvable`, накрывшая файл невосстановленного вызова."""
+        return next(
+            ((index, item) for index, item in enumerate(self.unresolvable) if item.matches(file)),
+            None,
+        )
+
+
 class DocpipeConfig(BaseModel):
     """Настройки прогона.
 
@@ -711,6 +1011,12 @@ class DocpipeConfig(BaseModel):
     # Шаг `web`. Секция необязательна: репозиторий без фронта её не заводит,
     # и умолчания дают рабочий прогон на репозитории, где фронт один.
     web: WebConfig = Field(default_factory=lambda: WebConfig())
+
+    # Концы шва фронт↔.NET без пары: решения человека с причиной (S20).
+    # Секция верхнего уровня, а не часть `web`: шов — связь двух языков,
+    # а не настройка разбора фронта, и следующие правила связей (Python)
+    # лягут сюда же. Читает `web link`; разбор от неё не зависит.
+    link: LinkConfig = Field(default_factory=lambda: LinkConfig())
 
     @field_validator("docs_root", "modules_dir", "business_root")
     @classmethod

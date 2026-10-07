@@ -508,6 +508,9 @@ uv run docpipe setup explain "**/Migrations/**" --root . --limit 0
 | `web.registry_calls` | `docpipe.yaml` | маршрут | вызовов |
 | `web.http_wrappers` | `docpipe.yaml` | `получатель.method` или `получатель./method_regex/` | вызовов через обёртку и её тел (в `effect` — раздельно) |
 | `web.url_builders` | `docpipe.yaml` | `получатель.method` | адресов, построенных им |
+| `link.external_targets` | `docpipe.yaml` | хост или маршрут записи, как написан | вызовов без эндпоинта |
+| `link.external_callers` | `docpipe.yaml` | маршрут записи (с методом, если задан) | эндпоинтов без вызывающего |
+| `link.unresolvable` | `docpipe.yaml` | глоб файла | невосстановленных вызовов |
 | `add`, `remove`, `features` | `pages.yaml` | компонент, `/маршрут`, имя раздела | страниц или узлов |
 | `rules` | `ownership.yaml` | `id` правила-победителя | узлов |
 
@@ -542,10 +545,13 @@ uv run docpipe setup explain "**/Migrations/**" --root . --limit 0
 - **`documents.unavailable`** — план шага 2 не собрался (нет скелетов,
   битый `ownership.yaml`); остальной ответ есть, код возврата 0.
 - **`owners.not_configured`** — ключ `ownership` не задан.
+- **`link.unavailable`** — запись секции `link` совпала с кодом под целью,
+  но отчёт связи не собрался (отказ второго прогона): что решила запись,
+  не видно, остальной ответ есть.
 
 Коды заметок: `path.excluded`, `path.outside_roots`, `path.empty`,
 `dotnet.outside_projects` (`.cs` вне любого `.csproj`),
-`link.module_without_rewrite`, `documents.unavailable`,
+`link.module_without_rewrite`, `link.unavailable`, `documents.unavailable`,
 `owners.not_configured`, `owners.unavailable`.
 
 Прогоны — только нужные: под целью нет исходников .NET — шаг 1 не идёт,
@@ -553,6 +559,13 @@ uv run docpipe setup explain "**/Migrations/**" --root . --limit 0
 корней — ни одного прогона. Поэтому отказ шага `web` (неоднозначное
 снятие в `pages.yaml`) ответ о коде .NET не роняет.
 
+Записи секции `link` (S20) — в `decisions`, но только решившие:
+`link.external_targets` решает о вызове **без эндпоинта**, а
+`link.external_callers` — об эндпоинте **без вызывающего**, и узнать это
+можно только сведением обеих сторон (`SetupContext.link`, тот же
+`report_for_settings`, что у `web link`). Поэтому сведение идёт, лишь когда
+запись совпала с вызовом или эндпоинтом под целью: без совпадения ответ
+о файле фронта шага 1 не запускает. `link.unresolvable` сведения не требует.
+
 Связь фронт↔.NET по категориям (`linked`, `almost`, «вызов без эндпоинта»)
-и правила секции `link` здесь пока не показываются: их источник —
-`setup link` (S21), он же добавит их в контекст.
+здесь пока не показывается: сводку шва даст `setup link` (S21).

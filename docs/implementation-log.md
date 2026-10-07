@@ -10446,3 +10446,38 @@ squidex без эндпоинта: **опечатка в самом squidex** (�
 
 **Проверка:** `test_deploy_bundle` — 117 passed; установка с `&|"` и пробелами в путях даёт
 верный YAML; `scan`/`materialize` на нейтральной настройке отработали.
+
+---
+
+## S20 — концы шва без пары: секция `link` (08.10.2026)
+
+**Создано:** `tests/test_link_decisions.py` (45). **Изменено:** `docpipe/config.py`
+(`ExternalTarget`, `ExternalCaller`, `Unresolvable`, `LinkConfig`, `route_pattern`,
+`DocpipeConfig.link`), `docpipe/web/link.py` (`LinkDecision`, решённые категории,
+`report_for_settings`, `LinkReport` 1.3), `docpipe/cli.py`, `docpipe/setup/context.py`
+(`SetupContext.link`), `docpipe/setup/explain.py` (записи `link.*` в `decisions`),
+тесты фикстуры и версий, `docs/web.md`, `docs/configuration.md`, `docs/setup-map.md`,
+`docs/setup.md`, `docs/backlog.md`.
+
+Секция `link` верхнего уровня: `external_targets` (по `host` или `route`), `external_callers`
+(`route`, `http_method`), `unresolvable` (по `path` файла вызова); `reason` обязателен
+и непуст, `document` пишется в отчёт. `web link` уводит конец без пары в `external_targets`,
+`external_callers`, `declared_unresolvable` с `decision` (индекс записи, условие, причина).
+Аргументы сведения из настройки собирает одна `report_for_settings` — её зовут `web link`
+и `SetupContext.link`. На `SeamWorkspace` с тремя записями: без эндпоинта 3 → 2,
+без вызывающего 13 → 10, `calls_unresolved` 9 → 8; связи и `calls_total` не изменились.
+
+**Отклонения и находки.**
+- `counts.calls_unresolved` считает только невосстановленные **без решения** — S24 ждёт,
+  что находка исчезнет после `link.unresolvable`; текст печатает сумму.
+- Решённые категории не входят в `--fail-on`; загрузка строже спецификации (хост без схемы
+  и порта, глагол из списка, повтор условия, строка вместо записи — отказ с подсказкой).
+- Маску маршрута нельзя нормализовать `route.normalize_route`: та режет по `?`, а в маске
+  это знак глоба — своя `config.route_pattern`.
+- `setup explain` сводит шов только при совпадении записи с кодом под целью — иначе ответ
+  о файле фронта запускал бы шаг 1; неудача — заметка `link.unavailable`.
+- `unresolvable` по глобу файла молча накрывает и будущие вызовы этого файла, даже те, что
+  потом восстановит обёртка; «почти» — тоже пара: внешний вызов, «почти» совпавший
+  с эндпоинтом из одних параметров, остаётся ложной связью.
+
+**Проверка:** команда S20 — 65 passed.

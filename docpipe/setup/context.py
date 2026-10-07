@@ -30,6 +30,7 @@ from docpipe.emit import run as run_scan
 from docpipe.materialize.ownership import Ownership, load_ownership
 from docpipe.step2 import Step2Error, Step2Inputs, prepare
 from docpipe.web.calls import WrapperConflict
+from docpipe.web.link import LinkReport, report_for_settings
 from docpipe.web.overrides import Overrides, configured_pages, load_page_overrides
 from docpipe.web.tree import WebScanResult
 from docpipe.web.tree import run as run_web_scan
@@ -171,8 +172,20 @@ class SetupContext:
             # выбор наугад значил бы, что инструмент сам решает, какую страницу убрать.
             raise InputError(f"ошибка в ручном составе страниц: {exc}") from exc
 
-    # Здесь S21 добавит `link`: сведение `scan` и `web` с `web.url_rewrite`
-    # и секцией `link` (`web.link.build_report`), — тем же путём, что `web link`.
+    # ----------------------------------------------------------------------------------
+    # Шов фронт↔.NET
+    # ----------------------------------------------------------------------------------
+
+    @cached_property
+    def link(self) -> LinkReport:
+        """Отчёт связи по прогонам в памяти — тем же `report_for_settings`, что `web link`.
+
+        Нужны оба прогона, поэтому `setup explain` зовёт его, только когда
+        правило секции `link` касается кода под целью (S20): иначе ответ
+        о файле фронта запускал бы шаг 1 — и его отказ ронял бы этот ответ.
+        Сводку шва кластерами (S21) строят по нему же.
+        """
+        return report_for_settings(self.scan.manifest, self.web.manifest, self.settings)
 
     # ----------------------------------------------------------------------------------
     # Шаг 2 и владение

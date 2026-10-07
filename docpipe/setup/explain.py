@@ -7,7 +7,8 @@
 которые решили судьбу этого кода, — шаблон `exclude`, запись `enrolled`
 или `not_enrolled`, правила отсева и классификации, выигравшие в этом коде,
 записи `pages.yaml`, `url_rewrite` модуля, `registry_calls`, `di_methods`,
-`dispatch_interfaces`, правила владения. По нему агент знает, что править.
+`dispatch_interfaces`, правила секции `link`, правила владения. По нему
+агент знает, что править.
 
 Три вещи держат ответ честным:
 
@@ -50,13 +51,14 @@ from docpipe.explain import (
 from docpipe.hashing import stable_json_dumps
 from docpipe.materialize.ownership import owner_of
 from docpipe.model import DocNode, Lang, Module, RouteEntry, Symbol
-from docpipe.route import normalize_route
+from docpipe.route import normalize_route, route_key
 from docpipe.setup.candidates import DEFAULT_LIMIT
 from docpipe.setup.context import InputError, SetupContext
 from docpipe.stats import STATE_TITLES
 from docpipe.step2 import Step2Error
 from docpipe.web.absorb import FEATURE_KIND, PAGE_KIND
 from docpipe.web.calls import builder_for, name_matches, wrapper_matches
+from docpipe.web.link import LinkDecision, LinkReport
 
 SCHEMA_VERSION: Final = "1.0"
 
@@ -348,6 +350,51 @@ class _Draft:
     documented: dict[Lang, list[DocNode]]
     decisions: _Decisions
     notes: list[Note]
+    # Отчёт связи — один на ответ: его зовут и сторона .NET, и сторона фронта,
+    # а неудачу (`cached_property` её не запоминает) повторять незачем.
+    link: LinkReport | None = None
+    link_tried: bool = False
+
+
+def _link_report(ctx: SetupContext, draft: _Draft) -> LinkReport | None:
+    """Отчёт связи, если он собирается; не собрался — заметка, а не отказ ответа.
+
+    Зовётся, только когда правило секции `link` совпало с кодом под целью:
+    решило ли оно что-то, знает лишь сведение двух сторон (вызов, которому
+    эндпоинт нашёлся, — связь, и правило ему не нужно). Вторая сторона
+    может не собраться — отказ шага `web` из-за `pages.yaml` не должен
+    ронять ответ о каталоге .NET, — и тогда ответ говорит об этом словами.
+    """
+    if not draft.link_tried:
+        draft.link_tried = True
+        try:
+            draft.link = ctx.link
+        except InputError as exc:
+            draft.notes.append(
+                Note(
+                    code="link.unavailable",
+                    message=(
+                        "правила секции `link` касаются этого кода, но отчёт связи"
+                        f" не собрался: {exc}"
+                    ),
+                )
+            )
+    return draft.link
+
+
+def _link_ref(key: str, decision: LinkDecision, effect: str, config: str) -> DecisionRef:
+    return DecisionRef(
+        file=config,
+        key=key,
+        value=decision.rule,
+        reason=decision.reason,
+        effect=effect,
+        count=1,
+    )
+
+
+def _document_effect(what: str, document: bool) -> str:
+    return f"{what}; документировать: {'да' if document else 'нет'}"
 
 
 def _dotnet(ctx: SetupContext, target: str, seen: list[str], draft: _Draft) -> None:
@@ -415,6 +462,29 @@ def _dotnet(ctx: SetupContext, target: str, seen: list[str], draft: _Draft) -> N
     )
     # Ключи с нулём: «эндпоинтов 0» — посчитано, а не «не смотрели».
     draft.endpoints.update({"routed": 0, "unrouted": 0})
+
+    # `link.external_callers` — решение об эндпоинте без вызывающего. Есть ли
+    # вызывающий, знает только сведение с фронтом, поэтому оно идёт, лишь
+    # когда правило совпало хоть с одним эндпоинтом здесь.
+    keys = [
+        route_key(endpoint.http_method, endpoint.route)
+        for node in nodes
+        for endpoint in node.endpoints
+        if endpoint.route
+    ]
+    if any(settings.link.caller_for(key.http_method, key.route) for key in keys):
+        report = _link_report(ctx, draft)
+        ids = {node.id for node in nodes}
+        for item in report.external_callers if report is not None else []:
+            if item.node in ids:
+                draft.decisions.add(
+                    _link_ref(
+                        "link.external_callers",
+                        item.decision,
+                        _document_effect("эндпоинт зовут извне", item.document),
+                        config,
+                    )
+                )
 
     wrappers = {wrapper.name: wrapper for wrapper in settings.di_method_entries}
     for path, call in scan.registration_calls:
@@ -655,6 +725,37 @@ def _calls(
                 )
 
     _wrapper_decisions(ctx, match, draft)
+
+    # `link.unresolvable` решает сам по себе: невосстановленный вызов связи
+    # не имеет, и сведение со стороной .NET ему не нужно.
+    for item in web.manifest.unresolved_calls:
+        found = settings.link.unresolvable_for(item.file) if match(item.file) else None
+        if found is not None:
+            index, entry = found
+            draft.decisions.add(
+                _link_ref(
+                    "link.unresolvable",
+                    LinkDecision(index=index, rule=entry.label, reason=entry.reason),
+                    "вызов невосстановим: в `declared_unresolvable`",
+                    config,
+                )
+            )
+
+    # `link.external_targets` — решение о вызове **без эндпоинта**: совпавшее
+    # правило у связанного вызова ничего не решило, и отличить их может
+    # только сведение. Без совпадения сведение не идёт — и шаг 1 тоже.
+    if any(settings.link.target_for(call.host, call.key.route) for call in resolved):
+        report = _link_report(ctx, draft)
+        for external in report.external_targets if report is not None else []:
+            if match(external.file):
+                draft.decisions.add(
+                    _link_ref(
+                        "link.external_targets",
+                        external.decision,
+                        _document_effect("вызов во внешний адрес", external.document),
+                        config,
+                    )
+                )
 
     for name, count in sorted(without_rewrite.items()):
         draft.notes.append(

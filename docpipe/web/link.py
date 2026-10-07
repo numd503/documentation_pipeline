@@ -14,6 +14,15 @@
 и кода возврата не меняют, пока не названы в `--fail-on`: линт, красный
 с первого дня, выключат на второй, и вместе с ним пропадут работающие проверки.
 
+**Концы без пары, о которых решил человек** (секция `link`, S20), — три
+категории рядом с пятью: вызов во внешний адрес (`external_targets`),
+эндпоинт, который зовут извне (`external_callers`), и невосстановимый вызов
+(`declared_unresolvable`). Они **уходят** из «вызова без эндпоинта»,
+«эндпоинта без вызывающего» и `calls_unresolved`, а не дублируются в них:
+то, что осталось там, — ровно то, о чём решения ещё нет (S24 считает это
+находками). Решение действует только на конец без пары: вызов, которому
+эндпоинт нашёлся (точно или «почти»), — связь, как бы ни совпало правило.
+
 **Эндпоинт с методом `*`** — действие с `[Route]` без глагола — принимает
 любой метод, и сопоставляется с вызовом любого метода: и точно, и «почти».
 """
@@ -23,7 +32,8 @@ from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from docpipe.model import DocNode, Manifest
+from docpipe.config import DocpipeConfig, LinkConfig
+from docpipe.model import DocNode, Manifest, UnresolvedCall
 from docpipe.route import RouteKey, almost_equal, route_key
 
 MatchKind = Literal["exact", "almost"]
@@ -49,6 +59,14 @@ CATEGORIES: Final[tuple[str, ...]] = (
     "duplicate_endpoints",
 )
 
+# Категории решений секции `link`. Не в `CATEGORIES`: те называет `--fail-on`,
+# а ронять прогон за записанное человеком решение нечего — это не находка.
+DECIDED_CATEGORIES: Final[tuple[str, ...]] = (
+    "external_targets",
+    "external_callers",
+    "declared_unresolvable",
+)
+
 
 class _Base(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -68,7 +86,14 @@ class Link(_Base):
 
 
 class CallRef(_Base):
-    """Вызов, которому эндпоинт не нашёлся."""
+    """Вызов, которому эндпоинт не нашёлся.
+
+    `host` — хост абсолютного адреса (`WebCall.host`), у относительного пуст.
+    В ключ он не входит, но без него вызов во внешнюю систему в этом списке
+    неотличим от вызова своего бэка с тем же путём: на squidex
+    `raw.githubusercontent.com` числился «без эндпоинта» внутри своего бэка,
+    и правило `link.external_targets` по нему не написать, не открыв код.
+    """
 
     http_method: str
     route: str
@@ -76,6 +101,7 @@ class CallRef(_Base):
     caller: str
     file: str
     line: int
+    host: str = ""
 
 
 class EndpointRef(_Base):
@@ -85,6 +111,44 @@ class EndpointRef(_Base):
     route: str
     node: str
     member: str
+
+
+class LinkDecision(_Base):
+    """Запись секции `link`, решившая судьбу конца шва.
+
+    `index` — номер записи в своём списке, с нуля (как в сообщениях загрузки),
+    `rule` — её условие как написано (хост, маршрут, «метод маршрут», глоб
+    файла): по нему запись находят в `docpipe.yaml`. Сработала первая
+    совпавшая в порядке файла.
+    """
+
+    index: int
+    rule: str
+    reason: str
+
+
+class ExternalCall(CallRef):
+    """Вызов во внешний адрес (`link.external_targets`): эндпоинта здесь и не будет."""
+
+    document: bool
+    decision: LinkDecision
+
+
+class ExternalEndpoint(EndpointRef):
+    """Эндпоинт, который зовут извне (`link.external_callers`): SDK, интеграции."""
+
+    document: bool
+    decision: LinkDecision
+
+
+class DeclaredUnresolvable(UnresolvedCall):
+    """Невосстановленный вызов, о котором решено «статически не восстановить».
+
+    Запись манифеста (`Manifest.unresolved_calls`) как есть плюс решение:
+    гипермедиа, адрес из данных — ни обёртка, ни построитель их не восстановят.
+    """
+
+    decision: LinkDecision
 
 
 class DuplicateEndpoint(_Base):
@@ -119,11 +183,19 @@ class LinkReport(_Base):
     # 1.1 — `unresolved_endpoints` и `counts.endpoints_unresolved` (S17).
     # 1.2 — `counts.calls_unresolved`; `unconfigured_modules` видит и модули,
     # у которых не восстановлен ни один вызов (S18).
-    schema_version: Literal["1.2"] = "1.2"
+    # 1.3 — решения секции `link`: `external_targets`, `external_callers`,
+    # `declared_unresolvable` и их счётчики; `counts.calls_unresolved` —
+    # только невосстановленные без решения; `host` у `CallRef` (S20).
+    schema_version: Literal["1.3"] = "1.3"
     links: list[Link] = Field(default_factory=list)
     calls_without_endpoint: list[CallRef] = Field(default_factory=list)
     endpoints_without_caller: list[EndpointRef] = Field(default_factory=list)
     duplicate_endpoints: list[DuplicateEndpoint] = Field(default_factory=list)
+
+    # Решения человека о концах без пары (секция `link`).
+    external_targets: list[ExternalCall] = Field(default_factory=list)
+    external_callers: list[ExternalEndpoint] = Field(default_factory=list)
+    declared_unresolvable: list[DeclaredUnresolvable] = Field(default_factory=list)
 
     # Не категории связи, а состояние настройки и знания о бэкенде.
     unconfigured_modules: list[str] = Field(default_factory=list)
@@ -246,16 +318,45 @@ def _unconfigured(web: Manifest, configured: set[str]) -> list[str]:
     return sorted(with_calls - configured)
 
 
+def _decision(index: int, rule: str, reason: str) -> LinkDecision:
+    return LinkDecision(index=index, rule=rule, reason=reason)
+
+
+def _declared(web: Manifest, link: LinkConfig) -> tuple[list[DeclaredUnresolvable], int]:
+    """Невосстановленные вызовы с решением `link.unresolvable` и число оставшихся без него."""
+    declared: list[DeclaredUnresolvable] = []
+    for item in web.unresolved_calls:
+        found = link.unresolvable_for(item.file)
+        if found is not None:
+            index, rule = found
+            declared.append(
+                DeclaredUnresolvable(
+                    **item.model_dump(), decision=_decision(index, rule.label, rule.reason)
+                )
+            )
+    declared.sort(key=lambda item: (item.file, item.line, item.http_method, item.expression))
+    return declared, len(web.unresolved_calls) - len(declared)
+
+
 def build_report(
     backend: Manifest,
     web: Manifest,
     configured_modules: set[str] | None = None,
+    *,
+    link: LinkConfig | None = None,
 ) -> LinkReport:
-    """Свести два манифеста в отчёт связи."""
+    """Свести два манифеста в отчёт связи.
+
+    `link` — решения секции `link`; `None` — секции нет. Из настройки оба
+    аргумента собирает `report_for_settings`: `web link` и контекст `setup`
+    зовут её, чтобы ключ, учтённый в одном месте, не забыли в другом.
+    """
+    link = link if link is not None else LinkConfig()
     keys = _backend_keys(backend)
 
     links: list[Link] = []
     orphans: list[CallRef] = []
+    external: list[ExternalCall] = []
     used: set[RouteKey] = set()
 
     for node in web.nodes:
@@ -298,21 +399,49 @@ def build_report(
                 )
                 continue
 
-            orphans.append(
-                CallRef(
-                    http_method=lookup.http_method,
-                    route=lookup.route,
-                    discriminator=call.key.discriminator,
-                    caller=node.id,
-                    file=call.file,
-                    line=call.line,
+            orphan = CallRef(
+                http_method=lookup.http_method,
+                route=lookup.route,
+                discriminator=call.key.discriminator,
+                caller=node.id,
+                file=call.file,
+                line=call.line,
+                host=call.host,
+            )
+            target = link.target_for(call.host, lookup.route)
+            if target is None:
+                orphans.append(orphan)
+                continue
+            index, rule = target
+            external.append(
+                ExternalCall(
+                    **orphan.model_dump(),
+                    document=rule.document,
+                    decision=_decision(index, rule.label, rule.reason),
                 )
             )
 
-    uncalled = sorted(
-        (item for key, items in keys.items() if key not in used for item in items),
-        key=lambda item: (item.route, item.http_method, item.node),
-    )
+    uncalled: list[EndpointRef] = []
+    callers: list[ExternalEndpoint] = []
+    for key, items in keys.items():
+        if key in used:
+            continue
+        found = link.caller_for(key.http_method, key.route)
+        if found is None:
+            uncalled.extend(items)
+            continue
+        index, caller = found
+        callers.extend(
+            ExternalEndpoint(
+                **item.model_dump(),
+                document=caller.document,
+                decision=_decision(index, caller.label, caller.reason),
+            )
+            for item in items
+        )
+    uncalled.sort(key=lambda item: (item.route, item.http_method, item.node))
+    callers.sort(key=lambda item: (item.route, item.http_method, item.node))
+    declared, unresolved_left = _declared(web, link)
     duplicates = sorted(
         (
             DuplicateEndpoint(
@@ -326,8 +455,11 @@ def build_report(
         key=lambda item: (item.route, item.http_method),
     )
 
-    links.sort(key=lambda link: (link.route, link.http_method, link.discriminator, link.caller))
+    links.sort(key=lambda item: (item.route, item.http_method, item.discriminator, item.caller))
     orphans.sort(key=lambda item: (item.route, item.http_method, item.caller))
+    external.sort(
+        key=lambda item: (item.route, item.http_method, item.caller, item.file, item.line)
+    )
     unresolved = _unresolved(backend)
 
     return LinkReport(
@@ -335,6 +467,9 @@ def build_report(
         calls_without_endpoint=orphans,
         endpoints_without_caller=uncalled,
         duplicate_endpoints=duplicates,
+        external_targets=external,
+        external_callers=callers,
+        declared_unresolvable=declared,
         unconfigured_modules=_unconfigured(web, configured_modules or set()),
         conventional_controllers=_conventional(backend),
         unresolved_endpoints=unresolved,
@@ -347,10 +482,30 @@ def build_report(
             "calls_total": sum(len(node.web_calls) for node in web.nodes),
             # Невосстановленные в связь не идут вовсе: маршрута у них нет.
             # Без числа рядом «вызовов фронта 4» читалось бы как «всего четыре».
-            "calls_unresolved": len(web.unresolved_calls),
+            # Только те, о которых решения нет: объявленные невосстановимыми
+            # считает `declared_unresolvable`, и вместе их — `unresolved_calls`.
+            "calls_unresolved": unresolved_left,
             "endpoints_total": sum(len(items) for items in keys.values()),
             "endpoints_unresolved": len(unresolved),
+            "external_targets": len(external),
+            "external_callers": len(callers),
+            "declared_unresolvable": len(declared),
         },
+    )
+
+
+def report_for_settings(backend: Manifest, web: Manifest, settings: DocpipeConfig) -> LinkReport:
+    """Отчёт связи по настройке: имена модулей `web.url_rewrite` и секция `link`.
+
+    Одно место, где настройка превращается в аргументы сведения. Его зовут
+    `web link` и `SetupContext.link`: собирай каждый аргументы сам — ключ,
+    добавленный в одну копию, до другой не доехал бы (история трёх `_prepare`).
+    """
+    return build_report(
+        backend,
+        web,
+        {rule.module for rule in settings.web.url_rewrite},
+        link=settings.link,
     )
 
 
@@ -360,19 +515,32 @@ _TITLES: Final[dict[str, str]] = {
     "calls_without_endpoint": "вызов без эндпоинта",
     "endpoints_without_caller": "эндпоинт без вызывающего",
     "duplicate_endpoints": "ОДИН КЛЮЧ У ДВУХ УЗЛОВ БЭКЕНДА",
+    "external_targets": "вызов во внешний адрес (`link.external_targets`)",
+    "external_callers": "эндпоинт зовут извне (`link.external_callers`)",
+    "declared_unresolvable": "невосстановимый вызов (`link.unresolvable`)",
 }
 
 
 def format_report(report: LinkReport, top: int = 10) -> str:
     """Человекочитаемый отчёт. Каждое число названо и сопровождено вторым."""
+    undecided = report.counts.get("calls_unresolved", 0)
+    declared = report.counts.get("declared_unresolvable", 0)
+    # Первое число — все невосстановленные: вместе с `calls_total` это все
+    # вызовы в коде, и решение `link.unresolvable` его не уменьшает.
+    of_them = f", из них решено «не восстановить» {declared}" if declared else ""
     lines = [
         f"Вызовов фронта: {report.counts['calls_total']} "
-        f"(не восстановлено и в связь не идёт ещё {report.counts.get('calls_unresolved', 0)}), "
+        f"(не восстановлено и в связь не идёт ещё {undecided + declared}{of_them}), "
         f"эндпоинтов бэкенда: {report.counts['endpoints_total']}.",
         "",
     ]
     for category in CATEGORIES:
         lines.append(f"  {report.counts[category]:>5}  {_TITLES[category]}")
+    lines += ["", "Решено секцией `link`:"]
+    lines += [
+        f"  {report.counts.get(category, 0):>5}  {_TITLES[category]}"
+        for category in DECIDED_CATEGORIES
+    ]
 
     if report.duplicate_endpoints:
         lines += ["", "Коллизии маршрутов (это дефект):"]
@@ -385,6 +553,7 @@ def format_report(report: LinkReport, top: int = 10) -> str:
         lines += ["", "Вызовы, которым эндпоинт не нашёлся:"]
         lines += [
             f"  {item.http_method} {item.route}  <- {item.file}:{item.line}"
+            + (f"  (хост {item.host})" if item.host else "")
             for item in report.calls_without_endpoint[:top]
         ]
 
