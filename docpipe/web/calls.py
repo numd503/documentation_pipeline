@@ -4,15 +4,23 @@
 26 литералов, 27 шаблонов, 21 «переменная», и почти все «переменные» —
 одна и та же схема, разрешаемая двумя формами констант.
 
-Разделение на два шага принципиальное. `extract_calls` записывает **факты**
-о вызове и от конфигурации не зависит — его результат можно кэшировать.
-`build_calls` интерпретирует их с учётом `web.url_rewrite` и `web.registry_calls`:
-смена настройки обязана менять ключи, не заставляя перечитывать исходники.
+Разделение на два шага принципиальное. `extract_calls` (и полный вариант
+`extract_call_facts`) записывает **факты** о вызове и от конфигурации не
+зависит — его результат можно кэшировать. `build_calls` интерпретирует их
+с учётом `web.url_rewrite` и `web.registry_calls`: смена настройки обязана
+менять ключи, не заставляя перечитывать исходники.
+
+Факты для обёрток (`CandidateCall`, `BuilderUse`, S18) — тоже извлечение:
+вызов члена с аргументом, похожим на адрес, записывается без знания о том,
+объявлена ли такая обёртка. Применять объявленные обёртки — дело
+интерпретации (S19); перенос этого в извлечение сделал бы его результат
+зависимым от настройки, и кэш, если его когда-нибудь заведут, отдавал бы
+ключи по старым правилам.
 """
 
 import re
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
@@ -159,10 +167,16 @@ _NESTED_CLASS_NODES = _CLASS_NODES | {"class"}
 
 
 class _Resolved(NamedTuple):
-    """Значение выражения или причина, по которой его нет."""
+    """Значение выражения или причина, по которой его нет.
+
+    `call` — вызов, которым инициализирован `const` имени (`const url =
+    this.apiUrl.buildUrl(…)`): значения у такого имени нет, но построитель
+    адреса виден, и факт об обёртке (`ArgFact.callee`) берёт его отсюда.
+    """
 
     value: str | None
     reason: str = ""
+    call: Node | None = None
 
 
 def _pattern_names(node: Node | None) -> set[str]:
@@ -326,7 +340,9 @@ class _Scope:
         literal = _literal_value(node)
         if literal is not None:
             return _Resolved(literal)
-        if node.type == "identifier":
+        # `{ url }` в объекте-запросе — то же имя, что `url`: его значение
+        # ищется по тем же областям.
+        if node.type in ("identifier", "shorthand_property_identifier"):
             return self._identifier(node)
         if node.type == "member_expression":
             return self._member(node)
@@ -387,7 +403,7 @@ class _Scope:
         if literal is not None:
             return _Resolved(literal)
         if value_node.type == "call_expression":
-            return _Resolved(None, _call_reason(value_node))
+            return _Resolved(None, _call_reason(value_node), value_node)
         return _Resolved(None, REASON_VARIABLE)
 
     def _member(self, node: Node) -> _Resolved:
@@ -560,58 +576,357 @@ def _body_nonliteral(node: Node) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
-def extract_calls(root: Node, path: str) -> list[RawCall]:
-    """Факты о HTTP-вызовах одного файла. От конфигурации не зависят."""
+# --------------------------------------------------------------------------------------
+# Факты для обёрток и построителей адреса (S18)
+# --------------------------------------------------------------------------------------
+
+# Начала значения, по которым аргумент вызова «похож на адрес». Список
+# короткий намеренно: каждое начало затягивает в кандидаты всё, что так
+# начинается (`/` — уже и `router.navigateByUrl('/apps')`), а решает
+# человек — кандидат только находка.
+ADDRESS_PREFIXES: Final = ("/", "api/", "http://", "https://")
+
+# Поле объекта-запроса, в котором обёртка держит адрес:
+# `restService.request({ method: 'GET', url: '/api/…' })` у abp.
+URL_FIELD: Final = "url"
+
+# Глубина разбора вложенных вызовов и объектов в аргументе. Построителю
+# адреса хватает одной ступени (`const url = this.apiUrl.buildUrl('/api/x')`);
+# глубже — `.pipe(map(…), catchError(…))`, и стоимость растёт без пользы.
+_ARG_DEPTH: Final = 2
+
+ArgKind = Literal["literal", "template", "identifier", "object", "call", "other"]
+
+
+@dataclass(frozen=True)
+class ArgFact:
+    """Аргумент вызова: как записан и что о его значении известно без настройки.
+
+    `kind` — форма записи: `identifier` — имя или обращение к полю (`url`,
+    `this.baseUrl`, `link.href`), `other` — всё прочее (конкатенация, стрелка,
+    `new`). `value` — восстановленное значение: литерал, шаблон с `{}`
+    на месте подстановок, `const` и поле по правилам S16, конкатенация;
+    `None` — не восстановлено.
+
+    `callee` и `args` — у вызова (`this.apiUrl.buildUrl('/api/x')`)
+    и у имени, чей `const` инициализирован вызовом (`url` при `const url =
+    this.apiUrl.buildUrl(…)`): значения у такого имени нет, а построитель
+    виден. `callee` — `(последний сегмент получателя, метод)`; у функции без
+    получателя — `("", имя)`. `fields` — поля объектного литерала.
+    """
+
+    kind: ArgKind
+    text: str
+    value: str | None = None
+    fields: dict[str, "ArgFact"] = field(default_factory=dict)
+    callee: tuple[str, str] | None = None
+    args: tuple["ArgFact", ...] = ()
+
+
+@dataclass(frozen=True)
+class CandidateCall:
+    """Вызов члена, который не HTTP-вызов, но аргумент у него может быть адресом.
+
+    `HTTP.getVersioned(this.http, url)`, `this.rest.request({ url: '/api/x' })` —
+    такие вызовы не попадали ни в один счётчик: глагола `HttpClient` у них нет.
+    Обёртку по имени не распознать (`get<T>(path, default)` у squidex — чтение
+    состояния, без всякого HTTP), поэтому это факт, а не вызов: в разбор
+    обёртка входит объявлением (`web.http_wrappers`, S19), никогда — догадкой.
+
+    Записывается, если хотя бы один аргумент похож на адрес
+    (`address_positions`) **или** его значение — результат вызова
+    (`built_by_call`). Второе — ради гипермедии через построитель:
+    `HTTP.requestVersioned(this.http, link.method, url)` при
+    `const url = this.apiUrl.buildUrl(link.href)` на адрес не похож ничем,
+    а так записаны все 47 видимых вызовов `requestVersioned` у squidex и все
+    16 `this.http.request`. Построитель ли этот вызов, известно только
+    по всему прогону (`BuilderUse`), поэтому решают кандидаты, а факт хранит
+    и такие вызовы.
+
+    `receiver` — последний сегмент получателя как написан (`HTTP`, `rest`,
+    `this` у вызова собственного метода); `method` — имя как написано.
+    """
+
+    file: str
+    line: int
+    receiver: str
+    method: str
+    args: tuple[ArgFact, ...]
+
+
+@dataclass(frozen=True)
+class BuilderUse:
+    """Адрес вызова построен вызовом: `const url = this.apiUrl.buildUrl(…)`, затем `get(url)`.
+
+    `file` и `line` — внешнего вызова (того, кому адрес передан); `receiver`
+    и `method` — построителя; `arg` — аргумент-адрес внешнего вызова
+    (`callee` и `args` в нём — построитель и его аргументы). `through` —
+    пусто у прямого вызова `HttpClient`, `HTTP.getVersioned` у вызова-кандидата
+    в обёртки: основная форма squidex — построитель **внутри** обёртки.
+    """
+
+    file: str
+    line: int
+    receiver: str
+    method: str
+    arg: ArgFact
+    through: str = ""
+
+
+@dataclass(frozen=True)
+class CallFacts:
+    """Все факты о вызовах одного файла: HTTP-вызовы и находки для обёрток."""
+
+    calls: list[RawCall] = field(default_factory=list)
+    candidates: list[CandidateCall] = field(default_factory=list)
+    builders: list[BuilderUse] = field(default_factory=list)
+
+
+def looks_like_address(value: str | None) -> bool:
+    """Начинается ли значение как адрес: `/…`, `api/…`, `http://…`, `https://…`.
+
+    После начала обязан быть хоть один знак: голый `'/'` — это
+    `path.startsWith('/')`, `parts.join('/')`, `url.split('/')`, и без этого
+    условия каждый такой вызов встал бы в кандидаты в обёртки.
+    """
+    if value is None:
+        return False
+    lowered = value.lower()
+    return any(
+        lowered.startswith(prefix) and len(lowered) > len(prefix) for prefix in ADDRESS_PREFIXES
+    )
+
+
+def _direct_address(arg: ArgFact) -> bool:
+    """Значение аргумента само похоже на адрес (литерал, шаблон, `const`, конкатенация)."""
+    return arg.kind != "object" and looks_like_address(arg.value)
+
+
+def built_address(arg: ArgFact) -> bool:
+    """Аргумент — значение вызова, у которого есть аргумент-адрес: построитель.
+
+    Без этого основная форма squidex (`HTTP.getVersioned(this.http, url)`
+    при `const url = this.apiUrl.buildUrl("api/…")`, 31 вызов `HTTP.*`)
+    не стала бы кандидатом ни разу: у самого `url` значения нет.
+    """
+    return arg.callee is not None and any(_direct_address(inner) for inner in arg.args)
+
+
+def built_by_call(arg: ArgFact) -> bool:
+    """Значение аргумента — результат вызова: `url` при `const url = f(…)` или `a.b(…)` прямо.
+
+    Прямой вызов — только вызов члена: функция без получателя прямо
+    в аргументе — это `map(…)`, `catchError(…)` в каждом `.pipe(…)`, и все
+    они записались бы фактами впустую. У имени, связанного с вызовом, такого
+    шума нет, и функция без получателя там допустима.
+    """
+    if arg.callee is None:
+        return False
+    return arg.kind == "identifier" or (arg.kind == "call" and bool(arg.callee[0]))
+
+
+def address_positions(args: Sequence[ArgFact]) -> list[str]:
+    """Позиции аргументов-адресов: `1` — второй позиционный, `0.url` — поле первого.
+
+    Номер нужен всегда: у `HTTP.getVersioned(this.http, url)` адрес второй,
+    первым идёт сам `HttpClient`, и объявление обёртки «первый аргумент — адрес»
+    дало бы маршрут `this.http`. Поле объекта — `url` с любым значением
+    (`{ url }` тоже) или поле, значение которого само похоже на адрес.
+    """
+    found: list[str] = []
+    for index, arg in enumerate(args):
+        if _direct_address(arg) or built_address(arg):
+            found.append(str(index))
+        elif arg.kind == "object":
+            found.extend(
+                f"{index}.{name}"
+                for name, value in sorted(arg.fields.items())
+                if name == URL_FIELD or _direct_address(value)
+            )
+    return found
+
+
+def _arguments(call: Node) -> list[Node]:
+    """Аргументы вызова без комментариев.
+
+    Комментарий — именованный узел грамматики и стоит среди аргументов:
+    `get(/* версия */ this.http, url)` сдвинул бы позицию адреса на единицу,
+    и объявление обёртки по номеру аргумента разошлось бы с кодом.
+    """
+    arguments = call.child_by_field_name("arguments")
+    if arguments is None:
+        return []
+    return [child for child in arguments.named_children if child.type != "comment"]
+
+
+def _candidate_receiver(function: Node) -> str:
+    """Получатель вызова-кандидата: последний сегмент, `this`/`super` — словом.
+
+    В отличие от `_receiver_name`, `this` здесь назван: `this.get('/api/x')` —
+    обёртка, объявленная в самом классе (или в его базе), и группа без
+    получателя склеила бы её с любым вызовом неизвестного объекта.
+    Получатель-выражение (`inject(X).request(…)`, `items[0].get(…)`) — пустая
+    строка: объявить обёртку на такой получатель нечем.
+    """
+    receiver = function.child_by_field_name("object")
+    if receiver is None:
+        return ""
+    if receiver.type == "member_expression":
+        return _text(receiver.child_by_field_name("property"))
+    if receiver.type in ("identifier", "this", "super"):
+        return _text(receiver)
+    return ""
+
+
+def _callee(call: Node) -> tuple[str, str]:
+    """`(получатель, метод)` вызова; у функции без получателя — `("", имя)`."""
+    function = call.child_by_field_name("function")
+    if function is not None and function.type == "member_expression":
+        return _candidate_receiver(function), _text(function.child_by_field_name("property"))
+    if function is not None and function.type == "identifier":
+        return "", _text(function)
+    return "", ""
+
+
+def _arg_fact(node: Node, scope: _Scope, depth: int = 0) -> ArgFact:
+    """Аргумент -> факт. Вложенные вызовы и объекты — не глубже `_ARG_DEPTH`."""
+    text = _compact(node)
+    literal = _literal_value(node)
+    if literal is not None:
+        return ArgFact("literal", text, literal)
+    if node.type == "template_string":
+        return ArgFact("template", text, _from_template(node, scope)[0])
+    if node.type in ("identifier", "member_expression"):
+        resolved = scope.value(node)
+        if resolved.call is None:
+            return ArgFact("identifier", text, resolved.value)
+        return ArgFact(
+            "identifier",
+            text,
+            resolved.value,
+            callee=_callee(resolved.call),
+            args=_call_args(resolved.call, scope, depth),
+        )
+    if node.type == "call_expression":
+        return ArgFact("call", text, callee=_callee(node), args=_call_args(node, scope, depth))
+    if node.type == "object":
+        return ArgFact("object", text, fields=_object_fields(node, scope, depth))
+    if node.type == "binary_expression":
+        return ArgFact("other", text, _from_concatenation(node, scope)[0])
+    return ArgFact("other", text)
+
+
+def _call_args(call: Node, scope: _Scope, depth: int) -> tuple[ArgFact, ...]:
+    if depth >= _ARG_DEPTH:
+        return ()
+    return tuple(_arg_fact(item, scope, depth + 1) for item in _arguments(call))
+
+
+def _object_fields(node: Node, scope: _Scope, depth: int) -> dict[str, ArgFact]:
+    """Поля объектного литерала: `{ url: '/api/x', method }` -> `url`, `method`.
+
+    Вычисляемый ключ, спред и метод пропускаются: имени поля у них нет,
+    и позицию `0.поле` на них не объявишь.
+    """
+    if depth >= _ARG_DEPTH:
+        return {}
+    found: dict[str, ArgFact] = {}
+    for child in node.named_children:
+        if child.type == "shorthand_property_identifier":
+            resolved = scope.value(child)
+            found[_text(child)] = ArgFact("identifier", _text(child), resolved.value)
+            continue
+        if child.type != "pair":
+            continue
+        key = child.child_by_field_name("key")
+        value = child.child_by_field_name("value")
+        if key is None or value is None or key.type == "computed_property_name":
+            continue
+        found[_literal_value(key) or _text(key)] = _arg_fact(value, scope, depth + 1)
+    return found
+
+
+def _http_call(path: str, line: int, method: str, nodes: list[Node], scope: _Scope) -> RawCall:
+    """Факт о вызове `HttpClient`: адрес — первый аргумент, тело — второй."""
+    if not nodes:
+        return RawCall(file=path, line=line, http_method=method, reason=REASON_NO_ARGUMENTS)
+    first = nodes[0]
+    body = nodes[1] if len(nodes) > 1 else None
+    url, confidence, reason = _first_argument(first, scope)
+    return RawCall(
+        file=path,
+        line=line,
+        http_method=method,
+        url=url,
+        confidence=confidence,
+        reason=reason,
+        expression=_compact(first),
+        body_fields=_body_fields(body) if body is not None else {},
+        body_nonliteral=_body_nonliteral(body) if body is not None else (),
+    )
+
+
+def extract_call_facts(root: Node, path: str) -> CallFacts:
+    """Факты о вызовах одного файла: HTTP-вызовы, кандидаты в обёртки, построители.
+
+    От конфигурации не зависят. Вызов `HttpClient` (`HTTP_METHODS` при
+    получателе из `HTTP_RECEIVERS`) — `RawCall`; любой другой вызов члена
+    с аргументом-адресом (`address_positions`) или с аргументом — результатом
+    вызова (`built_by_call`) — `CandidateCall`.
+
+    Граница проходит по паре «получатель + метод», а не по одному получателю:
+    `HTTP.getVersioned(…)` в нижнем регистре — `http`, и фильтр по одному
+    получателю выбросил бы именно обёртки squidex.
+    """
     captures = QueryCursor(_query("calls.scm")).captures(root)
     scope = _Scope(root)
 
     found: list[RawCall] = []
+    candidates: list[CandidateCall] = []
+    builders: list[BuilderUse] = []
     for call in captures.get("call", []):
         function = call.child_by_field_name("function")
         if function is None:
             continue
-
-        method = _text(function.child_by_field_name("property")).lower()
-        if method not in HTTP_METHODS:
-            continue
-        if _receiver_name(function).lower() not in HTTP_RECEIVERS:
-            continue
-
-        arguments = call.child_by_field_name("arguments")
-        first = next((c for c in arguments.named_children), None) if arguments else None
+        name = _text(function.child_by_field_name("property"))
+        nodes = _arguments(call)
         line = call.start_point[0] + 1
-        if first is None:
-            found.append(
-                RawCall(
-                    file=path,
-                    line=line,
-                    http_method=method.upper(),
-                    reason=REASON_NO_ARGUMENTS,
-                )
-            )
+
+        if name.lower() in HTTP_METHODS and _receiver_name(function).lower() in HTTP_RECEIVERS:
+            found.append(_http_call(path, line, name.upper(), nodes, scope))
+            address = _arg_fact(nodes[0], scope) if nodes else None
+            # Любой вызов, построивший адрес `HttpClient`, — построитель: адрес
+            # там и так на первом месте, и аргумент-адрес у самого построителя
+            # не обязателен (`buildUrl(link.href)` — гипермедиа, но через него).
+            if address is not None and address.callee is not None:
+                receiver, method = address.callee
+                builders.append(BuilderUse(path, line, receiver, method, address))
             continue
 
-        url, confidence, reason = _first_argument(first, scope)
-        body = (
-            arguments.named_children[1] if arguments and len(arguments.named_children) > 1 else None
-        )
-
-        found.append(
-            RawCall(
-                file=path,
-                line=line,
-                http_method=method.upper(),
-                url=url,
-                confidence=confidence,
-                reason=reason,
-                expression=_compact(first),
-                body_fields=_body_fields(body) if body is not None else {},
-                body_nonliteral=_body_nonliteral(body) if body is not None else (),
-            )
+        receiver = _candidate_receiver(function)
+        if not receiver or not nodes:
+            continue
+        args = tuple(_arg_fact(node, scope) for node in nodes)
+        if not address_positions(args) and not any(built_by_call(arg) for arg in args):
+            continue
+        candidates.append(CandidateCall(path, line, receiver, name, args))
+        # У кандидата построитель — только тот, чей вызов сам похож на адрес:
+        # `dto.toJSON()` в соседнем аргументе `requestVersioned` адреса не строит.
+        builders.extend(
+            BuilderUse(path, line, arg.callee[0], arg.callee[1], arg, f"{receiver}.{name}")
+            for arg in args
+            if arg.callee is not None and built_address(arg)
         )
 
     found.sort(key=lambda item: (item.line, item.http_method, item.expression))
-    return found
+    candidates.sort(key=lambda item: (item.line, item.receiver, item.method))
+    builders.sort(key=lambda item: (item.line, item.receiver, item.method, item.through))
+    return CallFacts(calls=found, candidates=candidates, builders=builders)
+
+
+def extract_calls(root: Node, path: str) -> list[RawCall]:
+    """Факты о HTTP-вызовах одного файла. От конфигурации не зависят."""
+    return extract_call_facts(root, path).calls
 
 
 def _first_argument(node: Node, scope: _Scope) -> tuple[str | None, Confidence, str]:
@@ -637,6 +952,11 @@ def _first_argument(node: Node, scope: _Scope) -> tuple[str | None, Confidence, 
 def scan_calls(source: bytes, path: str) -> list[RawCall]:
     """Разобрать файл и вытащить факты о вызовах."""
     return extract_calls(_PARSER.parse(source).root_node, path)
+
+
+def scan_call_facts(source: bytes, path: str) -> CallFacts:
+    """Разобрать файл и вытащить все факты о вызовах, включая находки для обёрток."""
+    return extract_call_facts(_PARSER.parse(source).root_node, path)
 
 
 # --------------------------------------------------------------------------------------

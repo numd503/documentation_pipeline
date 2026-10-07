@@ -6,7 +6,7 @@
 выражением по тексту, а не существование файла: «упрощение» фикстуры
 оставило бы тесты этапа C зелёными и бессмысленными.
 
-Вторая половина фиксирует числа прогона — сейчас **после S17**. Это не
+Вторая половина фиксирует числа прогона — сейчас **после S18**. Это не
 спецификация, а точка отсчёта: каждая задача этапа C меняет их и обязана
 поправить здесь то, что изменила, с комментарием «задача: было → стало», —
 тогда разница видна в диффе теста, а не в пересказе. Что именно проверяет
@@ -495,7 +495,7 @@ def test_web_scan_runs_without_errors(frontend: WebScanResult) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Числа после S17 — их обновляет каждая следующая задача этапа C (S18–S21)
+# Числа после S18 — их обновляет каждая следующая задача этапа C (S19–S21)
 # --------------------------------------------------------------------------------------
 
 LINK_COUNTS: Final = {
@@ -525,6 +525,10 @@ LINK_COUNTS: Final = {
     "endpoints_total": 14,
     # S17: новый счётчик. Все аргументы-выражения фикстуры разрешились.
     "endpoints_unresolved": 0,
+    # S18: новый счётчик, 9 — ровно `Manifest.unresolved_calls`: построитель
+    # (`list`, `get`), база конкатенации (`legacy`), изменяемое поле (редактор),
+    # гипермедиа (`fetch`) и четыре тела обёрток в `http-extensions.ts`.
+    "calls_unresolved": 9,
 }
 
 
@@ -634,17 +638,43 @@ def test_unresolved_calls(frontend: WebScanResult) -> None:
     assert frontend.meta.stats["calls_unresolved"] == 9
     # Каждый восстановленный вызов лежит в диапазоне своего узла.
     assert frontend.meta.stats["calls_unattributed"] == 0
+    # S18: 0 → 9. Те же вызовы — в манифесте, с файлом, строкой и причиной,
+    # а не только числом в сидкаре.
+    assert (
+        sorted(
+            (_name(item.file), item.http_method, item.expression, item.reason)
+            for item in frontend.manifest.unresolved_calls
+        )
+        == unresolved
+    )
 
 
 def test_calls_through_wrappers_are_invisible(frontend: WebScanResult) -> None:
-    """До S18/S19: вызовы через обёртки и `HttpClient.request` не попадают ни в один счётчик.
+    """До S19: вызовы через обёртки и `HttpClient.request` не попадают ни в один счётчик вызовов.
 
     Это четыре места продукта (`getApps`, `putApp`, `create`, `follow`) и два
     тела обёрток (`requestVersioned`, `RestService.request`).
+
+    S18: три места продукта из четырёх видны находкой — вызовы-кандидаты
+    в обёртки (`candidate_calls`), а не вызовы: в `calls` и `unresolved`
+    их нет до объявления обёртки (S19). `follow` не виден и находкой —
+    `link.href` на адрес не похож.
     """
     seen = {_name(item.file) for item in [*frontend.calls.calls, *frontend.calls.unresolved]}
     for invisible in ("apps-versioned.service.ts", "apps-proxy.service.ts", "rest.service.ts"):
         assert invisible not in seen
+    # S18: 0 → 3 находки.
+    assert sorted(
+        (_name(item.file), item.receiver, item.method) for item in frontend.candidate_calls
+    ) == [
+        ("apps-proxy.service.ts", "rest", "request"),
+        ("apps-versioned.service.ts", "HTTP", "getVersioned"),
+        ("apps-versioned.service.ts", "HTTP", "requestVersioned"),
+        # Сам построитель адреса тоже похож на вызов с аргументом-адресом;
+        # в кандидаты в обёртки его не пускает отбор (`setup candidates`).
+        ("apps.service.ts", "apiUrl", "buildUrl"),
+        ("apps.service.ts", "apiUrl", "buildUrl"),
+    ]
     # У `links.service.ts` виден только `fetch`: `follow` — это `this.http.request`.
     assert [
         item.expression

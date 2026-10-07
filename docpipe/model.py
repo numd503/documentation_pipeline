@@ -57,7 +57,9 @@ Lang = Literal["cs", "ts"]
 # 2.2 — `Endpoint.unresolved` и `Attribute.expression_args`/`expression_named_args`:
 # маршрут, собрать который не удалось, и аргумент атрибута, записанный
 # выражением, а не литералом (S17).
-SCHEMA_VERSION: Final = "2.2"
+# 2.3 — `Manifest.unresolved_calls`: невосстановленные вызовы фронта с файлом,
+# строкой и причиной (S18). До неё в манифесте было только число в сидкаре.
+SCHEMA_VERSION: Final = "2.3"
 
 _VERSION = re.compile(r"(?P<major>\d+)\.(?P<minor>\d+)")
 
@@ -536,6 +538,35 @@ class WebCall(_Base):
     host: str = ""
 
 
+class UnresolvedCall(_Base):
+    """HTTP-вызов фронта, у которого адрес не восстановлен: где, какой и почему.
+
+    До S18 такие вызовы жили только числом `calls_unresolved` в сидкаре:
+    на squidex 78 мест, и ни одного из них нельзя было открыть, не перечитав
+    исходники. Связи у такого вызова нет, поэтому и узла он не получает —
+    список живёт на уровне манифеста, а не на `DocNode`.
+
+    `reason` — та же стабильная формулировка, что у факта разбора
+    (`web/calls.py`, `REASON_*` и «значение переменной — вызов `X.m(…)`»):
+    по ней группирует сводка шва, и построитель адреса, тело обёртки
+    (адрес — параметр функции) и гипермедиа не сливаются в одно
+    «не восстановлено».
+
+    `module` — имя модуля фронта (`Module.name`): отчёт связи по нему
+    находит модуль без `url_rewrite`, даже если восстановленных вызовов
+    у модуля нет ни одного. `member` — член, в теле которого записан вызов;
+    пустая строка — вне членов класса (функция модуля, фабрика).
+    """
+
+    file: str
+    line: int
+    http_method: str
+    reason: str
+    expression: str = ""
+    module: str
+    member: str = ""
+
+
 class Usage(_Base):
     """Обращение узла к члену другого узла: ребро графа вызовов.
 
@@ -690,6 +721,10 @@ class Manifest(_Base):
     # исход, а не пробел разбора.
     sql_usages: list[SqlUsage] = Field(default_factory=list)
     sql_objects: list[SqlObject] = Field(default_factory=list)
+
+    # Невосстановленные HTTP-вызовы фронта, отсортированные по файлу и строке.
+    # У манифеста .NET пуст всегда, как `web_calls` у его узлов.
+    unresolved_calls: list[UnresolvedCall] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod

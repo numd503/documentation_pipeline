@@ -40,10 +40,14 @@ from docpipe.model import (
 )
 from docpipe.web.absorb import FEATURE_KIND, PAGE_KIND, reachable_from
 from docpipe.web.calls import (
+    ArgFact,
+    BuilderUse,
     CallScan,
+    CandidateCall,
     RawCall,
     RegistryCall,
     ResolvedCall,
+    address_positions,
     discriminator_of,
     query_parameters,
     registry_rules,
@@ -1085,13 +1089,327 @@ def format_features(report: FeatureCandidates) -> str:
 
 
 # --------------------------------------------------------------------------------------
+# Кандидаты в обёртки HTTP (`http-wrappers`) и построители адреса (`url-builders`)
+# --------------------------------------------------------------------------------------
+
+WRAPPER_LIMITS: Final = (
+    "кандидат — вызов члена, не являющийся вызовом `HttpClient`, у которого аргумент "
+    "похож на адрес: литерал, шаблон или `const`, начинающиеся с `/`, `api/`, `http://`, "
+    "`https://`; объект с полем `url`; значение построителя адреса (см. `url-builders`)",
+    "вызов обёртки с адресом-параметром функции или выражением (`link.href` напрямую, "
+    "без построителя) кандидатом не становится: на адрес он не похож, и в `calls` "
+    "группы такие вызовы не входят",
+    "группа, результат которой идёт адресом в другой вызов, — построитель адреса: "
+    "она в `url-builders`, а здесь названа в `builders`",
+)
+
+
+def _qualified(receiver: str, method: str) -> str:
+    """`HTTP.getVersioned`; у функции без получателя — просто имя."""
+    return f"{receiver}.{method}" if receiver else method
+
+
+type _Group = tuple[str, str]
+
+
+def _builder_groups(builder_uses: list[BuilderUse]) -> set[_Group]:
+    """Построители адреса прогона: вызовы, хоть раз построившие адрес.
+
+    Признак — употребление, а не имя: результат идёт первым аргументом
+    `HttpClient` или аргументом-адресом вызова-кандидата (`BuilderUse`).
+    """
+    return {(use.receiver, use.method) for use in builder_uses}
+
+
+def _wrapper_positions(call: CandidateCall, builders: set[_Group]) -> list[str]:
+    """Позиции адреса в вызове-кандидате: похожие на адрес и построенные построителем.
+
+    Второе — гипермедиа через построитель: `url` при `const url =
+    this.apiUrl.buildUrl(link.href)` на адрес не похож, но построен тем же
+    вызовом, что и адреса `HttpClient`, — и это адрес.
+    """
+    found = address_positions(call.args)
+    found += [
+        str(index)
+        for index, arg in enumerate(call.args)
+        if arg.callee in builders and str(index) not in found
+    ]
+    return found
+
+
+class HttpWrapperCandidate(_Base):
+    """Получатель и метод, через которые идут вызовы с аргументом-адресом.
+
+    `HTTP.getVersioned(this.http, url)` и `this.rest.request({ url })` не видны
+    ни одному счётчику прогона: глагола `HttpClient` у них нет. Это и есть
+    «вызовы, которых не видно вовсе» — здесь они посчитаны. Но обёртку
+    по имени не распознать (`get<T>(path, default)` у squidex — чтение
+    состояния), поэтому решение — за человеком, а в разбор обёртка входит
+    объявлением (`web.http_wrappers`, S19).
+
+    `calls` — вызовов группы с адресом хотя бы в одной позиции. `positions` —
+    где адрес: `1` — второй позиционный аргумент, `0.url` — поле `url`
+    первого; `[позиция, вызовов]` от частых к редким. Номер обязателен:
+    у `getVersioned` первым идёт сам `HttpClient`.
+
+    `configured` — обёртка уже объявлена; ключа `web.http_wrappers` до S19
+    нет, и отметка до неё всегда `false`.
+    """
+
+    receiver: str
+    method: str
+    calls: int
+    positions: list[tuple[str, int]]
+    files: int
+    configured: bool
+    examples: list[str]
+
+
+class HttpWrapperCandidates(_Base):
+    """Отчёт `setup candidates http-wrappers`.
+
+    `http_calls` — вызовов `HttpClient`, которые прогон видит (восстановленных
+    и нет), `wrapper_calls` — вызовов-кандидатов во всех группах списка:
+    без пары «видно / не видно» число кандидатов не с чем сравнить.
+    `builders` — группы, отнесённые к построителям адреса (их результат —
+    адрес другого вызова), чтобы их отсутствие в списке не читалось как
+    «не найдено». `limits` — чего отбор не видит.
+    """
+
+    schema_version: Literal["1.0"] = "1.0"
+    http_calls: int
+    wrapper_calls: int
+    builders: list[str]
+    total: int
+    offset: int
+    limits: list[str]
+    items: list[HttpWrapperCandidate]
+
+
+def _positions(rows: list[list[str]]) -> list[tuple[str, int]]:
+    """Позиции адреса по вызовам: `[позиция, вызовов]`, от частых к редким."""
+    counter: Counter[str] = Counter(position for row in rows for position in set(row))
+    return _top(counter, len(counter))
+
+
+def _wrapper_groups(
+    candidate_calls: list[CandidateCall], builders: set[_Group]
+) -> dict[_Group, list[tuple[CandidateCall, list[str]]]]:
+    """Вызовы-кандидаты с позициями адреса, по группам; построители и вызовы без адреса — нет."""
+    groups: defaultdict[_Group, list[tuple[CandidateCall, list[str]]]] = defaultdict(list)
+    for call in candidate_calls:
+        if (call.receiver, call.method) in builders:
+            continue
+        positions = _wrapper_positions(call, builders)
+        if positions:
+            groups[(call.receiver, call.method)].append((call, positions))
+    return dict(groups)
+
+
+def http_wrapper_candidates(
+    candidate_calls: list[CandidateCall],
+    builder_uses: list[BuilderUse],
+    calls: CallScan,
+    *,
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
+) -> HttpWrapperCandidates:
+    """Кандидаты в `web.http_wrappers` по вызовам-кандидатам прогона `web`.
+
+    Группа — `(receiver, method)` как написаны. Группа, которая хоть раз
+    построила адрес другого вызова (`builder_uses`), — построитель, а не
+    обёртка: `this.apiUrl.buildUrl('/api/apps')` сам похож на вызов-обёртку
+    с аргументом-адресом, и без отсева встал бы первым там, где вызовов через
+    него больше всего. Порядок — `(-calls, receiver, method)`.
+    """
+    builders = _builder_groups(builder_uses)
+    groups = _wrapper_groups(candidate_calls, builders)
+
+    found: list[HttpWrapperCandidate] = []
+    for (receiver, method), items in groups.items():
+        located = sorted((call.file, call.line) for call, _ in items)
+        found.append(
+            HttpWrapperCandidate(
+                receiver=receiver,
+                method=method,
+                calls=len(items),
+                positions=_positions([positions for _, positions in items]),
+                files=len({call.file for call, _ in items}),
+                configured=False,
+                examples=[f"{path}:{line}" for path, line in located[:_EXAMPLES]],
+            )
+        )
+
+    found.sort(key=lambda c: (-c.calls, c.receiver, c.method))
+    seen = {(call.receiver, call.method) for call in candidate_calls}
+    return HttpWrapperCandidates(
+        http_calls=len(calls.calls) + len(calls.unresolved),
+        wrapper_calls=sum(item.calls for item in found),
+        builders=sorted(_qualified(*group) for group in builders & seen),
+        total=len(found),
+        offset=offset,
+        limits=list(WRAPPER_LIMITS),
+        items=_page(found, limit, offset),
+    )
+
+
+def _pairs_text(pairs: list[tuple[str, int]]) -> str:
+    return ", ".join(f"{name} ×{count}" for name, count in pairs)
+
+
+def format_http_wrappers(report: HttpWrapperCandidates) -> str:
+    lines = [
+        f"Кандидаты в web.http_wrappers: {report.total} "
+        "(вызовы члена с аргументом-адресом, не являющиеся вызовом HttpClient).",
+        f"Вызовов HttpClient прогон видит {report.http_calls}; вызовов с аргументом-адресом "
+        f"вне HttpClient — {report.wrapper_calls}: прогон их не видит, пока обёртка "
+        "не объявлена, а среди групп бывают и не обёртки.",
+        "Обёртку по имени не распознать: кандидат — находка, решение — человеку.",
+    ]
+    if report.builders:
+        lines.append(
+            "Построители адреса (см. url-builders), здесь не показаны: "
+            + ", ".join(report.builders)
+            + "."
+        )
+    for item in report.items:
+        mark = "  [уже в web.http_wrappers]" if item.configured else ""
+        lines += [
+            "",
+            f"{_qualified(item.receiver, item.method)}{mark}",
+            f"  вызовов {item.calls}, файлов {item.files}",
+            f"  адрес в аргументе: {_pairs_text(item.positions)}",
+            f"  примеры: {', '.join(item.examples)}",
+        ]
+
+    lines += ["", "Ограничения отбора:"]
+    lines += [f"  - {text}" for text in report.limits]
+    lines.append("")
+    lines.append(_page_line(report.total, report.offset, len(report.items)))
+    return "\n".join(lines) + "\n"
+
+
+class UrlBuilderCandidate(_Base):
+    """Вызов, которым построен адрес: `const url = this.apiUrl.buildUrl(…)`, затем `get(url)`.
+
+    Значения у такого адреса нет — невосстановленный вызов с причиной
+    «значение переменной — вызов `apiUrl.buildUrl(…)`», — а путь лежит
+    в аргументе построителя. Объявленный построитель (S19) берёт адрес оттуда.
+
+    `uses` — адресов, построенных этим вызовом; `http_calls` — из них у прямых
+    вызовов `HttpClient`, `through` — у вызовов-кандидатов в обёртки
+    (`[обёртка, адресов]`, три частых): основная форма squidex — построитель
+    внутри обёртки. `positions` — аргументы построителя, похожие на адрес
+    (`[позиция, адресов]`): у гипермедиа (`buildUrl(link.href)`) такого
+    аргумента нет, и `uses` больше суммы позиций.
+
+    `configured` — построитель уже объявлен; ключа `web.url_builders` до S19
+    нет, и отметка до неё всегда `false`.
+    """
+
+    receiver: str
+    method: str
+    uses: int
+    http_calls: int
+    through: list[tuple[str, int]]
+    positions: list[tuple[str, int]]
+    files: int
+    configured: bool
+    examples: list[str]
+
+
+class UrlBuilderCandidates(_Base):
+    """Отчёт `setup candidates url-builders`."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    total: int
+    offset: int
+    items: list[UrlBuilderCandidate]
+
+
+def url_builder_candidates(
+    candidate_calls: list[CandidateCall],
+    builder_uses: list[BuilderUse],
+    *,
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
+) -> UrlBuilderCandidates:
+    """Кандидаты в `web.url_builders`: группа `(receiver, method)` построителя.
+
+    Построитель — группа из `builder_uses` (`_builder_groups`). Употребления —
+    адреса прямых вызовов `HttpClient` и аргументы вызовов-кандидатов
+    в обёртки, построенные им, включая гипермедиа: тот же отбор, что
+    у `http-wrappers`, — иначе две сводки одного прогона разошлись бы
+    в числе одних и тех же вызовов. Порядок — `(-uses, receiver, method)`.
+    """
+    builders = _builder_groups(builder_uses)
+    # (файл, строка, обёртка или "", аргумент-адрес)
+    uses: defaultdict[_Group, list[tuple[str, int, str, ArgFact]]] = defaultdict(list)
+    for use in builder_uses:
+        if not use.through:
+            uses[(use.receiver, use.method)].append((use.file, use.line, "", use.arg))
+    for group, calls in _wrapper_groups(candidate_calls, builders).items():
+        for call, _ in calls:
+            for arg in call.args:
+                if arg.callee is not None and arg.callee in builders:
+                    uses[arg.callee].append((call.file, call.line, _qualified(*group), arg))
+
+    found: list[UrlBuilderCandidate] = []
+    for (receiver, method), built in uses.items():
+        located = sorted((path, line) for path, line, _, _ in built)
+        found.append(
+            UrlBuilderCandidate(
+                receiver=receiver,
+                method=method,
+                uses=len(built),
+                http_calls=sum(1 for _, _, through, _ in built if not through),
+                through=_top(Counter(through for _, _, through, _ in built if through), _EXAMPLES),
+                positions=_positions([address_positions(arg.args) for _, _, _, arg in built]),
+                files=len({path for path, _, _, _ in built}),
+                configured=False,
+                examples=[f"{path}:{line}" for path, line in located[:_EXAMPLES]],
+            )
+        )
+
+    found.sort(key=lambda c: (-c.uses, c.receiver, c.method))
+    return UrlBuilderCandidates(total=len(found), offset=offset, items=_page(found, limit, offset))
+
+
+def format_url_builders(report: UrlBuilderCandidates) -> str:
+    lines = [
+        f"Кандидаты в web.url_builders: {report.total} "
+        "(вызовы, результат которых — адрес вызова HttpClient или вызова-кандидата в обёртки)."
+    ]
+    for item in report.items:
+        mark = "  [уже в web.url_builders]" if item.configured else ""
+        lines += [
+            "",
+            f"{_qualified(item.receiver, item.method)}{mark}",
+            f"  адресов построено {item.uses}: у вызовов HttpClient {item.http_calls}, "
+            f"через обёртки {item.uses - item.http_calls}"
+            + (f" ({_pairs_text(item.through)})" if item.through else ""),
+            f"  путь в аргументе: {_pairs_text(item.positions) or 'не похож на адрес ни разу'}",
+            f"  файлов {item.files}; примеры: {', '.join(item.examples)}",
+        ]
+
+    lines.append("")
+    lines.append(_page_line(report.total, report.offset, len(report.items)))
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------------------
 # Вид кандидатов → прогон → отчёт
 # --------------------------------------------------------------------------------------
 
 # Объединение отчётов всех видов: новый вид дописывает сюда свою модель,
 # а в `_KINDS` — свою функцию.
 type CandidateReport = (
-    DiMethodCandidates | DispatchCandidates | RegistryCallCandidates | FeatureCandidates
+    DiMethodCandidates
+    | DispatchCandidates
+    | RegistryCallCandidates
+    | FeatureCandidates
+    | HttpWrapperCandidates
+    | UrlBuilderCandidates
 )
 
 
@@ -1135,12 +1453,13 @@ def _dispatch_interfaces(inputs: CandidateInputs, limit: int, offset: int) -> Ca
 def _web_scan(inputs: CandidateInputs) -> tuple[WebScanResult, Overrides]:
     """Прогон шага `web` тем же путём, что у `web scan`: правила, `pages.yaml`, кэш.
 
-    Один на оба вида фронта. `pages.yaml` читается тем же `load_page_overrides`:
+    Один на все виды фронта. `pages.yaml` читается тем же `load_page_overrides`:
     без объявленных разделов отметка `declared` у `features` не значила бы
     ничего, а названный и ненайденный файл — отказ, как у `web scan`, а не
-    пустые правила. Виду `registry-calls` ручной состав не нужен — на вызовы
-    он не влияет, — но и не мешает: без `web.pages` правила пустые, а битый
-    названный файл — та же ошибка настройки, на которой упал бы `web scan`.
+    пустые правила. Видам вызовов (`registry-calls`, `http-wrappers`,
+    `url-builders`) ручной состав не нужен — на вызовы он не влияет, — но
+    и не мешает: без `web.pages` правила пустые, а битый названный файл —
+    та же ошибка настройки, на которой упал бы `web scan`.
     """
     try:
         ruleset = load_ruleset(resolve_input(inputs.settings.web.rules, inputs.config), "web")
@@ -1173,11 +1492,27 @@ def _features(inputs: CandidateInputs, limit: int, offset: int) -> CandidateRepo
     return feature_candidates(result.manifest, overrides, limit=limit, offset=offset)
 
 
+def _http_wrappers(inputs: CandidateInputs, limit: int, offset: int) -> CandidateReport:
+    result, _ = _web_scan(inputs)
+    return http_wrapper_candidates(
+        result.candidate_calls, result.builder_uses, result.calls, limit=limit, offset=offset
+    )
+
+
+def _url_builders(inputs: CandidateInputs, limit: int, offset: int) -> CandidateReport:
+    result, _ = _web_scan(inputs)
+    return url_builder_candidates(
+        result.candidate_calls, result.builder_uses, limit=limit, offset=offset
+    )
+
+
 _KINDS: Final[dict[str, Callable[[CandidateInputs, int, int], CandidateReport]]] = {
     "di-methods": _di_methods,
     "dispatch-interfaces": _dispatch_interfaces,
     "features": _features,
+    "http-wrappers": _http_wrappers,
     "registry-calls": _registry_calls,
+    "url-builders": _url_builders,
 }
 
 KINDS: Final[tuple[str, ...]] = tuple(sorted(_KINDS))
@@ -1203,6 +1538,10 @@ def format_candidates(report: CandidateReport) -> str:
         return format_registry_calls(report)
     if isinstance(report, FeatureCandidates):
         return format_features(report)
+    if isinstance(report, HttpWrapperCandidates):
+        return format_http_wrappers(report)
+    if isinstance(report, UrlBuilderCandidates):
+        return format_url_builders(report)
     return format_di_methods(report)
 
 

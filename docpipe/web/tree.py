@@ -38,6 +38,7 @@ from docpipe.model import (
     RunMeta,
     SourceSpan,
     Symbol,
+    UnresolvedCall,
     Usage,
     WebCall,
 )
@@ -45,12 +46,14 @@ from docpipe.route import RewriteRule
 from docpipe.tree import doc_path_for, signature_hash
 from docpipe.web.absorb import FEATURE_KIND, PAGE_KIND, absorb
 from docpipe.web.calls import (
+    BuilderUse,
     CallScan,
+    CandidateCall,
     RawCall,
     RegistryCall,
     ResolvedCall,
     build_calls,
-    extract_calls,
+    extract_call_facts,
 )
 from docpipe.web.members import MemberRanges, member_ranges
 from docpipe.web.modules import (
@@ -112,7 +115,13 @@ def parser_versions() -> ParserVersions:
 
 @dataclass(frozen=True)
 class WebScanResult:
-    """Всё, что даёт прогон шага `web`."""
+    """Всё, что даёт прогон шага `web`.
+
+    `candidate_calls` и `builder_uses` — находки для обёрток и построителей
+    адреса (S18), только из файлов модулей. Только в памяти: в манифест
+    не идут — это не вызовы, а то, из чего строится вопрос «это ваша
+    обёртка?» (`setup candidates http-wrappers`, `url-builders`).
+    """
 
     manifest: Manifest
     meta: RunMeta
@@ -120,6 +129,8 @@ class WebScanResult:
     calls: CallScan
     routes: RouteScan
     overrides: OverrideReport = field(default_factory=OverrideReport)
+    candidate_calls: list[CandidateCall] = field(default_factory=list)
+    builder_uses: list[BuilderUse] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -132,6 +143,8 @@ class _Parsed:
 
     result: FileParseResult
     calls: list[RawCall]
+    candidates: list[CandidateCall]
+    builders: list[BuilderUse]
     usages: list[RawUsage]
     injected: list[tuple[int, str, str]]
     fields: list[tuple[int, str, str]]
@@ -155,10 +168,13 @@ def _parse_files(root: Path, relatives: list[str], cache: ParseCache | None) -> 
         result = cached if cached is not None else parse_source(source, relative, tree=tree)
         if cache is not None and cached is None:
             cache.put(result)
+        facts = extract_call_facts(tree.root_node, relative)
         parsed.append(
             _Parsed(
                 result=result,
-                calls=extract_calls(tree.root_node, relative),
+                calls=facts.calls,
+                candidates=facts.candidates,
+                builders=facts.builders,
                 usages=extract_usages(tree.root_node, relative),
                 injected=injected_fields(tree.root_node),
                 fields=typed_fields(tree.root_node),
@@ -211,7 +227,7 @@ def _calls_by_file(
     config: DocpipeConfig,
     ranges: MemberRanges,
     action_of_member: dict[tuple[str, str], str],
-) -> tuple[CallScan, dict[str, list[WebCall]]]:
+) -> tuple[CallScan, dict[str, list[WebCall]], list[UnresolvedCall]]:
     """Вызовы, разобранные по правилам своего модуля.
 
     Правило берётся по модулю файла, а не одно на прогон: у семи фронтов
@@ -221,6 +237,10 @@ def _calls_by_file(
     полю страница отличит «зову метод, который ходит вот сюда» от «внедрил
     сервис, у которого есть такой метод». Вызов из члена, помеченного `@Action`,
     получает и тип экшена: страница до него дошла диспатчем, а не вызовом.
+
+    Третье значение — невосстановленные вызовы для манифеста, с модулем
+    и членом: модуль известен только здесь, а отчёт связи по нему находит
+    фронт без `url_rewrite`, у которого не восстановлен ни один вызов.
     """
     by_module: dict[str, list[RawCall]] = {}
     module_of_file = map_files_to_modules([item.result.path for item in parsed], modules)
@@ -234,6 +254,7 @@ def _calls_by_file(
     unresolved: list[RawCall] = []
     registry_unresolved: list[WebCall] = []
     resolved: list[ResolvedCall] = []
+    unresolved_calls: list[UnresolvedCall] = []
 
     for module in modules:
         scan = build_calls(
@@ -262,6 +283,18 @@ def _calls_by_file(
             for item, call in zip(scan.resolved, attributed, strict=True)
         )
         unresolved.extend(scan.unresolved)
+        unresolved_calls.extend(
+            UnresolvedCall(
+                file=item.file,
+                line=item.line,
+                http_method=item.http_method,
+                reason=item.reason,
+                expression=item.expression,
+                module=module.module.name,
+                member=ranges.of(item.file, item.line),
+            )
+            for item in scan.unresolved
+        )
         # Тот же список проходит ту же обработку: `registry_unresolved` —
         # подмножество `calls`, и разное наполнение полей у одного вызова
         # в двух списках читалось бы как два разных вызова.
@@ -279,7 +312,32 @@ def _calls_by_file(
             resolved=resolved,
         ),
         grouped,
+        sorted(
+            unresolved_calls,
+            key=lambda item: (item.file, item.line, item.http_method, item.expression),
+        ),
     )
+
+
+def _wrapper_facts(
+    parsed: list[_Parsed], modules: list[WebModule]
+) -> tuple[list[CandidateCall], list[BuilderUse]]:
+    """Находки для обёрток — только из файлов модулей, как и сами вызовы.
+
+    Файл вне модуля не даёт ни вызова, ни узла, и кандидат из него назвал бы
+    обёртку, вызовы через которую прогон не покажет и после объявления.
+    """
+    module_of_file = map_files_to_modules([item.result.path for item in parsed], modules)
+    inside = [item for item in parsed if item.result.path in module_of_file]
+    candidates = sorted(
+        (call for item in inside for call in item.candidates),
+        key=lambda call: (call.file, call.line, call.receiver, call.method),
+    )
+    builders = sorted(
+        (use for item in inside for use in item.builders),
+        key=lambda use: (use.file, use.line, use.receiver, use.method, use.through),
+    )
+    return candidates, builders
 
 
 def _with_templates(root: Path, index: dict[str, Symbol]) -> dict[str, Symbol]:
@@ -1058,7 +1116,10 @@ def run(
 
     ranges = member_ranges(index.values())
     uses, usage_counts, action_of_member = _usages(index, parsed, ranges, context, root)
-    calls, calls_by_file = _calls_by_file(parsed, modules, config, ranges, action_of_member)
+    calls, calls_by_file, unresolved_calls = _calls_by_file(
+        parsed, modules, config, ranges, action_of_member
+    )
+    candidate_calls, builder_uses = _wrapper_facts(parsed, modules)
     sources = {relative: (root / relative).read_bytes() for relative in found.ts_files}
     routes = build_routes(sources, context)
 
@@ -1083,6 +1144,7 @@ def run(
         parser=versions,
         modules=configured,
         nodes=nodes,
+        unresolved_calls=unresolved_calls,
     )
 
     broken = sorted(
@@ -1141,6 +1203,8 @@ def run(
         calls=calls,
         routes=routes,
         overrides=override_report,
+        candidate_calls=candidate_calls,
+        builder_uses=builder_uses,
     )
 
 

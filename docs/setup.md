@@ -34,6 +34,8 @@ uv run docpipe setup candidates di-methods --root . --format json --limit 5
 uv run docpipe setup candidates dispatch-interfaces --root . --config docpipe.yaml
 uv run docpipe setup candidates registry-calls --root . --config docpipe.yaml
 uv run docpipe setup candidates features --root . --config docpipe.yaml
+uv run docpipe setup candidates http-wrappers --root . --config docpipe.yaml
+uv run docpipe setup candidates url-builders --root . --config docpipe.yaml
 ```
 
 Кандидаты в ключ настройки — факты, из которых агент строит вопрос
@@ -46,6 +48,8 @@ uv run docpipe setup candidates features --root . --config docpipe.yaml
 | `dispatch-interfaces` | `dispatch_interfaces` | S12 |
 | `registry-calls` | `web.registry_calls` | S13 |
 | `features` | `features` в `pages.yaml` (`web.pages`) | S14 |
+| `http-wrappers` | `web.http_wrappers` (ключ появится в S19) | S18 |
+| `url-builders` | `web.url_builders` (ключ появится в S19) | S18 |
 
 ### `di-methods`
 
@@ -324,3 +328,105 @@ web:
 сервис `orders-detail` достижим одной страницей и кандидатом не бывает.
 На `WebWorkspace` кандидатов нет: из 5 страниц общий узел один
 (`AuditService`), а `inner-debt` достижим одной страницей.
+
+### `http-wrappers`
+
+Вызовы фронта, которых прогон **не видит вовсе**: вызов члена, у которого нет
+глагола `HttpClient`, а аргумент похож на адрес, — `HTTP.getVersioned(this.http, url)`
+(squidex), `this.restService.request({ method: 'GET', url: '/api/…' })` (abp).
+Их нет ни в `web_calls`, ни в `unresolved_calls` манифеста, и без этой сводки
+они не попадают ни в один счётчик.
+
+Прогон — шаг `web` тем же путём, что `web scan` (общий с `registry-calls`
+и `features`).
+
+Отбор (факт пишет разбор, `web/calls.py`, без настройки):
+
+1. **Вызов** — вызов члена с именованным получателем (`HTTP`, `rest`, `this`),
+   не являющийся вызовом `HttpClient` (глагол из `get`/`post`/… при получателе
+   `http`/`httpClient`/…). Граница — по паре «получатель + метод»: `HTTP`
+   в нижнем регистре — `http`, и фильтр по одному получателю выбросил бы именно
+   обёртки squidex. `this.http.request(method, url)` поэтому тоже кандидат
+   (`http.request`).
+2. **Аргумент-адрес** — литерал, шаблон, `const` или конкатенация, значение
+   которых начинается с `/`, `api/`, `http://`, `https://` (и после начала есть
+   хоть один знак: голый `'/'` — это `path.startsWith('/')`); объект с полем
+   `url` (любое значение, `{ url }` тоже) или с полем, значение которого похоже
+   на адрес (`0.path`); значение **построителя адреса** — вызова из
+   `url-builders`, — даже если путь в нём из данных (гипермедиа
+   `buildUrl(link.href)`).
+3. **Построитель — не обёртка.** Группа, результат которой хоть раз стал
+   адресом другого вызова, в список не идёт: `this.apiUrl.buildUrl('/api/apps')`
+   сам похож на вызов с аргументом-адресом. Она названа в `builders`.
+
+Группа — получатель и метод как написаны. Порядок — `(-calls, receiver, method)`.
+
+| Поле | Что значит |
+|---|---|
+| `receiver`, `method` | получатель (последний сегмент; `this` — свой метод) и метод |
+| `calls` | вызовов группы с адресом хотя бы в одной позиции |
+| `positions` | где адрес: `[позиция, вызовов]`; `1` — второй позиционный аргумент, `0.url` — поле `url` первого |
+| `files` | в скольких файлах |
+| `configured` | обёртка уже объявлена; ключа `web.http_wrappers` до S19 нет, и отметка до неё всегда `false` |
+| `examples` | до трёх `файл:строка` |
+
+Над списком — база: `http_calls` (вызовов `HttpClient`, которые прогон видит,
+восстановленных и нет) и `wrapper_calls` (вызовов во всех группах списка).
+`builders` — группы, отнесённые к построителям; `limits` — чего отбор не видит.
+
+Как читать:
+
+- **Обёртку по имени не распознать.** У squidex `ui.state.ts:71` —
+  `get<T>(path, default)` без всякого HTTP: вызов `uiState.get('/settings/x')`
+  встал бы рядом с обёртками. Так же выглядят `router.navigateByUrl('/apps')`,
+  `window.open('https://…')`, `httpMock.expectOne(…)` из тестов.
+  Кандидат — находка; решает человек, открыв объявление метода. Тело обёртки
+  обычно видно в `unresolved_calls` с причиной «значение переменной — параметр
+  функции»: `http.get(url)` внутри `getVersioned(http, url)`.
+- **Позиция обязательна.** У `HTTP.getVersioned(this.http, url)` адрес — `1`:
+  первым идёт сам `HttpClient`, и объявление «первый аргумент — адрес» дало бы
+  маршрут `this.http`. У `requestVersioned(this.http, 'PUT', url)` — `2`,
+  а метод — во втором аргументе.
+- **Тесты — первые по числу.** На squidex без `exclude: ["**/*.spec.ts"]` первая
+  строка — `httpMock.expectOne` (188 вызовов в `*.spec.ts`); с ним список —
+  14 групп, шесть первых — настоящие обёртки (97 вызовов).
+- **Не видны** вызовы обёртки, у которых адрес — параметр функции или
+  выражение без построителя (`link.href` прямо), и шаблон с построителем внутри
+  (`` `${this.apiUrl.buildUrl(link.href)}${query}` ``): на адрес они не похожи.
+
+На фикстуре `SeamWorkspace` — три кандидата: `HTTP.getVersioned` (`1`),
+`HTTP.requestVersioned` (`2`), `rest.request` (`0.url`); построитель
+`apiUrl.buildUrl` — в `builders`. На squidex (08.10) — `HTTP.requestVersioned` 47,
+`HTTP.getVersioned` 16, `http.request` 16, `HTTP.postVersioned` 11,
+`HTTP.putVersioned` 4, `HTTP.upload` 3; на abp — `restService.request` 121
+(`0.url`).
+
+### `url-builders`
+
+Вызовы, которыми построен адрес HTTP-вызова: `const url =
+this.apiUrl.buildUrl('/api/apps')`, затем `this.http.get(url)` или
+`HTTP.getVersioned(this.http, url)`. Значения у такого адреса нет — вызов
+невосстановлен с причиной «значение переменной — вызов `apiUrl.buildUrl(…)`»
+(на squidex 73 из 79), — а путь лежит в аргументе построителя.
+
+Построитель — группа `(receiver, method)`, результат которой стал адресом:
+первым аргументом вызова `HttpClient` (любой построитель, и с путём из данных)
+или аргументом-адресом вызова-кандидата в обёртки, если у построителя
+аргумент похож на адрес. Употребления считаются по обоим, включая гипермедию
+внутри обёрток. Порядок — `(-uses, receiver, method)`.
+
+| Поле | Что значит |
+|---|---|
+| `receiver`, `method` | построитель; у функции без получателя `receiver` пуст |
+| `uses` | адресов, построенных им |
+| `http_calls` | из них — у прямых вызовов `HttpClient` |
+| `through` | у вызовов-кандидатов в обёртки: `[обёртка, адресов]`, три частых |
+| `positions` | аргументы построителя, похожие на адрес: `[позиция, адресов]`; у гипермедиа (`buildUrl(link.href)`) такого аргумента нет, и `uses` больше суммы |
+| `files` | в скольких файлах |
+| `configured` | построитель уже объявлен; ключа `web.url_builders` до S19 нет, отметка всегда `false` |
+| `examples` | до трёх `файл:строка` внешних вызовов |
+
+На фикстуре `SeamWorkspace` — `apiUrl.buildUrl`: 2 адреса, оба у `HttpClient`,
+путь — аргумент `0`. На squidex (08.10) — тот же `apiUrl.buildUrl`: 171 адрес,
+73 у `HttpClient`, 98 через обёртки (`requestVersioned` 47, `getVersioned` 16,
+`http.request` 16), путь похож на адрес у 102 — остальное гипермедиа.

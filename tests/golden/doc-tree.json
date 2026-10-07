@@ -663,8 +663,9 @@
   },
   "partial": null,
   "ruleset_version": "2026-07-30.1",
-  "schema_version": "2.2",
+  "schema_version": "2.3",
   "sql_objects": [],
   "sql_usages": [],
-  "table_literals": []
+  "table_literals": [],
+  "unresolved_calls": []
 }

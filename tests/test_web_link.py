@@ -229,7 +229,8 @@ def test_command_writes_the_artifact(manifests: tuple[Path, Path], tmp_path: Pat
     assert result.exit_code == 0, result.output
     payload = json.loads(out.read_text(encoding="utf-8"))
     # S17: 1.0 → 1.1 (`unresolved_endpoints`).
-    assert payload["schema_version"] == "1.1"
+    # S17: 1.0 → 1.1; S18: 1.1 → 1.2 (`counts.calls_unresolved`).
+    assert payload["schema_version"] == "1.2"
     assert payload["counts"]["duplicate_endpoints"] == 1
 
 

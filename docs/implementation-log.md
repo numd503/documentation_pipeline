@@ -10219,3 +10219,43 @@ Golden и прежние тесты без изменений.
 
 **Проверка:** команда S13 — 50 passed; после сведения с S14 — все четыре вида кандидатов
 93 passed.
+
+---
+
+## S18 — невосстановленные вызовы в манифест; кандидаты в обёртки (08.10.2026)
+
+**Создано:** `tests/test_unresolved_calls.py` (41). **Изменено:** `docpipe/model.py`
+(`UnresolvedCall`, `Manifest.unresolved_calls`, версия 2.3), `docpipe/web/calls.py`
+(`ArgFact`, `CandidateCall`, `BuilderUse`, `extract_call_facts`), `docpipe/web/tree.py`,
+`docpipe/web/link.py` (`LinkReport` 1.2), `docpipe/setup/candidates.py` (виды `http-wrappers`,
+`url-builders`), `docpipe/cli.py`, `schema/doc-tree.schema.json`, `tests/golden/doc-tree.json`
+(версия и пустой список), тесты версий и фикстуры, `docs/web.md`, `docs/manifest.md`,
+`docs/setup.md`, `docs/findings-seam.md`, план (ловушки S18 и S19).
+
+Каждый невосстановленный вызов фронта — в манифесте с файлом, строкой, глаголом, причиной,
+выражением, модулем и членом; `web link` видит модули только с невосстановленными вызовами
+(abp: `core`) и считает `calls_unresolved`. Факты для обёрток собирает извлечение без
+настройки (контракт `calls.py` сохранён): вызов члена с аргументом, похожим на адрес,
+и использование построителя адреса.
+
+| | SeamWorkspace | squidex | abp |
+|---|---|---|---|
+| `unresolved_calls` | 9 | 79 (построитель 73, параметр функции 4) | 1 |
+| обёртки | 3: `HTTP.getVersioned` (1), `HTTP.requestVersioned` (2), `rest.request` (`0.url`) | 6 настоящих, 97 вызовов (`requestVersioned` 47, `getVersioned` 16, `http.request` 16, `postVersioned` 11, `putVersioned` 4, `upload` 3) | `restService.request` 121 |
+| построители | `apiUrl.buildUrl` — 2 адреса | `apiUrl.buildUrl` — 171 адрес | — |
+
+**Отклонения и находки.**
+- Граница кандидата — пара «получатель + метод»: `HTTP` в нижнем регистре — `http`, и буква
+  спецификации выбросила бы `getVersioned`; кандидатом стал и `this.http.request(…)`.
+- Факт пишется и для аргумента-результата вызова: иначе гипермедиа `buildUrl(link.href)`
+  не видна (на squidex — все 47 `requestVersioned` и 16 `http.request`).
+- Построитель сам похож на обёртку (113 вызовов на squidex) — отсеян из `http-wrappers`;
+  голый `'/'` (`startsWith`, `split`) — не адрес; комментарий среди аргументов сдвигал
+  позицию — отбрасывается (и у `RawCall`).
+- Невидимыми остаются вызовы обёртки с адресом-параметром функции, адресом-выражением без
+  построителя и шаблоном со встроенным построителем — для S19 записано в плане.
+- `setup candidates` пишет кэш разбора под `--root`: прогоны агента оставили
+  `.docpipe/cache/parse-web.sqlite` в клонах squidex и abp (`~/docspipe-examples`,
+  вне git, исходники не тронуты); флага `--no-cache` у команды нет.
+
+**Проверка:** команда S18 — 61 passed; время `web scan` +1–6 %; полная — ruff и mypy чисты.

@@ -117,7 +117,9 @@ class LinkReport(_Base):
     """
 
     # 1.1 — `unresolved_endpoints` и `counts.endpoints_unresolved` (S17).
-    schema_version: Literal["1.1"] = "1.1"
+    # 1.2 — `counts.calls_unresolved`; `unconfigured_modules` видит и модули,
+    # у которых не восстановлен ни один вызов (S18).
+    schema_version: Literal["1.2"] = "1.2"
     links: list[Link] = Field(default_factory=list)
     calls_without_endpoint: list[CallRef] = Field(default_factory=list)
     endpoints_without_caller: list[EndpointRef] = Field(default_factory=list)
@@ -233,10 +235,15 @@ def _unconfigured(web: Manifest, configured: set[str]) -> list[str]:
     Пустые поля правила и отсутствие правила — разные вещи. Первое значит
     «проверено, преобразования нет», второе — «настройку забыли», и именно
     забытая настройка выглядит как исправная связь, расходясь ровно на префиксе.
+
+    Вызов — и восстановленный, и нет (`Manifest.unresolved_calls`). Пока
+    считались только первые, модуль, у которого не восстановлен ни один вызов,
+    молчал: на abp так молчали 17 модулей из 17. Правило ему нужно так же —
+    оно понадобится, как только обёртка или построитель (S19) восстановят адрес.
     """
-    return sorted(
-        {node.module for node in web.nodes if node.web_calls and node.module not in configured}
-    )
+    with_calls = {node.module for node in web.nodes if node.web_calls}
+    with_calls |= {item.module for item in web.unresolved_calls}
+    return sorted(with_calls - configured)
 
 
 def build_report(
@@ -338,6 +345,9 @@ def build_report(
             "endpoints_without_caller": len(uncalled),
             "duplicate_endpoints": len(duplicates),
             "calls_total": sum(len(node.web_calls) for node in web.nodes),
+            # Невосстановленные в связь не идут вовсе: маршрута у них нет.
+            # Без числа рядом «вызовов фронта 4» читалось бы как «всего четыре».
+            "calls_unresolved": len(web.unresolved_calls),
             "endpoints_total": sum(len(items) for items in keys.values()),
             "endpoints_unresolved": len(unresolved),
         },
@@ -356,7 +366,8 @@ _TITLES: Final[dict[str, str]] = {
 def format_report(report: LinkReport, top: int = 10) -> str:
     """Человекочитаемый отчёт. Каждое число названо и сопровождено вторым."""
     lines = [
-        f"Вызовов фронта: {report.counts['calls_total']}, "
+        f"Вызовов фронта: {report.counts['calls_total']} "
+        f"(не восстановлено и в связь не идёт ещё {report.counts.get('calls_unresolved', 0)}), "
         f"эндпоинтов бэкенда: {report.counts['endpoints_total']}.",
         "",
     ]
