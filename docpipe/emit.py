@@ -169,7 +169,9 @@ def parse_files(
 
 
 def _outside_scope_results(
-    cache: ParseCache | None, scope: list[tuple[str, ...]] | None
+    cache: ParseCache | None,
+    scope: list[tuple[str, ...]] | None,
+    expected: frozenset[str] = frozenset(),
 ) -> tuple[list[FileParseResult], list[str]]:
     """Разбор файлов вне скоупа — целиком из кэша, без сверки хэша.
 
@@ -184,13 +186,22 @@ def _outside_scope_results(
     файлов. Разница видна на удалении: файл внутри скоупа обходом уже не
     находится, но в кэше ещё лежит, и правило «чего не нашли, то возьмём
     из кэша» воскресило бы удалённый тип.
+
+    `expected` — файлы, которые обязаны найтись вне скоупа: источники узлов
+    прежнего манифеста. «Нет в кэше» считается по ним, а не по строкам самого
+    кэша: перебор строк кэша не находит отсутствующего никогда — холодный кэш
+    пуст, кэш другой версии очищается целиком, — и счётчик стоял на нуле ровно
+    в том случае, ради которого заведён: тип вне скоупа пропадает из индекса,
+    и контроллер, наследующий от него, исчезает из документации без слова.
     """
+    outside = sorted(path for path in expected if not in_scope(path, scope))
     if cache is None:
-        return [], []
+        return [], outside
 
     restored: list[FileParseResult] = []
     missing: list[str] = []
-    for path in cache.all_paths():
+    stored = cache.all_paths()
+    for path in stored:
         if in_scope(path, scope):
             continue
         cached = cache.get_any(path)
@@ -198,7 +209,9 @@ def _outside_scope_results(
             missing.append(path)
         else:
             restored.append(cached)
-    return restored, missing
+    present = set(stored)
+    missing += [path for path in outside if path not in present]
+    return restored, sorted(missing)
 
 
 @dataclass(frozen=True)
@@ -460,7 +473,13 @@ def run(
         else:
             # Чистить кэш в скоуп-режиме нельзя: файлов вне скоупа мы не видели,
             # и `prune` снёс бы ровно то, ради чего кэш здесь и нужен.
-            outside, missing = _outside_scope_results(cache, normalize_scope(scope))
+            expected = frozenset(
+                source.path
+                for node in (previous.nodes if previous else [])
+                if node.symbol
+                for source in node.symbol.sources
+            )
+            outside, missing = _outside_scope_results(cache, normalize_scope(scope), expected)
     finally:
         if cache is not None:
             cache.close()

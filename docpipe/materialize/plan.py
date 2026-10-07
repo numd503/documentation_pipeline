@@ -16,9 +16,10 @@
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Final, Literal
 
+from docpipe.config import DocLayout
 from docpipe.discovery import is_excluded, matches_glob
 from docpipe.documents import (
     RESERVED_KEYS,
@@ -50,6 +51,13 @@ from docpipe.materialize.template import (
     substitute,
 )
 from docpipe.model import DocNode, Manifest, SourceSpan
+
+# Формула раскладки — та же функция, которой `doc_path` считает шаг 1. Своя
+# копия здесь разошлась бы с ним на первой правке, и сверка начала бы ронять
+# честные манифесты. `docpipe.tree` пакет `docpipe.dotnet` не тянет — это
+# держит тест `test_plan_does_not_load_dotnet`; если однажды потянет, функцию
+# выносят в отдельный модуль, а не копируют.
+from docpipe.tree import doc_path_for
 
 FileAction = Literal["create", "update", "unchanged", "refuse", "relocate"]
 AgentAction = Literal["write", "review", "skip"]
@@ -174,6 +182,9 @@ class PlanOptions:
     # «не проверять»: план строят и там, где конфигурации нет (тесты, adopt).
     modules_root: str = ""
     web_modules_root: str = ""
+    # Раскладка по текущей конфигурации. `None` — «не проверять», по той же
+    # причине, что и пустой `modules_root`.
+    doc_layout: DocLayout | None = None
     teams: tuple[str, ...] = ()
     force: bool = False
     # Шаблоны обхода документов — чтобы проверить, что они не накрывают само
@@ -663,6 +674,66 @@ def layout_drift(manifest: Manifest, modules_root: str, key: str = "modules_dir"
     )
 
 
+def _layout_dir(node: DocNode, layout: DocLayout, modules_root: str) -> PurePosixPath:
+    """Каталог документа узла при данной раскладке.
+
+    Каталог, а не путь: суффикс коллизии (`_assign_doc_paths` шага 1) меняет
+    только имя файла, а формулы его не знают. Имя файла от раскладки не зависит,
+    поэтому всё, что раскладка решает, видно по каталогу.
+    """
+    return PurePosixPath(
+        doc_path_for(node.module, node.kind, node.title, layout, modules_root)
+    ).parent
+
+
+def layout_mismatch(manifest: Manifest, modules_root: str, layout: DocLayout) -> str | None:
+    """Собран ли манифест с другой раскладкой, чем говорит конфигурация.
+
+    `layout_drift` сверяет префикс, а `kind-first` и `module-first` дают один
+    и тот же префикс: смена `doc_layout` без повторного `scan` проходила молча.
+    Конфигурация говорила одно, документы лежали по-другому, а переезд всего
+    дерева случался потом — на первом `scan`, затеянном совсем по другому поводу.
+
+    Сверяется **манифест с конфигурацией**, а не документы на диске: штатная
+    смена раскладки — пересканировать, а переносит документы `materialize`.
+    Сверка диска сделала бы эту процедуру невыполнимой.
+
+    Узлы, у которых обе раскладки дают один каталог (модуль назван как
+    `{kind}s`), ничего не говорят о том, какой из них собран манифест, и в
+    сверку не входят. Отказ — если хоть один узел разложен по другой раскладке:
+    скоуп-прогон переносит узлы вне скоупа из прежнего манифеста как есть,
+    и после смены ключа даёт смешанный манифест, который иначе прошёл бы.
+    """
+    other: DocLayout = "module-first" if layout == "kind-first" else "kind-first"
+    compared = 0
+    foreign: list[str] = []
+    for node in manifest.nodes:
+        mine = _layout_dir(node, layout, modules_root)
+        theirs = _layout_dir(node, other, modules_root)
+        if mine == theirs:
+            continue
+        compared += 1
+        if PurePosixPath(node.doc_path).parent == theirs:
+            foreign.append(node.doc_path)
+    if not foreign:
+        return None
+
+    example = sorted(foreign)[0]
+    scan = (
+        "`docpipe web scan`"
+        if is_web(manifest)
+        # Скоуп-прогон не поможет: узлы вне скоупа он берёт из прежнего
+        # манифеста вместе с их путями.
+        else "`docpipe scan` (полным, без `--scope`)"
+    )
+    return (
+        f"манифест собран с раскладкой `{other}`, конфигурация говорит `{layout}`"
+        f" (`doc_layout`): по `{other}` разложено узлов: {len(foreign)} из {compared},"
+        f" например `{example}`. Пересоберите манифест: {scan} — документы"
+        f" перенесёт `materialize`, — или верните ключ `doc_layout: {other}`"
+    )
+
+
 def excluded_from_scan(manifest: Manifest, docs_scan_exclude: tuple[str, ...]) -> str | None:
     """Не отсекает ли обход документов само дерево документов.
 
@@ -696,12 +767,14 @@ def _blocking_errors(
     modules_root: str = "",
     web_modules_root: str = "",
     docs_scan_exclude: tuple[str, ...] = (),
+    doc_layout: DocLayout | None = None,
 ) -> list[str]:
     errors: list[str] = []
+    root = expected_root(manifest, modules_root, web_modules_root)
 
     drift = layout_drift(
         manifest,
-        expected_root(manifest, modules_root, web_modules_root),
+        root,
         # Имя ключа в сообщении — того, который человек и правил. Пустой
         # `web.modules_dir` даёт ту же ветку, что у бэкенда, и называть его
         # значило бы отправить чинить настройку, которой нет.
@@ -711,6 +784,11 @@ def _blocking_errors(
     )
     if drift:
         errors.append(drift)
+    # Узел с чужим префиксом не совпадёт ни с одной раскладкой и в находку
+    # о раскладке не попадёт: про него уже сказал `layout_drift`.
+    mismatch = layout_mismatch(manifest, root, doc_layout) if doc_layout else None
+    if mismatch:
+        errors.append(mismatch)
 
     hidden = excluded_from_scan(manifest, docs_scan_exclude)
     if hidden:
@@ -797,6 +875,7 @@ def build_plan(
         options.modules_root,
         options.web_modules_root,
         options.docs_scan_exclude,
+        options.doc_layout,
     )
     if errors:
         return MaterializePlan(errors=errors)
@@ -1061,6 +1140,7 @@ __all__ = [
     "decide",
     "excluded_from_scan",
     "layout_drift",
+    "layout_mismatch",
     "match_relocations",
     "opens_front_matter",
     "relocation_note",

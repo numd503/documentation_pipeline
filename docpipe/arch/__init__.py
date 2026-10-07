@@ -6,7 +6,14 @@
 """
 
 from docpipe.arch.adapters import ADAPTERS, run_adapter
-from docpipe.arch.collect import AdapterSpec, Collected, collect
+from docpipe.arch.collect import (
+    AdapterSpec,
+    Collected,
+    adapter_specs,
+    collect,
+    collect_configured,
+    registry_for_build,
+)
 from docpipe.arch.dump import dump_registry
 from docpipe.arch.load import (
     ArchProblem,
@@ -43,13 +50,16 @@ __all__ = [
     "Source",
     "SourceStatus",
     "Collected",
+    "adapter_specs",
     "check_document",
     "collect",
+    "collect_configured",
     "dump_registry",
     "format_statuses",
     "load_arch_registry",
     "load_optional",
     "read_document",
+    "registry_for_build",
     "run_adapter",
     "source_statuses",
     "statuses_json",

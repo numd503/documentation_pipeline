@@ -15,6 +15,7 @@ from typing import Any
 from docpipe.arch.adapters import run_adapter
 from docpipe.arch.load import load_optional
 from docpipe.arch.model import ArchRecord, ArchRegistry
+from docpipe.config import DocpipeConfig, candidate_inputs, resolve_input
 
 
 @dataclass(frozen=True)
@@ -84,3 +85,61 @@ def collect(
         shadowed_by_file=tuple(shadowed),
         duplicates=tuple(duplicates),
     )
+
+
+def adapter_specs(settings: DocpipeConfig) -> list[AdapterSpec]:
+    """Подключения адаптеров из конфигурации — в том порядке, в каком записаны.
+
+    Порядок здесь законен: при совпадении ключей выигрывает первая запись,
+    и это решение человека, записанное расположением строк.
+    """
+    return [
+        AdapterSpec(id=item.id, adapter=item.adapter, options=dict(item.options))
+        for item in settings.arch_adapters
+    ]
+
+
+def collect_configured(
+    settings: DocpipeConfig, config: Path | None, root: Path, arch: Path | None = None
+) -> Collected:
+    """Снимок плюс адаптеры по конфигурации. `arch` — путь к снимку вместо ключа."""
+    path = arch
+    if path is None and settings.arch:
+        path = resolve_input(settings.arch, config)
+    return collect(
+        path, adapter_specs(settings), root, resolve=lambda value: resolve_input(value, config)
+    )
+
+
+def registry_for_build(settings: DocpipeConfig, config: Path | None, root: Path) -> ArchRegistry:
+    """Реестр для сборки графа: всё, что названо в конфигурации, или отказ.
+
+    `collect` складывает исключения адаптеров в `errors`, а `load_optional`
+    считает отсутствующий файл пустым реестром. Обоим это законно: `arch records`
+    показывает находки человеку, а реестра на репозитории может не быть вовсе.
+    Сборке графа — нет: она брала только `.registry`, и опечатка в пути снимка
+    или упавший адаптер давали индекс без точек входа из реестра, у которого
+    в паспорте нет ни строки об этом, — то есть ответ «таких точек входа нет»
+    при верной настройке.
+
+    Не задан `arch` и нет адаптеров — пустой реестр: это состояние, а не ошибка.
+    Названный ключом файл, которого нет, — ошибка: его назвал человек. Все
+    находки собираются в одно сообщение, чтобы чинить их за один прогон.
+    """
+    problems: list[str] = []
+    if settings.arch:
+        candidates = candidate_inputs(settings.arch, config)
+        if not any(path.exists() for path in candidates):
+            tried = ", ".join(str(path) for path in candidates)
+            problems.append(f"`arch`: файл {settings.arch!r} не найден; искали: {tried}")
+
+    collected = collect_configured(settings, config, root)
+    problems.extend(collected.errors)
+    if problems:
+        listing = "\n".join(f"  {line}" for line in problems)
+        raise ValueError(
+            f"реестр для графа собран с ошибками ({len(problems)}):\n{listing}\n"
+            "Починить их или убрать источник из конфигурации; находки по источникам"
+            " показывает `docpipe arch records`"
+        )
+    return collected.registry

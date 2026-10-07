@@ -275,8 +275,13 @@ def test_materialize_adds_business_context_when_catalog_is_configured(tree: Path
     """Раздел появляется в техническом документе, когда каталог задан
     в конфигурации, и не появляется, когда не задан."""
     runner = CliRunner()
+    # Синтетический манифест разложен по `module-first` (`docs/modules/App/services/…`),
+    # и шаг 2 сверяет раскладку манифеста с конфигурацией: без ключа оба прогона
+    # получили бы отказ, а не документ.
+    (tree / "plain.yaml").write_text("doc_layout: module-first\n", encoding="utf-8")
     (tree / "docpipe.yaml").write_text(
-        f"registries: {tree / 'registries.yaml'}\nbusiness_root: {BUSINESS}\n",
+        f"registries: {tree / 'registries.yaml'}\nbusiness_root: {BUSINESS}\n"
+        "doc_layout: module-first\n",
         encoding="utf-8",
     )
     args = [
@@ -288,7 +293,7 @@ def test_materialize_adds_business_context_when_catalog_is_configured(tree: Path
         "templates",
     ]
 
-    assert runner.invoke(app, args).exit_code == 0
+    assert runner.invoke(app, [*args, "--config", str(tree / "plain.yaml")]).exit_code == 0
     receiver = (
         tree / "docs/modules/App/services/usertasksaddedtriggersampleworkfloweventreceiver.md"
     )

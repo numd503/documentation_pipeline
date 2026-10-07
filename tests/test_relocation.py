@@ -194,6 +194,19 @@ def _module_first(payload: dict) -> None:  # type: ignore[type-arg]
         node["doc_path"] = f"docs/modules/{module}/{kind_plural}/{name}"
 
 
+def _module_first_config(tmp_path: Path) -> Path:
+    """Конфигурация, при которой собирался манифест `module-first`.
+
+    Шаг 2 сверяет раскладку манифеста с конфигурацией (S03), поэтому «старое»
+    дерево строится при старом значении ключа — как и было бы на деле. Без него
+    первый прогон получил бы отказ, и переезжать было бы нечему: тесты ниже
+    проверяли бы создание дерева с нуля, оставаясь зелёными.
+    """
+    path = tmp_path / "module-first.yaml"
+    path.write_text("doc_layout: module-first\n", encoding="utf-8")
+    return path
+
+
 def test_layout_change_relocates_the_whole_tree(tmp_path: Path) -> None:
     """Смена раскладки — переезд для КАЖДОГО документа, и текст обязан уцелеть.
 
@@ -202,7 +215,7 @@ def test_layout_change_relocates_the_whole_tree(tmp_path: Path) -> None:
     не пересоздаётся заново и ни один не теряется.
     """
     old = _manifest(tmp_path, _module_first)
-    _run(tmp_path, old)
+    assert _run(tmp_path, old, "--config", str(_module_first_config(tmp_path))).exit_code == 0
     old_path = "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
     _fill(tmp_path, old_path)
 
@@ -221,10 +234,14 @@ def test_layout_change_keeps_the_text_of_an_accepted_document(tmp_path: Path) ->
     нет намеренно, иначе появился бы второй путь записи.
     """
     old = _manifest(tmp_path, _module_first)
-    _run(tmp_path, old)
+    config = str(_module_first_config(tmp_path))
+    assert _run(tmp_path, old, "--config", config).exit_code == 0
     old_path = "docs/modules/Sample.Pricing.Api/controllers/pricing-controller.md"
     _fill(tmp_path, old_path)
-    runner.invoke(app, ["docs", "accept", str(old), old_path, "--root", str(tmp_path)])
+    accepted = runner.invoke(
+        app, ["docs", "accept", str(old), old_path, "--root", str(tmp_path), "--config", config]
+    )
+    assert accepted.exit_code == 0, accepted.output
 
     _run(tmp_path)
     status = runner.invoke(
@@ -246,7 +263,8 @@ def test_layout_change_keeps_the_text_of_an_accepted_document(tmp_path: Path) ->
 
 def test_layout_change_is_idempotent(tmp_path: Path) -> None:
     """Второй прогон после переезда не трогает ни байта."""
-    _run(tmp_path, _manifest(tmp_path, _module_first))
+    config = str(_module_first_config(tmp_path))
+    assert _run(tmp_path, _manifest(tmp_path, _module_first), "--config", config).exit_code == 0
     _run(tmp_path)
     before = {path: path.read_bytes() for path in sorted((tmp_path / "docs").rglob("*.md"))}
 

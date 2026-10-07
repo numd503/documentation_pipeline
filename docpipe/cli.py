@@ -3,6 +3,7 @@
 import json
 import sys
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Annotated, Final
@@ -12,15 +13,16 @@ from pydantic import BaseModel
 
 from docpipe import __version__
 from docpipe.arch import (
-    AdapterSpec,
     ArchRegistry,
-    Collected,
+    adapter_specs,
     check_document,
     collect,
+    collect_configured,
     dump_registry,
     format_statuses,
     load_arch_registry,
     read_document,
+    registry_for_build,
     source_statuses,
     statuses_json,
 )
@@ -135,7 +137,7 @@ from docpipe.stats import (
 from docpipe.web.link import CATEGORIES as LINK_CATEGORIES
 from docpipe.web.link import build_report as build_link_report
 from docpipe.web.link import format_report as format_link_report
-from docpipe.web.overrides import Overrides, load_overrides
+from docpipe.web.overrides import Overrides, StaleRule, load_overrides
 from docpipe.web.pages import DEFAULT_DEPTH
 from docpipe.web.pages import FORMATS as PAGE_FORMATS
 from docpipe.web.pages import build_report as build_pages_report
@@ -227,11 +229,17 @@ def scan(
     ] = None,
     show_stats: Annotated[
         bool,
-        typer.Option("--stats", help="Показать счётчики и подсказки по правилам, не писать файлы."),
+        typer.Option(
+            "--stats",
+            help="Показать счётчики и подсказки по правилам; манифест и сидкар не писать.",
+        ),
     ] = False,
     dry_run: Annotated[
         bool,
-        typer.Option("--dry-run", help="Показать дифф против существующего --out, не писать."),
+        typer.Option(
+            "--dry-run",
+            help="Показать дифф против существующего --out; манифест и сидкар не писать.",
+        ),
     ] = False,
     fail_on_undecided: Annotated[
         bool,
@@ -285,8 +293,15 @@ def scan(
     result = run_scan(root, settings, ruleset, cache_dir, jobs, scope or None, previous)
     manifest, meta = result.manifest, result.meta
 
-    # `--stats` и `--dry-run` ничего не пишут: их зовут в цикле настройки правил,
-    # где перезаписывать манифест на каждой итерации незачем.
+    # Неполнота прогона печатается до ветвления: `--stats` и `--dry-run` зовут
+    # в цикле настройки правил, и числа скоуп-прогона, у которого половины
+    # файлов нет в кэше, выглядят как числа целого репозитория.
+    _warn_incomplete_scan(manifest, meta, written=not (show_stats or dry_run))
+
+    # `--stats` и `--dry-run` не пишут ни манифест, ни сидкар: их зовут в цикле
+    # настройки правил, где перезаписывать манифест на каждой итерации незачем.
+    # Кэш разбора при этом пишется (`cache_dir` от `--root`, по умолчанию
+    # `.docpipe/cache`): его выключает только `--no-cache`.
     if show_stats:
         typer.echo(format_report(result.stats, top))
         _check_undecided(result.stats, fail_on_undecided)
@@ -309,10 +324,22 @@ def scan(
         f"Модулей: {len(manifest.modules)}, узлов: {len(manifest.nodes)}. "
         f"Записано: {destination} и {run_meta_path(destination)}"
     )
+    _check_undecided(result.stats, fail_on_undecided)
+
+
+def _warn_incomplete_scan(manifest: Manifest, meta: RunMeta, *, written: bool) -> None:
+    """Сказать в stderr, чем этот прогон неполон: скоуп, кэш, ошибки разбора.
+
+    Общая для всех режимов `scan`: пока строки печатал только режим записи,
+    `--stats` по скоуп-прогону показывал правдоподобные числа без единого
+    слова о том, что граф наследования собран не целиком. В stderr — чтобы
+    не смешиваться с отчётом, который читают глазами и скриптом.
+    """
     if manifest.partial is not None:
         typer.echo(
             f"Частичный прогон по {', '.join(manifest.partial.scope)}: "
-            f"вне скоупа данные взяты из кэша и предыдущего манифеста."
+            f"вне скоупа данные взяты из кэша и предыдущего манифеста.",
+            err=True,
         )
     if meta.stats.get("missing_from_cache"):
         typer.echo(
@@ -321,11 +348,19 @@ def scan(
             err=True,
         )
     if meta.parse_error_files:
-        typer.echo(
-            f"Внимание: {len(meta.parse_error_files)} файлов разобраны с ошибками "
-            "и не дали ни одного типа — см. parse_error_files в сидкаре."
+        files = meta.parse_error_files
+        # Без записи сидкара нет, а прежний описывает прошлый прогон: отсылать
+        # туда значит показать чужой список. Поэтому файлы называются здесь же.
+        where = (
+            "см. parse_error_files в сидкаре"
+            if written
+            else ", ".join(files[:5]) + (f" и ещё {len(files) - 5}" if len(files) > 5 else "")
         )
-    _check_undecided(result.stats, fail_on_undecided)
+        typer.echo(
+            f"Внимание: {len(files)} файлов разобраны с ошибками "
+            f"и не дали ни одного типа — {where}.",
+            err=True,
+        )
 
 
 def _load_page_overrides(
@@ -670,7 +705,10 @@ def web_scan(
     ] = False,
     show_stats: Annotated[
         bool,
-        typer.Option("--stats", help="Показать счётчики и подсказки по правилам, не писать файлы."),
+        typer.Option(
+            "--stats",
+            help="Показать счётчики и подсказки по правилам; манифест и сидкар не писать.",
+        ),
     ] = False,
     fail_on_undecided: Annotated[
         bool,
@@ -735,7 +773,12 @@ def web_scan(
     )
     if show_stats:
         typer.echo(format_report(statistics, top))
+        # Протухшие правила — до возврата: `--stats` и есть цикл настройки,
+        # а правило `pages.yaml`, переставшее совпадать, исчезает вместе
+        # со страницей и иначе не оставляет следа ни в одном отчёте.
+        _warn_stale_overrides(result.overrides.stale)
         _check_undecided(statistics, fail_on_undecided)
+        _check_stale_overrides(result.overrides.stale, fail_on_stale_overrides)
         return
 
     write_manifest(result.manifest, destination)
@@ -764,20 +807,32 @@ def web_scan(
             f"Ручной состав: добавлено {len(result.overrides.added)}, "
             f"снято {len(result.overrides.removed)}."
         )
-    for rule in result.overrides.stale:
-        # Печатается всегда: правило, переставшее совпадать, иначе исчезает
-        # вместе со страницей и не оставляет следа ни в одном отчёте.
-        typer.echo(f"Внимание: {rule.describe()}", err=True)
+    _warn_stale_overrides(result.overrides.stale)
     if result.meta.parse_error_files:
         typer.echo(
             f"Внимание: {len(result.meta.parse_error_files)} файлов разобраны с ошибками "
             "и не дали ни одного объявления — см. parse_error_files в сидкаре."
         )
     _check_undecided(statistics, fail_on_undecided)
-    if fail_on_stale_overrides and result.overrides.stale:
+    _check_stale_overrides(result.overrides.stale, fail_on_stale_overrides)
+
+
+def _warn_stale_overrides(stale: Sequence[StaleRule]) -> None:
+    """Правила `pages.yaml`, не легшие ни на что, — в stderr, в любом режиме.
+
+    Правило, переставшее совпадать, исчезает вместе со страницей и не оставляет
+    следа ни в одном отчёте. Пока строки печатал только режим записи, `--stats`
+    молчал о них ровно там, где правила и настраивают.
+    """
+    for rule in stale:
+        typer.echo(f"Внимание: {rule.describe()}", err=True)
+
+
+def _check_stale_overrides(stale: Sequence[StaleRule], fail: bool) -> None:
+    """`--fail-on-stale-overrides`: код 1 при протухших правилах, в любом режиме."""
+    if fail and stale:
         typer.echo(
-            f"Отказ: правил в ручном составе страниц, не легших ни на что: "
-            f"{len(result.overrides.stale)}.",
+            f"Отказ: правил в ручном составе страниц, не легших ни на что: {len(stale)}.",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -1052,28 +1107,13 @@ def docs_explain(
             raise typer.Exit(code=1)
 
 
-def _load_ownership_quietly(settings: DocpipeConfig, config: Path | None) -> Ownership | None:
-    """Правила владения для селектора `only.team` на шаге 2.
-
-    Нечитаемые правила здесь не роняют прогон и не печатают ничего: шаг 2
-    материализует техническую документацию, и отказывать ему из-за файла,
-    нужного одному селектору бизнес-слоя, — наказание не за то. Скажет об этом
-    `business lint`, где это и есть предмет разговора.
-    """
-    if not settings.ownership:
-        return None
-    try:
-        return load_ownership(resolve_input(settings.ownership, config))
-    except (OSError, ValueError):
-        return None
-
-
 def _with_business_links(
     context: BuildContext,
     manifest: Manifest,
     root: Path,
     settings: DocpipeConfig,
     config: Path | None,
+    ownership: Ownership | None,
 ) -> BuildContext:
     """Досыпать в контекст шага 2 обратный индекс бизнес-каталога.
 
@@ -1081,23 +1121,35 @@ def _with_business_links(
     бизнес-слой и получает готовые данные. Без заданных `registries` шаг 2
     работает ровно как прежде — раздела «Бизнес-контекст» не появляется вовсе.
 
+    Владение приходит из `_prepare` — тот же объект, по которому строится план.
+    Своё чтение здесь брало только ключ `ownership`, мимо `--ownership`, и глотало
+    ошибку разбора: селектор `only.team` молча не сужал ничего, а план при этом
+    раскладывал документы по командам из другого файла.
+
     Неготовность бизнес-слоя прогон шага 2 не роняет: реестры могут быть
     описаны раньше, чем появится первый бизнес-документ, и отказ материализовать
-    техническую документацию из-за этого был бы наказанием не за то.
+    техническую документацию из-за этого был бы наказанием не за то. Но и не
+    молчит: ошибки реестров и каталога — предупреждения в stderr. Выброшенная
+    ошибка реестра выглядела бы как «у этого класса нет бизнес-контекста».
     """
     if not settings.registries:
         return context
 
     try:
-        anchors, _ = read_anchors(manifest, resolve_input(settings.registries, config), root)
+        anchors, registry_errors = read_anchors(
+            manifest, resolve_input(settings.registries, config), root
+        )
         catalog = load_catalog(root, settings.business_root)
-        ownership = _load_ownership_quietly(settings, config)
         links = backlinks(
             catalog, build_resolve_context(anchors, manifest, root=root, ownership=ownership)
         )
     except (OSError, ValueError) as exc:
-        typer.echo(f"Бизнес-каталог не прочитан, раздел не собран: {exc}", err=True)
+        typer.echo(f"бизнес-ссылки: каталог не прочитан, раздел не собран: {exc}", err=True)
         return context
+
+    # Порядок — как у `business build`: сначала каталог, затем реестры.
+    for line in sorted(catalog.errors) + sorted(registry_errors):
+        typer.echo(f"бизнес-ссылки: {line}", err=True)
 
     return replace(context, business_root=settings.business_root, business_links=links)
 
@@ -1172,6 +1224,7 @@ def _prepare(
         root,
         settings,
         config,
+        ownership,
     )
     existing = scan_docs(root, settings.docs_root, settings.docs_scan_exclude)
     plan = build_plan(
@@ -1184,6 +1237,7 @@ def _prepare(
             docs_root=settings.docs_root,
             modules_root=settings.modules_root,
             web_modules_root=settings.web_modules_root,
+            doc_layout=settings.doc_layout,
             teams=teams,
             accept=accept,
             force=force,
@@ -1624,32 +1678,6 @@ def arch_validate(
     typer.echo(f"{path}: реестр в порядке, версия {registry.version}. Записей — {listed}.")
 
 
-def _adapter_specs(settings: DocpipeConfig) -> list[AdapterSpec]:
-    return [
-        AdapterSpec(id=item.id, adapter=item.adapter, options=dict(item.options))
-        for item in settings.arch_adapters
-    ]
-
-
-def _collect_records(
-    arch: Path | None, settings: DocpipeConfig, config: Path | None, root: Path
-) -> Collected:
-    """Снимок плюс адаптеры. Путь к реестру необязателен: реестра может не быть."""
-    path: Path | None
-    if arch is not None:
-        path = arch
-    elif settings.arch:
-        path = resolve_input(settings.arch, config)
-    else:
-        path = None
-    return collect(
-        path,
-        _adapter_specs(settings),
-        root,
-        resolve=lambda value: resolve_input(value, config),
-    )
-
-
 @arch_app.command("records")
 def arch_records(
     arch: Annotated[
@@ -1678,7 +1706,7 @@ def arch_records(
         raise typer.Exit(code=2) from exc
 
     try:
-        collected = _collect_records(arch, settings, config, root)
+        collected = collect_configured(settings, config, root, arch)
     except (OSError, ValueError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from exc
@@ -1751,7 +1779,7 @@ def arch_snapshot(
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    specs = _adapter_specs(settings)
+    specs = adapter_specs(settings)
     if adapter:
         wanted = set(adapter)
         specs = [spec for spec in specs if spec.id in wanted]
@@ -1900,10 +1928,13 @@ def graph_build(
     def excluded(path: str) -> bool:
         return is_excluded(path, ruleset_excludes)
 
+    # `None`, а не пустой реестр, когда реестр не настроен: сборка по `None`
+    # не заводит ни швов, ни узлов данных из реестра, и паспорт индекса
+    # остаётся прежним на репозиториях, где точки входа объявлены в коде.
     arch_registry = None
     if settings.arch or settings.arch_adapters:
         try:
-            arch_registry = _collect_records(None, settings, config, root).registry
+            arch_registry = registry_for_build(settings, config, root)
         except (OSError, ValueError) as exc:
             typer.echo(f"Не удалось прочитать реестр: {exc}", err=True)
             raise typer.Exit(code=2) from exc
