@@ -125,6 +125,15 @@ from docpipe.registry.anchors import (
     resolve_anchors,
     similar_names,
 )
+from docpipe.setup.candidates import DEFAULT_LIMIT as SETUP_LIMIT
+from docpipe.setup.candidates import KINDS as CANDIDATE_KINDS
+from docpipe.setup.candidates import (
+    CandidateInputs,
+    InputError,
+    candidates,
+    candidates_json,
+    format_candidates,
+)
 from docpipe.stats import (
     STATE_TITLES,
     TOP,
@@ -3399,6 +3408,66 @@ def config_check(
 
     if report.problems:
         raise typer.Exit(code=1)
+
+
+setup_app = typer.Typer(
+    help="Настройка на репозиторий: факты и проверки для ассистента. Файлов не пишет.",
+    no_args_is_help=True,
+)
+app.add_typer(setup_app, name="setup")
+
+
+@setup_app.command("candidates")
+def setup_candidates(
+    kind: Annotated[str, typer.Argument(help=f"Вид кандидатов: {', '.join(CANDIDATE_KINDS)}.")],
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория с исходниками.")] = Path(
+        "."
+    ),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
+    limit: Annotated[int, typer.Option("--limit", help="Сколько показать; 0 — все.")] = SETUP_LIMIT,
+    offset: Annotated[int, typer.Option("--offset", help="Сколько пропустить с начала.")] = 0,
+) -> None:
+    """Кандидаты в ключ настройки: факты, из которых строится вопрос человеку.
+
+    `di-methods` — методы `Add*`, похожие на самодельную обёртку регистрации
+    DI: сколько раз названы с типом и на тех ли получателях, что стандартные
+    `AddScoped`/`AddSingleton`. Решение — за человеком; команда ничего
+    не пишет, а значение вносится в `di_methods` руками или агентом.
+
+    Прогон идёт через кэш разбора, как `scan`: её зовут после каждой правки.
+    """
+    if kind not in CANDIDATE_KINDS:
+        raise typer.BadParameter(
+            f"{kind!r}; известны: {', '.join(CANDIDATE_KINDS)}", param_hint="KIND"
+        )
+    output_format = _format(output_format, ("text", "json"))
+    if limit < 0:
+        raise typer.BadParameter("не бывает отрицательным", param_hint="--limit")
+    if offset < 0:
+        raise typer.BadParameter("не бывает отрицательным", param_hint="--offset")
+    if not root.is_dir():
+        raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
+
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    # Прогон — вне `except (OSError, ValueError)`: сбой разбора под вывеской
+    # «ошибка конфигурации» потерял бы трассировку. Код 2 — только для входа.
+    try:
+        report = candidates(
+            kind, CandidateInputs(root, settings, config), limit=limit, offset=offset
+        )
+    except InputError as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    text = candidates_json(report) if output_format == "json" else format_candidates(report)
+    typer.echo(text.rstrip("\n"))
 
 
 if __name__ == "__main__":

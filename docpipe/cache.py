@@ -25,7 +25,11 @@ from docpipe.model import FileParseResult, ParserVersions
 # она та же, а вывод другой. Проверено на себе — разбор цепочки `.As<I>()`
 # после самодельной обёртки регистрации дал прежние числа, потому что файлы
 # приехали из кэша, и выглядело это как «правка не сработала».
-CACHE_VERSION = "4"
+#
+# И при новом поле `FileParseResult`: запись старой версии разберётся
+# с пустым значением по умолчанию, и находка даст ноль, неотличимый от
+# «таких нет». 5 — поле `registration_calls` (кандидаты в `di_methods`).
+CACHE_VERSION = "5"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta  (key TEXT PRIMARY KEY, value TEXT);

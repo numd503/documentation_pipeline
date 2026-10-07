@@ -135,6 +135,34 @@ class DiRegistration(_Base):
     line: int
 
 
+class RegistrationCall(_Base):
+    """Вызов метода с именем `Add*` или `TryAdd*` — сырой факт, а не регистрация.
+
+    Пишется для **каждого** такого вызова, стандартного и нет, с типом
+    и без: вопрос «этот метод — ваша обёртка регистрации?» строится из счёта
+    вызовов и их получателей (`setup candidates di-methods`), а не из имени.
+    Стандартные нужны здесь же: по ним видно, на чём в этом репозитории
+    зовут регистрации, и `AddSingletonAs` на `services` отличается
+    от `AddField` на `schema` именно этим.
+
+    `receiver` — последний идентификатор выражения получателя: `services`,
+    `Services` у `builder.Services`. Получатель-вызов пишется именем метода
+    со скобками (`AddMvc()` у `services.AddMvc().AddX()`): объект там —
+    результат вызова, а не переменная, и склеить его с `services` значило бы
+    выдать за регистрацию любое звено цепочки построителя. Форма, которую
+    разбор не называет, — пустая строка, а не догадка.
+
+    В манифест не идёт: это вход настройки, а не структура документации.
+    """
+
+    method: str
+    receiver: str
+    type_args: int
+    typeof_args: int
+    member: str
+    line: int
+
+
 class Construction(_Base):
     """Создание объекта в теле члена: `new GetOrdersQuery(...)`.
 
@@ -291,6 +319,10 @@ class FileParseResult(_Base):
     imports: list[ModuleImport] = Field(default_factory=list)
     declarations: list[RawDeclaration] = Field(default_factory=list)
     di_registrations: list[DiRegistration] = Field(default_factory=list)
+    # Все вызовы `Add*`/`TryAdd*`, а не только распознанные регистрации:
+    # из них считаются кандидаты в `di_methods`. От ключа `di_methods`
+    # не зависят — список собирается одинаково при любой настройке.
+    registration_calls: list[RegistrationCall] = Field(default_factory=list)
 
     # Факты из тел, каждый под свой вопрос: где создают объект (место
     # отправки запроса) и где имя таблицы записано литералом. Это не разбор

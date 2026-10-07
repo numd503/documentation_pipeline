@@ -85,11 +85,15 @@ def _member_node(node: Node) -> Node | None:
     return None
 
 
-def _member_of(node: Node) -> str:
+def member_of(node: Node) -> str:
     """Член, в теле которого записан факт.
 
     Обходом вверх: факт под `#if` прямым потомком тела не является — та же
     асимметрия, из-за которой члены ищутся запросом, а не перебором детей.
+
+    Публичная, потому что ею же пользуются вызовы регистрации (`di.py`):
+    второе определение «члена, где записан факт» разошлось бы с этим
+    на первом поле с несколькими объявителями.
     """
     current = node.parent
     while current is not None:
@@ -135,7 +139,7 @@ def extract_constructions(nodes: list[Node]) -> list[Construction]:
         if not name:
             continue
         line = node.start_point[0] + 1
-        member = _member_of(node)
+        member = member_of(node)
         found[(name, member, line)] = Construction(type_name=name, member=member, line=line)
     return [found[key] for key in sorted(found)]
 
@@ -245,7 +249,7 @@ def extract_literal_calls(calls: list[Node], wanted: frozenset[str]) -> list[Lit
         # Выбросив их здесь, мы получили бы «неразрешённых нет» вместо числа.
         arguments = _string_arguments(call)
         line = call.start_point[0] + 1
-        member = _member_of(call)
+        member = member_of(call)
         key = (method, tuple(arguments), member, line)
         found[key] = LiteralCall(
             method=method,

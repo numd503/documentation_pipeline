@@ -16,7 +16,7 @@ from pathlib import Path
 import tree_sitter_c_sharp as tscs
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
-from docpipe.dotnet.di import extract_registrations
+from docpipe.dotnet.di import extract_registration_calls, extract_registrations
 from docpipe.dotnet.facts import (
     SQL_METHODS,
     TABLE_METHODS,
@@ -529,6 +529,9 @@ def parse_source(
         global_usings=global_usings,
         declarations=declarations,
         di_registrations=extract_registrations(di_calls, path, di_methods),
+        # Из тех же узлов: регистрация и факт о вызове — два ответа об одном
+        # вызове, и разойтись в том, какой вызов был, им не на чем.
+        registration_calls=extract_registration_calls(di_calls),
         # Те же узлы вызовов, что и у DI: второй проход по дереву ради
         # тех же самых `invocation_expression` был бы чистой платой.
         constructions=extract_constructions(creations),

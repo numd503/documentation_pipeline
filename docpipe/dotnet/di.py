@@ -14,9 +14,16 @@ import re
 
 from tree_sitter import Node
 
-from docpipe.model import Confidence, DiRegistration, Lifetime
+from docpipe.dotnet.facts import member_of
+from docpipe.model import Confidence, DiRegistration, Lifetime, RegistrationCall
 
 _METHOD = re.compile(r"^(?:Try)?Add(Scoped|Singleton|Transient|HostedService)$")
+
+# Имя, по которому вызов попадает в факты о регистрации. Шире `_METHOD`
+# намеренно: обёртку репозитория угадать по имени нельзя, поэтому пишется
+# каждый `Add*`, а отделяет обёртку от `AddDays` счёт получателей. Заглавная
+# после `Add` отсекает `list.Add(x)` — его в любом коде больше всего.
+_REGISTRATION_NAME = re.compile(r"^(?:Try)?Add[A-Z]\w*$")
 
 # Вид времени жизни ищется в имени самодельного метода подстрокой: имена вроде
 # `AddSingletonAs` или `AddCashflowScoped` его называют, и другого источника
@@ -239,4 +246,84 @@ def extract_registrations(
         )
 
     found.sort(key=lambda r: (r.line, r.service_type, r.impl_type or ""))
+    return found
+
+
+def is_standard_method(name: str) -> bool:
+    """Стандартная форма регистрации, известная без настройки (`AddScoped`, `TryAddSingleton`…)."""
+    return _METHOD.match(name) is not None
+
+
+def _receiver(expression: Node | None) -> str:
+    """Последний идентификатор выражения получателя.
+
+    `services` → `services`, `builder.Services` → `Services`,
+    `this.services` → `services`. Получатель-вызов — имя метода со скобками:
+    у `services.AddMvc().AddX()` объект — результат `AddMvc`, а не
+    `services`, и под одним именем с переменной он выдал бы звено цепочки
+    построителя за регистрацию в контейнере. Скобки и приведение типа
+    прозрачны: `((IServiceCollection)s).AddX()` зовут на `s`.
+
+    Форма, которой здесь нет (`items[0]`, `base`), — пустая строка:
+    неизвестный получатель не совпадёт ни с чьим, и это честнее догадки.
+    """
+    if expression is None:
+        return ""
+    kind = expression.type
+    if kind == "identifier":
+        return _text(expression)
+    if kind == "generic_name":
+        return _text(expression.children[0])
+    if kind == "member_access_expression":
+        return _receiver(expression.child_by_field_name("name"))
+    if kind == "invocation_expression":
+        # Функция вызова — те же формы, что и получатель: `services.AddMvc`,
+        # `GetServices`, `Create<T>`. Поэтому разбирается тем же правилом.
+        called = _receiver(expression.child_by_field_name("function"))
+        return f"{called}()" if called else ""
+    if kind == "parenthesized_expression":
+        inner = expression.named_children[0] if expression.named_children else None
+        return _receiver(inner)
+    if kind == "cast_expression":
+        return _receiver(expression.child_by_field_name("value"))
+    return ""
+
+
+def extract_registration_calls(calls: list[Node]) -> list[RegistrationCall]:
+    """Факты о каждом вызове `Add*`/`TryAdd*`. Порядок — по строке, затем по полям.
+
+    Те же узлы, что у `extract_registrations`, но без отбора по `di_methods`
+    и без требования типа: кандидат в обёртку — это вызов, а не объявление.
+    Главную обёртку по объявлениям не найти — на squidex `AddSingletonAs`
+    объявлен в пакете, а не в репозитории, — и лямбда-форма
+    `AddSingletonAs(_ => new X())` без типа тоже обязана попасть в счёт:
+    регистрацией она не станет, но вызовом метода остаётся.
+
+    Повторы не схлопываются: два одинаковых вызова на одной строке — два
+    вызова, а из этого числа строится вопрос человеку.
+    """
+    found: list[RegistrationCall] = []
+    for call in calls:
+        name, type_arguments = _called_name(call)
+        if not _REGISTRATION_NAME.match(name):
+            continue
+        access = call.child_by_field_name("function")
+        receiver = access.child_by_field_name("expression") if access is not None else None
+        type_args = (
+            sum(1 for child in type_arguments.named_children if child.type != "comment")
+            if type_arguments is not None
+            else 0
+        )
+        found.append(
+            RegistrationCall(
+                method=name,
+                receiver=_receiver(receiver),
+                type_args=type_args,
+                typeof_args=sum(1 for node in _typeof_arguments(call) if node is not None),
+                member=member_of(call),
+                line=call.start_point[0] + 1,
+            )
+        )
+
+    found.sort(key=lambda c: (c.line, c.method, c.receiver, c.type_args, c.typeof_args, c.member))
     return found

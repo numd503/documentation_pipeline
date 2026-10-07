@@ -9849,3 +9849,35 @@ git отказал целиком, ничего не добавив, а выво
 **Проверка:** команда S04 — 39 passed; `config check` бандла — код 1 (`root-missing`
 у `web.roots` подрепозитория ML и `engine-missing` у `@ENGINE@` — для клона ожидаемо);
 полная — ruff и mypy чисты.
+
+---
+
+## S11 — факты о вызовах регистрации; кандидаты в `di_methods` (07.10.2026)
+
+**Создано:** `docpipe/setup/__init__.py`, `docpipe/setup/candidates.py`, `docs/setup.md`,
+`tests/test_setup_candidates_di.py`. **Изменено:** `docpipe/model.py`, `docpipe/dotnet/di.py`,
+`docpipe/dotnet/facts.py` (`_member_of` → публичный `member_of`), `docpipe/dotnet/parser.py`,
+`docpipe/cache.py` (`CACHE_VERSION` 4 → 5), `docpipe/emit.py`, `docpipe/cli.py`,
+`docs/configuration.md`, `docs/module-review.md` (раздел «Настройка (`setup/`)»), `CLAUDE.md`.
+
+`RegistrationCall` в `FileParseResult` — каждый вызов `Add*`/`TryAdd*`, стандартный и нет,
+с типом и без, из тех же узлов `di.scm`; от `di_methods` не зависит. `ScanResult.registration_calls`
+(в манифест не идёт). Пакет `docpipe/setup/`, группа `docpipe setup`, команда
+`setup candidates di-methods` (`--format`, `--limit`, `--offset`); общий вход для CLI и S27 —
+`candidates(kind, CandidateInputs, …)` с таблицей видов.
+
+**Отклонения и находки.**
+- Получатель-вызов пишется именем со скобками (`AddMvc()`): цепочку нельзя раскручивать
+  до `services`, иначе `AddIdentity<…>().AddEntityFrameworkStores<…>()` получил бы
+  пересечение 1.0.
+- Сверх спецификации — `standard_calls`/`standard_receivers`: без них нулевое пересечение
+  у всех кандидатов неотличимо от репозитория, где все регистрации идут через обёртки
+  (текст говорит это отдельной строкой).
+- Вызов через `?.` (`conditional_access_expression`) не ловят ни регистрации, ни факты —
+  ограничение общее, записано в плане.
+- На `WildSolution` кандидатов 0 (каждая обёртка — по одному вызову, порог — два с типом),
+  поэтому тесты собирают C# в `tmp_path`.
+
+**Проверка:** критерий приёмки (`AddSingletonAs` 1.0 первым, `AddField` 0.0, `AddDays` нет),
+`configured`, лямбда-форма (4 вызова против 3 с типом), тёплый кэш после повышения версии
+совпадает с холодным; полная — ruff и mypy чисты.

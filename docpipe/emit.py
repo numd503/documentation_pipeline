@@ -46,6 +46,7 @@ from docpipe.model import (
     Manifest,
     Module,
     ParserVersions,
+    RegistrationCall,
     RunMeta,
     SqlObject,
     SqlUsage,
@@ -222,12 +223,17 @@ class ScanResult:
     В манифест они не попадают по определению, поэтому выборка символов
     (`docpipe symbols`) без него невозможна: спрашивать «что осталось без решения»
     у файла, куда попадает только решённое, бессмысленно.
+
+    `registration_calls` — все вызовы `Add*` парами «файл, факт», отсортированные
+    по файлу и строке. Вход кандидатов в `di_methods` (`setup candidates`);
+    в манифест не идут: это знание о настройке, а не о структуре документации.
     """
 
     manifest: Manifest
     meta: RunMeta
     stats: Stats
     index: dict[str, Symbol]
+    registration_calls: list[tuple[str, RegistrationCall]]
 
 
 def scan(
@@ -560,7 +566,28 @@ def run(
         ),
         parse_error_files=broken,
     )
-    return ScanResult(manifest=manifest, meta=meta, stats=statistics, index=index)
+    # По всем разобранным файлам, включая взятые из кэша вне скоупа: индекс
+    # символов строится так же, и иначе вызовы вне скоупа выпали бы из счёта,
+    # а объявление метода из индекса — нет.
+    calls = sorted(
+        ((result.path, call) for result in all_results for call in result.registration_calls),
+        key=lambda item: (
+            item[0],
+            item[1].line,
+            item[1].method,
+            item[1].receiver,
+            item[1].type_args,
+            item[1].typeof_args,
+            item[1].member,
+        ),
+    )
+    return ScanResult(
+        manifest=manifest,
+        meta=meta,
+        stats=statistics,
+        index=index,
+        registration_calls=calls,
+    )
 
 
 def _counters(
