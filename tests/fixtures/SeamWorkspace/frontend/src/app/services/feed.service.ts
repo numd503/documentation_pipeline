@@ -3,7 +3,7 @@ import { Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 
 // Внешний адрес: хост — не наш бэк. Нормализация маршрута срезает хост,
-// и без него вызов неотличим от обращения к своему `feed.json`
+// и без `WebCall.host` (S16) вызов неотличим от обращения к своему `feed.json`
 // (squidex: `help.service.ts`, `stock-photo.service.ts`).
 @Injectable({ providedIn: 'root' })
 export class FeedService {

@@ -12,9 +12,10 @@
 почти всегда означает ошибку. `extra="forbid"` ловит опечатки при загрузке манифеста.
 """
 
-from typing import Final, Literal
+import re
+from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from docpipe.route import RouteKey
 
@@ -39,13 +40,50 @@ RelationKind = Literal["implements", "implemented_by", "uses"]
 
 Lang = Literal["cs", "ts"]
 
-# Аннотация обязательна: без неё константа выводится как `str`
-# и не подходит полю `Literal["2.0"]`.
+# Версия формата манифеста: `мажорная.минорная`.
+#
+# Новое поле в `Manifest` или во вложенной модели — минорная версия, и чтение
+# принимает **все** минорные своей мажорной (`check_schema_version`). Пока
+# поле было `Literal["2.0"]`, шесть полей для графа добавили при той же `2.0`:
+# старый `docpipe` новый манифест не прочёл бы из-за `extra="forbid"`, и версия
+# этого не говорила. Обратно (новый манифест старым инструментом) чтение
+# не работает и не должно — отказ называет причину вместо списка
+# «Extra inputs are not permitted».
 #
 # 2.0 — переименование `Module.csproj` в `Module.project_file` и обязательное
 # `Module.lang`. Схема стала общей для двух языков, и старое имя врало бы
 # в каждом отчёте по фронту.
-SCHEMA_VERSION: Final[Literal["2.0"]] = "2.0"
+# 2.1 — `WebCall.host`: хост абсолютного адреса вызова фронта (S16).
+SCHEMA_VERSION: Final = "2.1"
+
+_VERSION = re.compile(r"(?P<major>\d+)\.(?P<minor>\d+)")
+
+
+def check_schema_version(version: object) -> str:
+    """Принять версию манифеста своей мажорной и не новее своей.
+
+    Минорная старее своей читается: новые поля у неё просто пусты по умолчанию.
+    Новее — отказ с просьбой обновить инструмент; другая мажорная — отказ
+    с просьбой пересобрать манифест или обновить инструмент.
+    """
+    own_major, own_minor = (int(part) for part in SCHEMA_VERSION.split("."))
+
+    if not isinstance(version, str) or (found := _VERSION.fullmatch(version)) is None:
+        raise ValueError(
+            f"версия манифеста «{version}» не распознана: ожидается «{own_major}.N» "
+            f"(инструмент — {SCHEMA_VERSION})"
+        )
+    major, minor = int(found["major"]), int(found["minor"])
+    if (major, minor) > (own_major, own_minor):
+        raise ValueError(
+            f"манифест версии {version} новее инструмента ({SCHEMA_VERSION}): обновите docpipe"
+        )
+    if major < own_major:
+        raise ValueError(
+            f"манифест версии {version} устарел: инструмент ({SCHEMA_VERSION}) читает "
+            f"{own_major}.x — пересоберите манифест (`docpipe scan`, `docpipe web scan`)"
+        )
+    return version
 
 
 class _Base(BaseModel):
@@ -467,6 +505,12 @@ class WebCall(_Base):
     via_action: str | None = None
     member: str = ""
 
+    # Хост абсолютного адреса в нижнем регистре, без порта; у относительного —
+    # пустая строка. В ключ он не входит (маршрут сопоставляется без хоста),
+    # но без него вызов во внешнюю систему неотличим от вызова своего бэка
+    # с тем же путём. Читает его правило внешнего адресата, а не сопоставление.
+    host: str = ""
+
 
 class Usage(_Base):
     """Обращение узла к члену другого узла: ребро графа вызовов.
@@ -586,7 +630,12 @@ class Manifest(_Base):
     сравнению файлов без логики исключения полей.
     """
 
-    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    # Строка, а не `Literal`: читаются все минорные своей мажорной. Проверку
+    # делает `_version_first`; шаблон в JSON Schema — для внешнего читателя.
+    schema_version: str = Field(
+        default=SCHEMA_VERSION,
+        json_schema_extra={"pattern": rf"^{SCHEMA_VERSION.split('.')[0]}\.[0-9]+$"},
+    )
     ruleset_version: str
     parser: ParserVersions
     partial: PartialInfo | None = None
@@ -617,6 +666,19 @@ class Manifest(_Base):
     # исход, а не пробел разбора.
     sql_usages: list[SqlUsage] = Field(default_factory=list)
     sql_objects: list[SqlObject] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _version_first(cls, data: Any) -> Any:
+        """Версия проверяется до полей, а не рядом с ними.
+
+        Проверка поля дала бы ту же строку, но в одном отчёте с сотней
+        «Extra inputs are not permitted» по каждому новому полю каждого узла —
+        и причина утонула бы в следствиях.
+        """
+        if isinstance(data, dict) and "schema_version" in data:
+            check_schema_version(data["schema_version"])
+        return data
 
 
 class RunMeta(_Base):

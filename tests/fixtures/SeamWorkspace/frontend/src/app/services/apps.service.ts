@@ -8,8 +8,8 @@ import { buildQuery } from '@app/framework/query';
 import { environment } from '../../environments/environment';
 
 // DTO в одном файле с сервисом — форма squidex (`apps.service.ts`, `help.service.ts`).
-// Вызов приписывается каждому классифицированному узлу файла, и вызовы
-// сервиса считаются дважды: у сервиса и у DTO.
+// До S16 вызов приписывался каждому классифицированному узлу файла, и вызовы
+// сервиса считались дважды: у сервиса и у DTO. Теперь — узлу по диапазону.
 export interface AppDto {
   name: string;
   label: string;
@@ -34,8 +34,8 @@ export class AppsService {
     return this.http.get<AppDto>(url);
   }
 
-  // Литеральный `const url` третьего метода. `const` собираются по всему файлу,
-  // и первый литерал под этим именем подставляется во ВСЕ `this.http.get(url)`,
+  // Литеральный `const url` третьего метода. До S16 `const` собирались по всему
+  // файлу, и первый литерал под этим именем подставлялся во ВСЕ `this.http.get(url)`,
   // в `list` и `get` тоже: ключ правдоподобен и неверен (squidex, `help.service.ts:42`).
   archived(): Observable<AppDto[]> {
     const url = 'api/apps/archived';

@@ -12,10 +12,11 @@
 
 import re
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal, NamedTuple
 
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
@@ -113,33 +114,156 @@ def _owning_class(node: Node) -> Node | None:
     return None
 
 
-def _module_constants(root: Node) -> dict[str, str]:
-    """Литеральные константы уровня файла: `export const auditUrl = '…'`.
+# --------------------------------------------------------------------------------------
+# Откуда берётся значение имени
+# --------------------------------------------------------------------------------------
 
-    Через одну такую в боевом модуле идут десять вызовов одного сервиса.
+# Причины отказа. Формулировки стабильны: по ним группирует невосстановленные
+# сводка шва, и каждая называет **свой** вид, чтобы гипермедиа, изменяемое
+# поле и построитель адреса не сливались в одно «значение не восстановлено».
+REASON_VARIABLE: Final = "значение переменной не восстановлено"
+REASON_PARAMETER: Final = "значение переменной — параметр функции"
+REASON_REASSIGNED: Final = "переменная присваивается после объявления"
+REASON_MUTABLE_FIELD: Final = "поле присваивается вне инициализатора"
+REASON_EXPRESSION: Final = "выражение не восстановлено"
+REASON_TEMPLATE_BASE: Final = "база в начале шаблона не восстановлена"
+REASON_CONCAT_BASE: Final = "база в начале конкатенации не восстановлена"
+REASON_CONCAT_NO_LITERAL: Final = "конкатенация без литеральной части"
+REASON_NO_ARGUMENTS: Final = "вызов без аргументов"
+
+# Узлы, у которых есть свои параметры и своя область имён. Оба имени
+# функции-выражения перечислены намеренно: версии грамматики называют её
+# по-разному, а сравнение строк с несуществующим типом ничего не ломает.
+_FUNCTION_NODES = frozenset(
+    {
+        "function_declaration",
+        "function_expression",
+        "function",
+        "arrow_function",
+        "method_definition",
+        "generator_function_declaration",
+        "generator_function",
+    }
+)
+_DECLARATION_NODES = frozenset({"lexical_declaration", "variable_declaration"})
+_ASSIGNMENT_NODES = frozenset({"assignment_expression", "augmented_assignment_expression"})
+_NESTED_CLASS_NODES = _CLASS_NODES | {"class"}
+
+
+class _Resolved(NamedTuple):
+    """Значение выражения или причина, по которой его нет."""
+
+    value: str | None
+    reason: str = ""
+
+
+def _pattern_names(node: Node | None) -> set[str]:
+    """Имена, которые связывает образец: `url`, `{ url }`, `[a, b]`, `...rest`.
+
+    Значение по умолчанию и ключ образца имён не связывают: в `{ url = base }`
+    связано `url`, а `base` — чужое имя, и пропустить его сюда значило бы
+    объявить затенённым то, что затенено не было.
     """
-    found: dict[str, str] = {}
-    for declarator in QueryCursor(_query("calls.scm")).captures(root).get("constant", []):
-        # Локальные `const` внутри тел методов сюда тоже попадают, и это
-        # правильно: `const url = '/api/x'; this.http.get(url)` — та же схема.
-        name = _text(declarator.child_by_field_name("name"))
-        value_node = declarator.child_by_field_name("value")
-        if not name or value_node is None:
-            continue
-        value = _literal_value(value_node)
-        if value is not None:
-            found.setdefault(name, value)
+    if node is None:
+        return set()
+    if node.type in ("identifier", "shorthand_property_identifier_pattern"):
+        return {_text(node)}
+    found: set[str] = set()
+    for index, child in enumerate(node.children):
+        if child.is_named and node.field_name_for_child(index) not in ("right", "key", "type"):
+            found |= _pattern_names(child)
     return found
 
 
-def _field_constants(root: Node) -> dict[int, dict[str, str]]:
-    """Литеральные поля классов: id класса -> {`this.baseUrl`: '/api/ml/…'}.
+def _parameter_names(function: Node) -> set[str]:
+    """Имена параметров функции, включая единственный параметр стрелки без скобок."""
+    single = function.child_by_field_name("parameter")
+    if single is not None:
+        return _pattern_names(single)
+    parameters = function.child_by_field_name("parameters")
+    found: set[str] = set()
+    for parameter in parameters.named_children if parameters is not None else ():
+        found |= _pattern_names(parameter.child_by_field_name("pattern"))
+    return found
+
+
+def _declarators(scope: Node) -> Iterator[Node]:
+    """Объявления переменных прямо в этой области: блок, файл, заголовок `for`.
+
+    `export const x = …` уровня файла лежит внутри `export_statement`, и без
+    этого шага константа модуля, объявленная с `export`, не нашлась бы вовсе.
+    """
+    for child in scope.named_children:
+        declaration = (
+            child.child_by_field_name("declaration") if child.type == "export_statement" else child
+        )
+        if declaration is not None and declaration.type in _DECLARATION_NODES:
+            yield from (
+                item for item in declaration.named_children if item.type == "variable_declarator"
+            )
+
+
+def _assigned(scope: Node, name: str) -> bool:
+    """Присваивают ли имени где-нибудь в области: `url = …`, `url += …`, `url++`."""
+    stack = [scope]
+    while stack:
+        current = stack.pop()
+        target = (
+            current.child_by_field_name("left")
+            if current.type in _ASSIGNMENT_NODES
+            else current.child_by_field_name("argument")
+            if current.type == "update_expression"
+            else None
+        )
+        if target is not None and target.type == "identifier" and _text(target) == name:
+            return True
+        stack.extend(current.named_children)
+    return False
+
+
+def _assigned_fields(owner: Node) -> set[str]:
+    """Поля, которым присваивают в теле класса: `this.fileSource = src` -> `fileSource`.
+
+    Вложенный класс пропускается: `this` в нём — другой объект, и его
+    присваивания к полям внешнего класса отношения не имеют.
+    """
+    found: set[str] = set()
+    stack = list(owner.named_children)
+    while stack:
+        current = stack.pop()
+        if current.type in _NESTED_CLASS_NODES:
+            continue
+        target = (
+            current.child_by_field_name("left")
+            if current.type in _ASSIGNMENT_NODES
+            else current.child_by_field_name("argument")
+            if current.type == "update_expression"
+            else None
+        )
+        if target is not None and target.type == "member_expression":
+            receiver = target.child_by_field_name("object")
+            if receiver is not None and receiver.type == "this":
+                found.add(_text(target.child_by_field_name("property")))
+        stack.extend(current.named_children)
+    return found
+
+
+def _field_constants(root: Node) -> dict[int, dict[str, _Resolved]]:
+    """Литеральные поля классов: id класса -> {`baseUrl`: '/api/ml/…'}.
 
     По классу, а не по файлу: два сервиса в одном файле законно объявляют
     `baseUrl` с разными значениями, и общая таблица подставила бы в вызов
     чужую базу — молча и правдоподобно.
+
+    Поле с литералом — константа, только если ему не присваивают вне
+    инициализатора. `public fileSource = ''` с `this.fileSource = src` в методе
+    давало вызов `GET ''`: ключ, который выглядит настоящим и «почти» совпадает
+    с любым маршрутом из одних параметров. `readonly` не освобождает от
+    проверки: в конструкторе такое поле присвоить можно, и значение
+    инициализатора тогда так же неверно.
     """
-    found: defaultdict[int, dict[str, str]] = defaultdict(dict)
+    found: defaultdict[int, dict[str, _Resolved]] = defaultdict(dict)
+    assigned: dict[int, set[str]] = {}
     for definition in QueryCursor(_query("calls.scm")).captures(root).get("field", []):
         owner = _owning_class(definition)
         value_node = definition.child_by_field_name("value")
@@ -147,9 +271,130 @@ def _field_constants(root: Node) -> dict[int, dict[str, str]]:
         if owner is None or value_node is None or not name:
             continue
         value = _literal_value(value_node)
-        if value is not None:
-            found[owner.id][f"this.{name}"] = value
+        if value is None:
+            continue
+        if owner.id not in assigned:
+            assigned[owner.id] = _assigned_fields(owner)
+        found[owner.id][name] = (
+            _Resolved(None, REASON_MUTABLE_FIELD)
+            if name in assigned[owner.id]
+            else _Resolved(value)
+        )
     return dict(found)
+
+
+def _call_reason(call: Node) -> str:
+    """Причина для `const url = this.apiUrl.buildUrl(…)`: значение — вызов.
+
+    Имя вызова стоит в причине, а не только в выражении: по причине группирует
+    сводка шва, и один построитель адреса даёт одну группу, а не пятьдесят.
+    """
+    function = call.child_by_field_name("function")
+    if function is not None and function.type == "member_expression":
+        receiver = _receiver_name(function)
+        method = _text(function.child_by_field_name("property"))
+        return f"значение переменной — вызов `{f'{receiver}.' if receiver else ''}{method}(…)`"
+    if function is not None and function.type == "identifier":
+        return f"значение переменной — вызов `{_text(function)}(…)`"
+    return "значение переменной — вызов"
+
+
+class _Scope:
+    """Значения имён одного файла в точке вызова.
+
+    Порядок поиска — лексический, как у компилятора: `const` ближайшего
+    охватывающего блока, затем внешних блоков, затем уровня файла; `this.x` —
+    поле своего класса. `const` **другой** функции не виден никогда. Раньше
+    константы собирались по всему файлу через `setdefault`, и первый литерал
+    `const url` подставлялся во все `this.http.get(url)` файла: на squidex
+    `help.service.ts:42` получил маршрут метода со строки 45, и ни один
+    счётчик этого не показал.
+    """
+
+    def __init__(self, root: Node) -> None:
+        self._fields = _field_constants(root)
+
+    def value(self, node: Node) -> _Resolved:
+        literal = _literal_value(node)
+        if literal is not None:
+            return _Resolved(literal)
+        if node.type == "identifier":
+            return self._identifier(node)
+        if node.type == "member_expression":
+            return self._member(node)
+        return _Resolved(None, REASON_EXPRESSION)
+
+    def _identifier(self, site: Node) -> _Resolved:
+        """Имя -> его объявление, вверх по областям от точки использования.
+
+        Объявление в той же функции ниже вызова — «занятое» имя (TDZ):
+        внешнее объявление с тем же именем им затенено, и брать его нельзя.
+        Через границу функции порядок не важен: метод зовут после того,
+        как файл выполнился, поэтому `const` модуля под классом законен.
+        """
+        name = _text(site)
+        crossed_function = False
+        scope = site.parent
+        while scope is not None:
+            if scope.type in _FUNCTION_NODES and name in _parameter_names(scope):
+                return _Resolved(None, REASON_PARAMETER)
+            if scope.type == "for_in_statement" and name in _pattern_names(
+                scope.child_by_field_name("left")
+            ):
+                return _Resolved(None, REASON_VARIABLE)
+            if scope.type == "catch_clause" and name in _pattern_names(
+                scope.child_by_field_name("parameter")
+            ):
+                return _Resolved(None, REASON_VARIABLE)
+
+            for declarator in _declarators(scope):
+                if name not in _pattern_names(declarator.child_by_field_name("name")):
+                    continue
+                if crossed_function or declarator.start_byte < site.start_byte:
+                    return self._binding(declarator, scope, name)
+                return _Resolved(None, REASON_VARIABLE)
+
+            if scope.type in _FUNCTION_NODES:
+                crossed_function = True
+            scope = scope.parent
+        return _Resolved(None, REASON_VARIABLE)
+
+    @staticmethod
+    def _binding(declarator: Node, scope: Node, name: str) -> _Resolved:
+        """Значение объявленной переменной: литерал, вызов или отказ."""
+        name_node = declarator.child_by_field_name("name")
+        value_node = declarator.child_by_field_name("value")
+        if name_node is None or name_node.type != "identifier" or value_node is None:
+            # Деструктуризация или объявление без инициализатора.
+            return _Resolved(None, REASON_VARIABLE)
+
+        # `let` и `var` — константа, только пока им ничего не присваивают:
+        # иначе значение инициализатора — лишь одно из возможных.
+        declaration = declarator.parent
+        keyword = declaration.children[0].type if declaration is not None else ""
+        if keyword != "const" and _assigned(scope, name):
+            return _Resolved(None, REASON_REASSIGNED)
+
+        literal = _literal_value(value_node)
+        if literal is not None:
+            return _Resolved(literal)
+        if value_node.type == "call_expression":
+            return _Resolved(None, _call_reason(value_node))
+        return _Resolved(None, REASON_VARIABLE)
+
+    def _member(self, node: Node) -> _Resolved:
+        """`this.x` -> литеральное поле своего класса; остальные — не восстановлены."""
+        receiver = node.child_by_field_name("object")
+        prop = node.child_by_field_name("property")
+        owner = _owning_class(node)
+        if receiver is None or receiver.type != "this" or prop is None or owner is None:
+            return _Resolved(None, REASON_VARIABLE)
+        return self._fields.get(owner.id, {}).get(_text(prop), _Resolved(None, REASON_VARIABLE))
+
+
+# --------------------------------------------------------------------------------------
+# Формы первого аргумента
+# --------------------------------------------------------------------------------------
 
 
 def _receiver_name(function: Node) -> str:
@@ -164,18 +409,27 @@ def _receiver_name(function: Node) -> str:
     return ""
 
 
-def _resolve_expression(node: Node, constants: dict[str, str]) -> str | None:
-    """Литеральное значение выражения, если его удаётся восстановить."""
-    direct = _literal_value(node)
-    if direct is not None:
-        return direct
-    if node.type in ("identifier", "member_expression"):
-        return constants.get(_compact(node))
-    return None
+def _glued_tail(previous: Node, so_far: str) -> bool:
+    """Прилипла ли последняя подстановка к концу литерального сегмента пути.
+
+    `` `api/apps/search${buildQuery(q)}` `` — построитель query-строки, а не
+    сегмент: `{}` на его месте дал бы `api/apps/search{}`, который не совпадёт
+    ни точно, ни «почти» (`_fixed_segments` отбрасывает только сегменты,
+    целиком равные `{}`). Подстановка после `?` или `#` сюда не относится:
+    query и так срежет нормализация, и догадки там нет — уверенность падать
+    не должна. А различитель реестра (`listInnerName=${type}`) остаётся `{}`
+    и в факте вызова: по нему видно, что смысл задан подстановкой, а не забыт.
+    """
+    return (
+        previous.type == "string_fragment"
+        and not so_far.endswith("/")
+        and "?" not in so_far
+        and "#" not in so_far
+    )
 
 
-def _from_template(node: Node, constants: dict[str, str]) -> tuple[str | None, str]:
-    """Шаблонная строка -> `(url, причина отказа)`.
+def _from_template(node: Node, scope: _Scope) -> tuple[str | None, Confidence, str]:
+    """Шаблонная строка -> `(url, уверенность, причина отказа)`.
 
     Подстановка, значение которой удалось восстановить, подставляется литералом;
     остальные становятся `{}`.
@@ -184,35 +438,52 @@ def _from_template(node: Node, constants: dict[str, str]) -> tuple[str | None, s
     пути. `` `${this.baseUrl}/saveAlternative` `` без разрешения базы даёт
     `{}/savealternative`, что не совпадёт ни с чем; такой вызов обязан быть
     невосстановленным, а не ключом-пустышкой.
-    """
-    parts: list[str] = []
-    leading_unresolved = False
 
-    for child in node.children:
+    Второй — подстановка, прилипшая к концу последнего сегмента (`_glued_tail`):
+    она отбрасывается, а уверенность падает до `medium` — что там построитель
+    query, а не часть имени сегмента, это догадка.
+
+    Правка здесь, а не в общей `route.normalize_route`: ту делит сторона .NET,
+    и у неё `{}` в конце сегмента — параметр маршрута.
+    """
+    pieces = [c for c in node.children if c.type in ("string_fragment", "template_substitution")]
+    parts: list[str] = []
+    confidence: Confidence = "high"
+
+    for index, child in enumerate(pieces):
         if child.type == "string_fragment":
             parts.append(_text(child))
-        elif child.type == "template_substitution":
-            inner = next((c for c in child.named_children), None)
-            value = _resolve_expression(inner, constants) if inner is not None else None
-            if value is None:
-                if not parts:
-                    leading_unresolved = True
-                parts.append("{}")
-            else:
-                parts.append(value)
+            continue
+        inner = next(iter(child.named_children), None)
+        value = scope.value(inner).value if inner is not None else None
+        if value is not None:
+            parts.append(value)
+        elif not parts:
+            return None, "high", REASON_TEMPLATE_BASE
+        elif index == len(pieces) - 1 and _glued_tail(pieces[index - 1], "".join(parts)):
+            confidence = "medium"
+        else:
+            parts.append("{}")
 
-    if leading_unresolved:
-        return None, "база в начале шаблона не восстановлена"
-    return "".join(parts), ""
+    return "".join(parts), confidence, ""
 
 
-def _from_concatenation(node: Node, constants: dict[str, str]) -> tuple[str | None, str]:
-    """Конкатенация `'api/x/' + id` -> `api/x/{}`. Без литеральной части — отказ."""
-    parts: list[str] = []
-    has_literal = False
+def _from_concatenation(node: Node, scope: _Scope) -> tuple[str | None, str]:
+    """Конкатенация `'api/x/' + id` -> `api/x/{}`.
+
+    Отказ в трёх случаях: оператор не `+` (`url || 'api/x'` — выбор, а не
+    склейка), нет ни одной восстановленной части, и не восстановлена первая
+    часть. Последнее — та же база, что у шаблона: `this.base + '/api/apps'`
+    давал `{}/api/apps` — ключ, который не совпадёт ни с чем, но выглядит
+    настоящим.
+    """
+    operator = node.child_by_field_name("operator")
+    if operator is None or operator.type != "+":
+        return None, REASON_EXPRESSION
 
     # Развёртка дерева конкатенации в порядке текста: `a + b + c` — это
     # `(a + b) + c`, и обход слева направо обязан дать именно `a, b, c`.
+    # Разворачивается только `+`: у `'a' + b * c` правая часть — одно значение.
     stack = [node]
     flat: list[Node] = []
     while stack:
@@ -220,22 +491,23 @@ def _from_concatenation(node: Node, constants: dict[str, str]) -> tuple[str | No
         if current.type == "binary_expression":
             left = current.child_by_field_name("left")
             right = current.child_by_field_name("right")
-            if left is not None and right is not None:
+            inner = current.child_by_field_name("operator")
+            if left is not None and right is not None and inner is not None and inner.type == "+":
                 stack.extend([right, left])
                 continue
         flat.append(current)
 
-    for item in flat:
-        value = _resolve_expression(item, constants)
-        if value is None:
-            parts.append("{}")
-        else:
-            has_literal = True
-            parts.append(value)
-
-    if not has_literal:
-        return None, "конкатенация без литеральной части"
-    return "".join(parts), ""
+    values = [
+        _from_template(item, scope)[0]
+        if item.type == "template_string"
+        else scope.value(item).value
+        for item in flat
+    ]
+    if all(value is None for value in values):
+        return None, REASON_CONCAT_NO_LITERAL
+    if values[0] is None:
+        return None, REASON_CONCAT_BASE
+    return "".join("{}" if value is None else value for value in values), ""
 
 
 def _body_fields(node: Node) -> dict[str, str]:
@@ -259,8 +531,7 @@ def _body_fields(node: Node) -> dict[str, str]:
 def extract_calls(root: Node, path: str) -> list[RawCall]:
     """Факты о HTTP-вызовах одного файла. От конфигурации не зависят."""
     captures = QueryCursor(_query("calls.scm")).captures(root)
-    module_constants = _module_constants(root)
-    field_constants = _field_constants(root)
+    scope = _Scope(root)
 
     found: list[RawCall] = []
     for call in captures.get("call", []):
@@ -283,16 +554,12 @@ def extract_calls(root: Node, path: str) -> list[RawCall]:
                     file=path,
                     line=line,
                     http_method=method.upper(),
-                    reason="вызов без аргументов",
+                    reason=REASON_NO_ARGUMENTS,
                 )
             )
             continue
 
-        owner = _owning_class(call)
-        constants = dict(module_constants)
-        constants.update(field_constants.get(owner.id, {}) if owner is not None else {})
-
-        url, confidence, reason = _first_argument(first, constants)
+        url, confidence, reason = _first_argument(first, scope)
         body = (
             arguments.named_children[1] if arguments and len(arguments.named_children) > 1 else None
         )
@@ -314,27 +581,24 @@ def extract_calls(root: Node, path: str) -> list[RawCall]:
     return found
 
 
-def _first_argument(node: Node, constants: dict[str, str]) -> tuple[str | None, Confidence, str]:
+def _first_argument(node: Node, scope: _Scope) -> tuple[str | None, Confidence, str]:
     """Первый аргумент вызова -> `(url, уверенность, причина отказа)`."""
     literal = _literal_value(node)
     if literal is not None:
         return literal, "high", ""
 
     if node.type == "template_string":
-        url, reason = _from_template(node, constants)
-        return url, "high", reason
+        return _from_template(node, scope)
 
     if node.type == "binary_expression":
-        url, reason = _from_concatenation(node, constants)
+        url, reason = _from_concatenation(node, scope)
         return url, "medium", reason
 
     if node.type in ("identifier", "member_expression"):
-        value = constants.get(_compact(node))
-        if value is not None:
-            return value, "high", ""
-        return None, "high", "значение переменной не восстановлено"
+        resolved = scope.value(node)
+        return resolved.value, "high", resolved.reason
 
-    return None, "high", "выражение не восстановлено"
+    return None, "high", REASON_EXPRESSION
 
 
 def scan_calls(source: bytes, path: str) -> list[RawCall]:
@@ -391,6 +655,33 @@ def _query_value(url: str, name: str) -> str | None:
     return None
 
 
+# Схема в начале строки: `https://`, `http://`, `wss://`. Ищется **в начале**,
+# а не где угодно: `api/redirect?to=https://x` — относительный адрес.
+_ABSOLUTE_URL = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://(?P<authority>[^/?#]*)")
+
+
+def url_host(url: str) -> str:
+    """Хост абсолютного адреса в нижнем регистре; у относительного — пустая строка.
+
+    Ключ связи хоста не содержит (`normalize_route` его срезает), и без этого
+    поля вызов `https://ext.example.org/feed.json` неотличим от обращения
+    к своему `feed.json`: «вызов без эндпоинта» внутри своего бэка. Хост
+    нужен правилу внешнего адресата, а не сопоставлению. Порт и учётные
+    данные отбрасываются: правило пишут на хост, а не на `host:8443`.
+    """
+    match = _ABSOLUTE_URL.match(url.strip())
+    if match is None:
+        return ""
+    authority = match.group("authority").rpartition("@")[2]
+    if authority.startswith("["):
+        # IPv6: двоеточия внутри скобок — часть адреса, а не порт.
+        closing = authority.find("]")
+        host = authority[: closing + 1] if closing != -1 else authority
+    else:
+        host = authority.partition(":")[0]
+    return host.lower()
+
+
 def build_calls(
     raw: list[RawCall],
     *,
@@ -423,6 +714,7 @@ def build_calls(
             line=item.line,
             key=route_key(item.http_method, item.url, rewrite=rewrite, discriminator=discriminator),
             confidence=item.confidence,
+            host=url_host(item.url),
         )
         calls.append(call)
         if rule is not None and not discriminator:

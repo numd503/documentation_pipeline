@@ -105,10 +105,17 @@ def test_no_run_metadata_leaks_into_the_manifest(web_workspace: Path, tmp_path: 
 
     text = out.read_text(encoding="utf-8")
     assert "generated_at" not in text
-    assert "host" not in text
+    # Ключ `host` в манифесте есть, но это хост адреса вызова (`WebCall.host`,
+    # S16), а не машины: по одному на вызов и ни одного вне вызовов. Проверка
+    # подстрокой «host» до S16 держалась на том, что слова в манифесте не было.
+    data = json.loads(text)
+    assert "host" not in data
+    calls = [call for node in data["nodes"] for call in node["web_calls"]]
+    assert text.count('"host":') == len(calls)
 
     sidecar = json.loads((tmp_path / "w.run.json").read_text(encoding="utf-8"))
     assert sidecar["generated_at"] and sidecar["host"]
+    assert sidecar["host"].lower() not in {call["host"] for call in calls}
 
 
 def test_sidecar_carries_the_named_numbers(web_workspace: Path, tmp_path: Path) -> None:

@@ -22,7 +22,7 @@ from pathlib import Path
 
 from docpipe import __version__
 from docpipe.cache import ParseCache
-from docpipe.classify import Ruleset, classify, load_ruleset
+from docpipe.classify import Classification, Ruleset, classify, load_ruleset
 from docpipe.config import DocpipeConfig
 from docpipe.discovery import discover
 from docpipe.emit import exclude_globs
@@ -797,12 +797,15 @@ def build_nodes(
     routes: dict[str, list[RouteEntry]],
     uses: dict[str, list[Usage]] | None = None,
     demoted: set[str] | None = None,
-) -> tuple[list[Module], list[DocNode]]:
+) -> tuple[list[Module], list[DocNode], int]:
     """Собрать модули и узлы документации фронта.
 
     Вызовы попадают на узел **того файла, где записаны**: связь строит сервис,
     а не страница, и приписать их странице значило бы соврать о том, кто зовёт.
     Путь «страница → эндпоинт» собирается по рёбрам `uses`, а не подменой автора.
+
+    Третье значение — сколько вызовов не попало ни в один диапазон узла
+    и роздано всем узлам своего файла (`_attribute_calls`).
     """
     configured = [module.module for module in modules]
     by_key = {module.key: module.module for module in modules}
@@ -813,20 +816,24 @@ def build_nodes(
     for symbol in sorted(index.values(), key=lambda item: item.fqn):
         by_name.setdefault(symbol.name, symbol.fqn)
 
-    nodes: list[DocNode] = []
+    classified: list[tuple[str, Symbol, Module, Classification]] = []
     for key in sorted(index):
         symbol = index[key]
         module = by_key.get(symbol.module)
         if module is None or not module.enrolled:
             continue
-
         classification = classify(symbol, ruleset)
-        if classification is None:
-            continue
+        if classification is not None:
+            classified.append((key, symbol, module, classification))
 
-        files = {source.path for source in symbol.sources}
+    calls_of, unattributed = _attribute_calls(
+        [(key, symbol) for key, symbol, _, _ in classified], calls
+    )
+
+    nodes: list[DocNode] = []
+    for key, symbol, module, classification in classified:
         node_calls = sorted(
-            (call for path in files for call in calls.get(path, [])),
+            calls_of[key],
             key=lambda call: (call.file, call.line, call.key.route),
         )
         node_routes = sorted(
@@ -866,7 +873,52 @@ def build_nodes(
             )
         )
 
-    return configured, sorted(nodes, key=lambda node: node.id)
+    return configured, sorted(nodes, key=lambda node: node.id), unattributed
+
+
+def _attribute_calls(
+    candidates: list[tuple[str, Symbol]], calls: dict[str, list[WebCall]]
+) -> tuple[dict[str, list[WebCall]], int]:
+    """Вызов -> узлы, в чей диапазон строк он попал.
+
+    Раньше вызов доставался **каждому** узлу своего файла: DTO, объявленный
+    рядом с сервисом, получал все вызовы сервиса, и на squidex `help.service.ts`
+    дал пять вызовов вместо трёх. Отчёт связи считал их дважды, а документ DTO
+    показывал эндпоинты, которых DTO не зовёт.
+
+    Из накрывающих диапазонов побеждает **самый узкий** — правило то же, что
+    у членов (`MemberRanges.of`): класс, объявленный внутри метода другого
+    класса, накрыт обоими, а записан вызов в нём. Равные диапазоны (два
+    `export const` одного объявления) получают вызов оба.
+
+    Вызов вне любого диапазона (фабрика уровня модуля, не ставшая узлом)
+    по-прежнему раздаётся всем узлам файла: потерять его молча хуже, чем
+    приписать неточно. Таких вызовов — второе значение, `calls_unattributed`
+    в сидкаре: без числа неточность была бы невидима.
+    """
+    spans: dict[str, list[tuple[int, int, str]]] = {}
+    for key, symbol in candidates:
+        for source in symbol.sources:
+            spans.setdefault(source.path, []).append((source.start, source.end, key))
+
+    found: dict[str, list[WebCall]] = {key: [] for key, _ in candidates}
+    unattributed = 0
+    for path in sorted(spans):
+        ranges = spans[path]
+        everyone = sorted({key for _, _, key in ranges})
+        for call in calls.get(path, []):
+            covering = [
+                (end - start, key) for start, end, key in ranges if start <= call.line <= end
+            ]
+            if covering:
+                narrowest = min(width for width, _ in covering)
+                owners = sorted({key for width, key in covering if width == narrowest})
+            else:
+                owners = everyone
+                unattributed += 1
+            for key in owners:
+                found[key].append(call)
+    return found, unattributed
 
 
 def _feature_nodes(
@@ -985,7 +1037,7 @@ def run(
     by_component, demoted, override_report = apply_overrides(
         _routes_by_component(routes), overrides or Overrides(), {s.fqn: s for s in index.values()}
     )
-    configured, nodes = build_nodes(
+    configured, nodes, calls_unattributed = build_nodes(
         index, modules, ruleset, config, calls_by_file, by_component, uses, demoted
     )
 
@@ -1021,6 +1073,8 @@ def run(
             "calls_resolved": len(calls.calls),
             "calls_unresolved": len(calls.unresolved),
             "registry_unresolved": len(calls.registry_unresolved),
+            # Вызовы вне диапазона любого узла: розданы всем узлам своего файла.
+            "calls_unattributed": calls_unattributed,
             "routes": len(routes.entries),
             "routes_unresolved": routes.unresolved,
             # Три числа вместо одного: ребро найдено, получатель внешний

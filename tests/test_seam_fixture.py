@@ -6,9 +6,11 @@
 выражением по тексту, а не существование файла: «упрощение» фикстуры
 оставило бы тесты этапа C зелёными и бессмысленными.
 
-Вторая половина фиксирует числа прогона **до** S16. Это не спецификация,
-а точка отсчёта: каждая задача этапа C меняет их и обязана поправить здесь
-то, что изменила, — тогда разница видна в диффе теста, а не в пересказе.
+Вторая половина фиксирует числа прогона — сейчас **после S16**. Это не
+спецификация, а точка отсчёта: каждая задача этапа C меняет их и обязана
+поправить здесь то, что изменила, с комментарием «задача: было → стало», —
+тогда разница видна в диффе теста, а не в пересказе. Что именно проверяет
+каждая форма после S16, — в `tests/test_call_keys.py`.
 
 Правила передаются явно, а не ключом `rules` из `docpipe.yaml` фикстуры.
 Ключ записан от каталога конфигурации (`../../../rules/rules.yaml`)
@@ -493,27 +495,31 @@ def test_web_scan_runs_without_errors(frontend: WebScanResult) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Числа до S16 — их обновляет каждая задача этапа C (S16–S21)
+# Числа после S16 — их обновляет каждая следующая задача этапа C (S17–S21)
 # --------------------------------------------------------------------------------------
 
-LINK_COUNTS_BEFORE_S16: Final = {
+LINK_COUNTS: Final = {
     "linked": 0,
-    # `GET ''` редактора «почти» совпал с `GET {id}` заказов: оба ключа
-    # без фиксированных сегментов. Связь правдоподобна и выдумана.
-    "almost": 1,
-    "calls_without_endpoint": 12,
-    "endpoints_without_caller": 9,
-    # `GET info` у InfoController и OrdersController: базы не наследуются.
+    # S16: 1 → 0. `GET ''` редактора «почти» совпадал с `GET {id}` заказов
+    # (оба ключа без фиксированных сегментов); вызов редактора теперь
+    # невосстановлен — поле присваивается вне инициализатора.
+    "almost": 0,
+    # S16: 12 → 4. Вызовы больше не удваиваются на DTO, и из восстановленных
+    # ушли четыре ключа-ошибки (`list`, `get`, `legacy`, редактор).
+    "calls_without_endpoint": 4,
+    # S16: 9 → 10. `GET {id}` заказов больше не «занят» выдуманной связью.
+    "endpoints_without_caller": 10,
+    # `GET info` у InfoController и OrdersController: базы не наследуются (S17).
     "duplicate_endpoints": 1,
-    # 8 восстановленных вызовов, но 5 из `apps.service.ts` посчитаны дважды:
-    # вызов достаётся и сервису, и DTO `AppDto` того же файла.
-    "calls_total": 13,
+    # S16: 13 → 4. Ровно число восстановленных вызовов в коде: вызов достаётся
+    # узлу, в чей диапазон попал, а не каждому узлу файла (`AppDto` — ни одного).
+    "calls_total": 4,
     "endpoints_total": 10,
 }
 
 
-def test_endpoints_before_s16(backend: ScanResult) -> None:
-    """Префикс базы не наследуется, `[Route]` без глагола и `AcceptVerbs` не дают ничего."""
+def test_endpoints(backend: ScanResult) -> None:
+    """До S17: префикс базы не наследуется, `[Route]` без глагола и `AcceptVerbs` пусты."""
     endpoints = {
         node.title: [(item.http_method, item.route) for item in node.endpoints]
         for node in backend.manifest.nodes
@@ -546,11 +552,12 @@ def _name(path: str) -> str:
     return path.rsplit("/", 1)[-1]
 
 
-def test_resolved_calls_before_s16(frontend: WebScanResult) -> None:
-    """Восстановлено 8, и у шести из них ключ правдоподобен и неверен.
+def test_resolved_calls(frontend: WebScanResult) -> None:
+    """S16: восстановлено 8 → 4, и ни одного ключа-ошибки.
 
-    Шесть вызовов — пять форм S16: область `const` (`list`, `get`), изменяемое
-    поле, невосстановленная база, хвостовой построитель query и срезанный хост.
+    До S16 у шести из восьми ключ был правдоподобен и неверен: `list` и `get`
+    получали литерал метода `archived`, `legacy` — `{}/api/apps`, `search` —
+    `api/apps/search{}`, редактор — `GET ''`, а у `feed.json` был срезан хост.
     Член, а не строка: правка фикстуры не должна ломать проверку смысла.
     """
     calls = sorted(
@@ -559,36 +566,55 @@ def test_resolved_calls_before_s16(frontend: WebScanResult) -> None:
     )
     assert calls == [
         ("apps.service.ts", "archived", "GET", "api/apps/archived", "high"),
-        ("apps.service.ts", "get", "GET", "api/apps/archived", "high"),  # чужой литерал
-        ("apps.service.ts", "legacy", "GET", "{}/api/apps", "medium"),  # база не восстановлена
-        ("apps.service.ts", "list", "GET", "api/apps/archived", "high"),  # чужой литерал
-        ("apps.service.ts", "search", "GET", "api/apps/search{}", "high"),  # хвост query
-        ("editor.component.ts", "open", "GET", "", "high"),  # изменяемое поле
-        ("feed.service.ts", "latest", "GET", "feed.json", "high"),  # хост срезан
+        ("apps.service.ts", "search", "GET", "api/apps/search", "medium"),  # S16: хвост query
+        ("feed.service.ts", "latest", "GET", "feed.json", "high"),
         ("info.service.ts", "getInfo", "GET", "api/info", "high"),
     ]
+    # S16: хост сохранён рядом с ключом, сам ключ — по-прежнему без хоста.
+    assert {_name(call.file): call.host for call in frontend.calls.calls} == {
+        "apps.service.ts": "",
+        "feed.service.ts": "ext.example.org",
+        "info.service.ts": "",
+    }
 
 
-def test_unresolved_calls_before_s16(frontend: WebScanResult) -> None:
-    """Не восстановлено 5: четыре тела обёрток и гипермедиа через глагол."""
+def test_unresolved_calls(frontend: WebScanResult) -> None:
+    """S16: не восстановлено 5 → 9, у каждого — причина своего вида.
+
+    Четыре новых — бывшие ключи-ошибки: `list` и `get` (значение — вызов
+    построителя), `legacy` (база конкатенации), редактор (изменяемое поле).
+    Тела обёрток теперь названы параметром функции, а не «переменной».
+    """
     unresolved = sorted(
         (_name(item.file), item.http_method, item.expression, item.reason)
         for item in frontend.calls.unresolved
     )
-    reason = "значение переменной не восстановлено"
+    builder = "значение переменной — вызов `apiUrl.buildUrl(…)`"
+    parameter = "значение переменной — параметр функции"
     assert unresolved == [
-        ("http-extensions.ts", "DELETE", "url", reason),
-        ("http-extensions.ts", "GET", "url", reason),
-        ("http-extensions.ts", "POST", "url", reason),
-        ("http-extensions.ts", "PUT", "url", reason),
-        ("links.service.ts", "GET", "link.href", reason),
+        (
+            "apps.service.ts",
+            "GET",
+            "this.base + '/api/apps'",
+            "база в начале конкатенации не восстановлена",
+        ),
+        ("apps.service.ts", "GET", "url", builder),
+        ("apps.service.ts", "GET", "url", builder),
+        ("editor.component.ts", "GET", "this.fileSource", "поле присваивается вне инициализатора"),
+        ("http-extensions.ts", "DELETE", "url", parameter),
+        ("http-extensions.ts", "GET", "url", parameter),
+        ("http-extensions.ts", "POST", "url", parameter),
+        ("http-extensions.ts", "PUT", "url", parameter),
+        ("links.service.ts", "GET", "link.href", "значение переменной не восстановлено"),
     ]
-    assert frontend.meta.stats["calls_resolved"] == 8
-    assert frontend.meta.stats["calls_unresolved"] == 5
+    assert frontend.meta.stats["calls_resolved"] == 4
+    assert frontend.meta.stats["calls_unresolved"] == 9
+    # Каждый восстановленный вызов лежит в диапазоне своего узла.
+    assert frontend.meta.stats["calls_unattributed"] == 0
 
 
-def test_calls_through_wrappers_are_invisible_before_s16(frontend: WebScanResult) -> None:
-    """Вызовы через обёртки и `HttpClient.request` не попадают ни в один счётчик.
+def test_calls_through_wrappers_are_invisible(frontend: WebScanResult) -> None:
+    """До S18/S19: вызовы через обёртки и `HttpClient.request` не попадают ни в один счётчик.
 
     Это четыре места продукта (`getApps`, `putApp`, `create`, `follow`) и два
     тела обёрток (`requestVersioned`, `RestService.request`).
@@ -610,14 +636,19 @@ def test_calls_through_wrappers_are_invisible_before_s16(frontend: WebScanResult
     ) == ["DELETE", "GET", "POST", "PUT"]
 
 
-def test_calls_go_to_every_node_of_the_file_before_s16(frontend: WebScanResult) -> None:
+def test_calls_go_to_the_node_whose_range_holds_them(frontend: WebScanResult) -> None:
+    """S16: `AppsService` 5 → 2 вызова, `AppDto` 5 → 0.
+
+    До S16 вызов приписывался каждому узлу файла, и DTO рядом с сервисом
+    получал все вызовы сервиса.
+    """
     by_title = {node.title: node for node in frontend.manifest.nodes}
-    assert len(by_title["AppsService"].web_calls) == 5
-    assert by_title["AppDto"].web_calls == by_title["AppsService"].web_calls
+    assert [call.member for call in by_title["AppsService"].web_calls] == ["archived", "search"]
+    assert by_title["AppDto"].web_calls == []
 
 
-def test_link_before_s16(link: LinkReport) -> None:
-    assert link.counts == LINK_COUNTS_BEFORE_S16
+def test_link(link: LinkReport) -> None:
+    assert link.counts == LINK_COUNTS
     assert link.unconfigured_modules == ["seam-web"]
 
     [duplicate] = link.duplicate_endpoints
@@ -627,14 +658,13 @@ def test_link_before_s16(link: LinkReport) -> None:
         "OrdersController`0",
     ]
 
-    [almost] = link.links
-    assert (almost.http_method, almost.route, almost.match) == ("GET", "", "almost")
-    assert almost.file.endswith("editor.component.ts")
-    assert [node.rsplit(".", 1)[-1] for node in almost.endpoints] == ["OrdersController`0"]
+    # S16: единственная «связь» (`GET ''` редактора «почти» с `GET {id}`) была
+    # выдуманной; вызов редактора невосстановлен, и связей нет ни одной.
+    assert link.links == []
 
 
-def test_conventional_controllers_before_s16(link: LinkReport) -> None:
-    """Шесть «конвенциональных», настоящий из них один — `LegacyController`.
+def test_conventional_controllers(link: LinkReport) -> None:
+    """До S17: шесть «конвенциональных», настоящий из них один — `LegacyController`.
 
     Две абстрактные базы, `[Route]` без глагола, `AcceptVerbs` и пустой маршрут
     `[HttpGet]` у наследника базы с токеном — всё это сюда попадать не должно.
@@ -663,7 +693,8 @@ def test_cli_chain_runs_on_the_fixture_config(tmp_path: Path) -> None:
 
     web_scanned = runner.invoke(app, ["web", "scan", *common, "--out", str(web)])
     assert web_scanned.exit_code == 0, web_scanned.output
-    assert "Вызовов: восстановлено 8, не восстановлено 5;" in web_scanned.output
+    # S16: «восстановлено 8, не восстановлено 5» → 4 и 9.
+    assert "Вызовов: восстановлено 4, не восстановлено 9;" in web_scanned.output
 
     linked = runner.invoke(
         app,
@@ -671,4 +702,4 @@ def test_cli_chain_runs_on_the_fixture_config(tmp_path: Path) -> None:
     )
     assert linked.exit_code == 0, linked.output
     counts = json.loads(report.read_text(encoding="utf-8"))["counts"]
-    assert counts == LINK_COUNTS_BEFORE_S16
+    assert counts == LINK_COUNTS

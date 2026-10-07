@@ -806,6 +806,13 @@ def web_scan(
         f"не восстановлено {stats['calls_unresolved']}; "
         f"обращений к реестру без различителя {stats['registry_unresolved']}."
     )
+    if stats.get("calls_unattributed", 0):
+        # Без строки неточность не видна: вызов вне диапазона любого узла
+        # роздан всем узлам своего файла и в отчёте связи посчитан не один раз.
+        typer.echo(
+            f"Вызовов вне диапазона узлов: {stats['calls_unattributed']} — "
+            "приписаны всем узлам своего файла (calls_unattributed в сидкаре)."
+        )
     typer.echo(
         f"Шаблонов прочитано: {stats.get('templates', 0)}; из разметки зовут "
         f"чужие узлы {stats.get('template_usages', 0)} раз, свои члены "
