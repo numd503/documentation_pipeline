@@ -126,7 +126,7 @@
 решение Р-6.
 
 Задачи по каналам — в [`docs/backlog.md`](docs/backlog.md), раздел
-«Настройка с ассистентом».
+«Настройка с ассистентом»; план — [`docs/setup-implementation-plan.md`](docs/setup-implementation-plan.md).
 
 ## Что в цель не входит
 
