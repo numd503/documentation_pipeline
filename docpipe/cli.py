@@ -4,7 +4,7 @@ import json
 import sys
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Final
 
@@ -12,10 +12,10 @@ import typer
 from pydantic import BaseModel
 
 from docpipe import __version__
+from docpipe.arch import KIND_ORDER as ARCH_KIND_ORDER
 from docpipe.arch import (
     ArchRegistry,
     adapter_specs,
-    check_document,
     collect,
     collect_configured,
     dump_registry,
@@ -25,10 +25,11 @@ from docpipe.arch import (
     registry_for_build,
     source_statuses,
     statuses_json,
+    validate_document,
 )
 from docpipe.business import Catalog, doc_path_for, load_catalog, resolve_all
 from docpipe.business import build_context as build_resolve_context
-from docpipe.business.build import backlinks, compose, entry_snippet, link_warnings
+from docpipe.business.build import compose, entry_snippet, link_warnings
 from docpipe.business.catalog import ID_RE
 from docpipe.business.lint import CHECKS as LINT_CHECKS
 from docpipe.business.lint import format_report as format_lint_report
@@ -70,13 +71,13 @@ from docpipe.graph.report import health as health_report
 from docpipe.graph.report import render as render_report
 from docpipe.graph.search import resolve as resolve_names
 from docpipe.hashing import content_hash, stable_json_dumps
-from docpipe.materialize.apply import apply_plan, format_result
-from docpipe.materialize.build import BuildContext, build_context
-from docpipe.materialize.explain import format_explain_document, zone_diff
+from docpipe.materialize.apply import apply_plan, format_result, materialize_report
+from docpipe.materialize.explain import explain_report, format_explain_document
 from docpipe.materialize.ownership import (
     Ownership,
     explain,
-    lint,
+    format_lint,
+    lint_findings,
     load_ownership,
     owner_of,
 )
@@ -85,13 +86,7 @@ from docpipe.materialize.plan import (
     ExistingDoc,
     MaterializePlan,
     PlannedDoc,
-    PlanOptions,
-    build_plan,
-    check_links,
     expected_root,
-    scan_docs,
-    shadowed_docs,
-    with_links,
 )
 from docpipe.materialize.status import (
     AGENT_ACTIONS,
@@ -101,7 +96,6 @@ from docpipe.materialize.status import (
     format_status,
     format_status_json,
 )
-from docpipe.materialize.template import load_templates
 from docpipe.materialize.worklist import (
     DEFAULT_ACTIONS,
     Worklist,
@@ -113,7 +107,6 @@ from docpipe.recon import DEFAULT_MONTHS as RECON_MONTHS
 from docpipe.recon import DEFAULT_TOP as RECON_TOP
 from docpipe.recon import build_report as build_recon_report
 from docpipe.recon import render_text as render_recon_text
-from docpipe.registry import load_registries, read_registry
 from docpipe.registry.anchors import (
     ResolvedAnchor,
     counts,
@@ -122,7 +115,7 @@ from docpipe.registry.anchors import (
     format_anchors,
     format_explain,
     format_which,
-    resolve_anchors,
+    read_anchors,
     similar_names,
 )
 from docpipe.setup.candidates import DEFAULT_LIMIT as SETUP_LIMIT
@@ -149,6 +142,7 @@ from docpipe.stats import (
     stats_from_manifest,
     validate_manifest,
 )
+from docpipe.step2 import Step2Error, Step2Inputs, check_teams, load_manifest, prepare
 from docpipe.web.link import CATEGORIES as LINK_CATEGORIES
 from docpipe.web.link import build_report as build_link_report
 from docpipe.web.link import format_report as format_link_report
@@ -700,13 +694,18 @@ def materialize(
     force: Annotated[
         bool, typer.Option("--force", help="Пересоздать испорченные документы.")
     ] = False,
+    output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
 ) -> None:
     """Создать или обновить документы по манифесту.
 
     Две фазы строго: план → проверка → запись. При блокирующей ошибке
     не записывается ничего: половина обновлённого дерева хуже необновлённого,
     потому что о ней никто не узнает.
+
+    `--dry-run --format json` — план структурой: что прогон сделает с каждым
+    файлом. Без `--dry-run` JSON описывает сделанное, поле `dry_run` их различает.
     """
+    output_format = _format(output_format, ("text", "json"))
     loaded = _prepare(
         manifest_path,
         root,
@@ -719,7 +718,11 @@ def materialize(
     plan = loaded.plan
 
     result = apply_plan(plan, root, dry_run=dry_run, force=force)
-    typer.echo(format_result(plan, result, dry_run))
+    if output_format == "json":
+        report = materialize_report(plan, result, dry_run)
+        typer.echo(stable_json_dumps(report.model_dump(mode="json")).rstrip("\n"))
+    else:
+        typer.echo(format_result(plan, result, dry_run))
 
     if plan.errors or result.errors or result.refused:
         raise typer.Exit(code=1)
@@ -1106,10 +1109,15 @@ def docs_status(
             )
             raise typer.Exit(code=2)
 
-    loaded = _prepare(
-        manifest_path, root, config, templates_dir, ownership_file, teams=tuple(team or ())
-    )
-    plan = with_links(loaded.plan, check_links(loaded.existing, root))
+    plan = _prepare(
+        manifest_path,
+        root,
+        config,
+        templates_dir,
+        ownership_file,
+        teams=tuple(team or ()),
+        links=True,
+    ).plan
 
     selected = filter_documents(plan.documents, paths or [], action or [], file_action or [])
     typer.echo(
@@ -1139,6 +1147,7 @@ def docs_explain(
     show_diff: Annotated[
         bool, typer.Option("--diff", help="Показать полный unified diff, а не только зоны.")
     ] = False,
+    output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
 ) -> None:
     """Почему с этим документом сделают именно это. Ничего не пишет.
 
@@ -1146,8 +1155,12 @@ def docs_explain(
     фильтр обхода отбросил лежащий на диске файл, чем собранный текст отличается
     от него и не задевает ли перезапись авторские секции. Здесь — по шагам
     и про один документ.
+
+    Код 1 — документа в плане нет, план не собрался или перезапись задевает
+    авторскую секцию; в обоих форматах одинаково. `--diff` — только для текста.
     """
-    loaded = _prepare(manifest_path, root, config, templates_dir, ownership_file)
+    output_format = _format(output_format, ("text", "json"))
+    loaded = _prepare(manifest_path, root, config, templates_dir, ownership_file, links=True)
 
     # Путь принимается в любом виде, лишь бы указывал на то же место: репо-
     # относительный из отчёта, обычный из оболочки с дополнением по Tab,
@@ -1159,109 +1172,46 @@ def docs_explain(
     except ValueError:
         target = target[2:] if target.startswith("./") else target
 
-    plan = with_links(loaded.plan, check_links(loaded.existing, root))
+    plan = loaded.plan
+    globs = DEFAULT_DOCS_SCAN_EXCLUDE + list(loaded.settings.docs_scan_exclude)
     if plan.errors:
-        typer.echo(format_status(plan, []))
+        if output_format == "json":
+            report = explain_report(target, None, root, globs, plan.errors)
+            typer.echo(stable_json_dumps(report.model_dump(mode="json")).rstrip("\n"))
+        else:
+            typer.echo(format_status(plan, []))
         raise typer.Exit(code=1)
 
     doc = next((item for item in plan.documents if item.doc_path == target), None)
-    globs = DEFAULT_DOCS_SCAN_EXCLUDE + list(loaded.settings.docs_scan_exclude)
-    typer.echo(format_explain_document(target, doc, root, globs, show_diff))
+    report = explain_report(target, doc, root, globs)
+    if output_format == "json":
+        typer.echo(stable_json_dumps(report.model_dump(mode="json")).rstrip("\n"))
+    else:
+        typer.echo(format_explain_document(target, doc, root, globs, show_diff))
 
     if doc is None:
         raise typer.Exit(code=1)
 
     # Затронутая авторская секция — не «изменение», а нарушение инварианта
     # шага 2, поэтому код возврата: такую находку надо ловить проверкой,
-    # а не глазами в выводе.
-    if doc.content is not None and (root / target).is_file():
-        raw = (root / target).read_bytes().decode("utf-8-sig")
-        before = raw.replace("\r\n", "\n").replace("\r", "\n")
-        if zone_diff(before, doc.content).touches_authored:
-            raise typer.Exit(code=1)
+    # а не глазами в выводе. Решение берётся из отчёта — из того же сравнения
+    # зон, что печатается, а не из второго.
+    if report.zone_diff is not None and report.zone_diff.touches_authored:
+        raise typer.Exit(code=1)
 
 
-def _with_business_links(
-    context: BuildContext,
-    manifest: Manifest,
-    root: Path,
-    settings: DocpipeConfig,
-    config: Path | None,
-    ownership: Ownership | None,
-) -> BuildContext:
-    """Досыпать в контекст шага 2 обратный индекс бизнес-каталога.
-
-    Индекс строится здесь, а не внутри `materialize`: пакет шага 2 не импортирует
-    бизнес-слой и получает готовые данные. Без заданных `registries` шаг 2
-    работает ровно как прежде — раздела «Бизнес-контекст» не появляется вовсе.
-
-    Владение приходит из `_prepare` — тот же объект, по которому строится план.
-    Своё чтение здесь брало только ключ `ownership`, мимо `--ownership`, и глотало
-    ошибку разбора: селектор `only.team` молча не сужал ничего, а план при этом
-    раскладывал документы по командам из другого файла.
-
-    Неготовность бизнес-слоя прогон шага 2 не роняет: реестры могут быть
-    описаны раньше, чем появится первый бизнес-документ, и отказ материализовать
-    техническую документацию из-за этого был бы наказанием не за то. Но и не
-    молчит: ошибки реестров и каталога — предупреждения в stderr. Выброшенная
-    ошибка реестра выглядела бы как «у этого класса нет бизнес-контекста».
-    """
-    if not settings.registries:
-        return context
-
-    try:
-        anchors, registry_errors = read_anchors(
-            manifest, resolve_input(settings.registries, config), root
-        )
-        catalog = load_catalog(root, settings.business_root)
-        links = backlinks(
-            catalog, build_resolve_context(anchors, manifest, root=root, ownership=ownership)
-        )
-    except (OSError, ValueError) as exc:
-        typer.echo(f"бизнес-ссылки: каталог не прочитан, раздел не собран: {exc}", err=True)
-        return context
-
-    # Порядок — как у `business build`: сначала каталог, затем реестры.
-    for line in sorted(catalog.errors) + sorted(registry_errors):
-        typer.echo(f"бизнес-ссылки: {line}", err=True)
-
-    return replace(context, business_root=settings.business_root, business_links=links)
+def _step2_exit(exc: Step2Error) -> typer.Exit:
+    """Отказ входа шага 2 — строкой в stderr и кодом из ошибки."""
+    typer.echo(exc.message, err=True)
+    return typer.Exit(code=exc.code)
 
 
 def _check_teams(teams: tuple[str, ...], ownership: Ownership | None) -> None:
-    """Отвергнуть неизвестные команды.
-
-    Без проверки опечатка в `--team` сужает выборку до пустой, и команда
-    рапортует «документов нет» — неотличимо от честного «у этой команды
-    документов нет». Раньше это ловил только `materialize`; `docs status`
-    и `worklist` с тем же флагом молчали.
-    """
-    if not teams:
-        return
-    known = {item.id for item in ownership.teams} if ownership else set()
-    unknown = sorted(set(teams) - known)
-    if unknown:
-        listing = ", ".join(sorted(known)) or "(правила владения не заданы)"
-        typer.echo(f"Неизвестные команды: {', '.join(unknown)}; известны: {listing}", err=True)
-        raise typer.Exit(code=2)
-
-
-@dataclass(frozen=True)
-class Step2Inputs:
-    """Всё, что команды шага 2 читают из конфигурации и с диска.
-
-    Возвращается целиком, а не тройкой-четвёркой: раньше `materialize`,
-    `docs status` и `_prepare` собирали одно и то же тремя копиями одного
-    блока, и ключ конфигурации, добавленный в одну, до остальных не доезжал.
-    Писателем документов при этом был `materialize` — та копия, что отстала бы
-    незаметнее всех.
-    """
-
-    settings: DocpipeConfig
-    manifest: Manifest
-    ownership: Ownership | None
-    existing: list[ExistingDoc]
-    plan: MaterializePlan
+    """`check_teams` с политикой отказа командной строки."""
+    try:
+        check_teams(teams, ownership)
+    except Step2Error as exc:
+        raise _step2_exit(exc) from exc
 
 
 def _prepare(
@@ -1273,57 +1223,43 @@ def _prepare(
     teams: tuple[str, ...] = (),
     accept: tuple[str, ...] = (),
     force: bool = False,
+    links: bool = False,
 ) -> Step2Inputs:
-    """Общая подготовка команд шага 2: манифест, шаблоны, владение, план."""
-    settings = load_config(config)
-    templates_path = templates_dir or resolve_input(settings.templates, config)
-    ownership_path = ownership_file or (
-        resolve_input(settings.ownership, config) if settings.ownership else None
-    )
+    """Вход шага 2 для команд: `step2.prepare` плюс печать и коды возврата.
 
+    Сама сборка — в `docpipe.step2`, её же зовёт сервер настройки. Здесь только
+    политика командной строки: ошибка — строкой в stderr и кодом, предупреждения
+    — в stderr, прогон продолжается.
+
+    `load_config` — внутри `try`. Снаружи битая конфигурация давала трассировку
+    и код 1, неотличимый от «проверка не прошла»: `docs status --fail-on` в CI
+    читал бы опечатку в `docpipe.yaml` как устаревший документ.
+    """
     try:
-        manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
-        templates = load_templates(templates_path)
-        ownership = load_ownership(ownership_path) if ownership_path else None
+        settings = load_config(config)
     except (OSError, ValueError) as exc:
-        typer.echo(f"{exc}", err=True)
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    _check_teams(teams, ownership)
-
-    examples = frozenset(path.stem for path in (templates_path / "examples").glob("*.md"))
-    context = _with_business_links(
-        build_context(manifest, templates, examples, templates_path.as_posix()),
-        manifest,
-        root,
-        settings,
-        config,
-        ownership,
-    )
-    existing = scan_docs(root, settings.docs_root, settings.docs_scan_exclude)
-    plan = build_plan(
-        manifest,
-        existing,
-        templates,
-        context,
-        ownership,
-        PlanOptions(
-            docs_root=settings.docs_root,
-            modules_root=settings.modules_root,
-            web_modules_root=settings.web_modules_root,
-            doc_layout=settings.doc_layout,
+    try:
+        loaded = prepare(
+            load_manifest(manifest_path),
+            root,
+            settings,
+            config,
+            templates_dir=templates_dir,
+            ownership_file=ownership_file,
             teams=teams,
             accept=accept,
             force=force,
-            docs_scan_exclude=tuple(settings.docs_scan_exclude),
-            # Проверка по диску, а не по обходу: узел без файла и узел, чей файл
-            # обход не увидел, — разные состояния, и различить их можно только так.
-            shadowed=tuple(shadowed_docs(root, manifest, existing)),
-        ),
-    )
-    return Step2Inputs(
-        settings=settings, manifest=manifest, ownership=ownership, existing=existing, plan=plan
-    )
+            links=links,
+        )
+    except Step2Error as exc:
+        raise _step2_exit(exc) from exc
+
+    for line in loaded.warnings:
+        typer.echo(line, err=True)
+    return loaded
 
 
 @app.command()
@@ -1373,14 +1309,13 @@ def worklist(
     # План строится по ВСЕМУ дереву, без `--team`: сводка обязана описывать
     # дерево целиком, а сужает `--team` только очередь. Иначе прогон одной
     # команды объявил бы, что документов в репозитории двадцать.
-    loaded = _prepare(manifest_path, root, config, templates_dir, ownership_file)
-    settings, manifest = loaded.settings, loaded.manifest
+    loaded = _prepare(manifest_path, root, config, templates_dir, ownership_file, links=True)
+    settings, manifest, plan = loaded.settings, loaded.manifest, loaded.plan
 
     # План сузить нельзя, а имена команд проверить обязаны: `--team` здесь режет
     # только очередь, и опечатка иначе дала бы пустую очередь при целом дереве.
     _check_teams(tuple(team or ()), loaded.ownership)
     target = out or Path(settings.worklist)
-    plan = with_links(loaded.plan, check_links(loaded.existing, root))
 
     if plan.errors:
         # Файл не переписывается: прежняя очередь достовернее полупустой новой,
@@ -1601,9 +1536,21 @@ def docs_owners(
         str | None, typer.Option("--explain", help="Идентификатор узла или путь документа.")
     ] = None,
     run_lint: Annotated[bool, typer.Option("--lint", help="Диагностика набора правил.")] = False,
+    output_format: Annotated[
+        str, typer.Option("--format", help="text или json; json — только с --lint.")
+    ] = "text",
 ) -> None:
     """Кто владеет документами и что не так с правилами владения."""
-    settings = load_config(config)
+    output_format = _format(output_format, ("text", "json"))
+    if output_format == "json" and not run_lint:
+        # Молча напечатать текст значило бы уронить разбор у того, кто ждал JSON,
+        # — ровно то, от чего `_format` и проверяет значение.
+        raise typer.BadParameter("json пока только с --lint", param_hint="--format")
+    try:
+        settings = load_config(config)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
     path = ownership_file or (
         resolve_input(settings.ownership, config) if settings.ownership else None
     )
@@ -1655,7 +1602,13 @@ def docs_owners(
         return
 
     if run_lint:
-        findings, warnings = lint(manifest.nodes, ownership)
+        report = lint_findings(manifest.nodes, ownership)
+        if output_format == "json":
+            typer.echo(stable_json_dumps(report.model_dump(mode="json")).rstrip("\n"))
+            if report.findings or report.warnings:
+                raise typer.Exit(code=1)
+            return
+        findings, warnings = format_lint(report)
         for line in findings:
             typer.echo(line)
         for line in warnings:
@@ -1711,12 +1664,18 @@ def arch_validate(
             help="Проверять черновик скилла: разрешён провенанс `skill_proposed`.",
         ),
     ] = False,
+    output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
 ) -> None:
     """Проверить реестр целиком и назвать все находки сразу.
 
     Все, а не первую: файл заполняет человек, и второй заход ради второй
     ошибки — способ отучить его заполнять файл.
+
+    Код 1 — реестр не прошёл проверку, 2 — его нет или он не читается. В JSON
+    находки идут полем `problems`, а отказ чтения — по-прежнему строкой
+    в stderr: он про вход команды, а не про содержимое реестра.
     """
+    output_format = _format(output_format, ("text", "json"))
     try:
         settings = load_config(config)
     except (OSError, ValueError) as exc:
@@ -1733,23 +1692,27 @@ def arch_validate(
         typer.echo(f"Не удалось прочитать реестр: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    registry, problems = check_document(raw, draft=draft)
-    if registry is None:
+    report = validate_document(path, raw, draft=draft)
+    if output_format == "json":
+        typer.echo(stable_json_dumps(report.model_dump(mode="json")).rstrip("\n"))
+        if not report.valid:
+            raise typer.Exit(code=1)
+        return
+
+    if not report.valid:
         typer.echo(f"{path}: реестр не прошёл проверку", err=True)
-        for problem in problems:
+        for problem in report.problems:
             typer.echo(f"  {problem.where}: {problem.message}", err=True)
         raise typer.Exit(code=1)
 
-    kinds = ("entry_point", "data", "seam", "layer")
-    counts = {kind: len(registry.of_kind(kind)) for kind in kinds}
-    listed = ", ".join(f"{kind}: {count}" for kind, count in counts.items())
-    if not registry.records:
+    listed = ", ".join(f"{kind}: {report.counts[kind]}" for kind in ARCH_KIND_ORDER)
+    if not any(report.counts.values()):
         typer.echo(
             f"{path}: реестр пуст и это валидное состояние — "
             "на репозитории без реестров граф строится и без него."
         )
         return
-    typer.echo(f"{path}: реестр в порядке, версия {registry.version}. Записей — {listed}.")
+    typer.echo(f"{path}: реестр в порядке, версия {report.version}. Записей — {listed}.")
 
 
 @arch_app.command("records")
@@ -2690,22 +2653,6 @@ anchors_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(anchors_app, name="anchors")
-
-
-def read_anchors(
-    manifest: Manifest, registries: Path, root: Path
-) -> tuple[list[ResolvedAnchor], list[str]]:
-    """Реестры → разрешённые якоря. Единственная сборка этой цепочки.
-
-    Политику отказа задаёт вызывающий, а не эта функция: `anchors` и `business`
-    падают на нечитаемых реестрах, а шаг 2 продолжает без бизнес-раздела —
-    реестры могут быть описаны раньше первого бизнес-документа, и ронять из-за
-    этого материализацию технической документации было бы наказанием не за то.
-    Раньше расхождение политик тянуло за собой три копии самой цепочки.
-    """
-    results = [read_registry(spec, root) for spec in load_registries(registries)]
-    errors = [error for result in results for error in result.errors]
-    return resolve_anchors(results, manifest), errors
 
 
 def _load_anchors(

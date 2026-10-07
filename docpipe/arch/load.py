@@ -11,16 +11,21 @@
 """
 
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Final, Literal, NamedTuple
 
 import yaml
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 from pydantic_core import ErrorDetails
 
 from docpipe.arch.model import ARCH_VERSION, ArchRecord, ArchRegistry
 
 _KNOWN_TOP = frozenset({"version", "records"})
-_KINDS = frozenset({"entry_point", "data", "seam", "layer"})
+# Порядок видов — порядок строки «Записей — …» в отчёте `arch validate`.
+KIND_ORDER: Final[tuple[str, ...]] = ("entry_point", "data", "seam", "layer")
+_KINDS = frozenset(KIND_ORDER)
+
+# Версия отчёта `arch validate --format json`.
+VALIDATION_SCHEMA_VERSION: Final[Literal["1.0"]] = "1.0"
 
 _RECORD_ADAPTER: TypeAdapter[ArchRecord] = TypeAdapter(ArchRecord)
 
@@ -142,6 +147,51 @@ def check_document(
     if problems:
         return None, problems
     return ArchRegistry(version=version or ARCH_VERSION, records=tuple(records)), []
+
+
+class _Model(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class ValidationProblem(_Model):
+    """Находка проверки (`ArchProblem`) в отчёте."""
+
+    where: str
+    message: str
+
+
+class ArchValidation(_Model):
+    """Отчёт `arch validate --format json`.
+
+    Находки — все и в порядке файла: их чинят сверху вниз, и порядок записей
+    в реестре детерминирован так же, как сам файл. `version` и `counts`
+    заполнены только у прошедшего реестра — у непрошедшего записи
+    не собраны, и счёт по ним был бы счётом того, что проверку не прошло.
+    """
+
+    schema_version: Literal["1.0"] = VALIDATION_SCHEMA_VERSION
+    path: str
+    valid: bool
+    version: str | None
+    counts: dict[str, int]
+    problems: list[ValidationProblem]
+
+
+def validate_document(path: Path, raw: Any, *, draft: bool = False) -> ArchValidation:
+    """Проверить разобранный реестр и собрать отчёт. Чтение файла — у вызывающего:
+    «файла нет» и «YAML не разбирается» — ошибка входа (код 2), а не находка."""
+    registry, problems = check_document(raw, draft=draft)
+    return ArchValidation(
+        path=path.as_posix(),
+        valid=registry is not None,
+        version=registry.version if registry is not None else None,
+        counts=(
+            {kind: len(registry.of_kind(kind)) for kind in KIND_ORDER}
+            if registry is not None
+            else {}
+        ),
+        problems=[ValidationProblem(where=item.where, message=item.message) for item in problems],
+    )
 
 
 def read_document(path: Path) -> Any:

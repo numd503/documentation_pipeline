@@ -12,12 +12,20 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Final, Literal, get_args
+
+from pydantic import BaseModel, ConfigDict
 
 from docpipe.documents import write_atomic
-from docpipe.materialize.plan import MaterializePlan, PlannedDoc
+from docpipe.materialize.plan import Confidence, FileAction, MaterializePlan, PlannedDoc, Status
+from docpipe.materialize.status import SubstitutedTemplate, substituted_templates
 from docpipe.materialize.template import DEFAULT_TEMPLATE
 
 BROKEN_SUFFIX = ".md.broken"
+
+# Версия отчёта `materialize --format json`. Своя: у отчёта о прогоне другой
+# потребитель, чем у `docs status` и очереди.
+SCHEMA_VERSION: Final[Literal["1.0"]] = "1.0"
 
 
 @dataclass(frozen=True)
@@ -189,6 +197,75 @@ def _directory_section(title: str, paths: list[str]) -> list[str]:
         documents = sum(count for _, count in hidden)
         lines.append(f"  и ещё каталогов: {len(hidden)}, документов в них: {documents}")
     return lines
+
+
+class _Base(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class MaterializedDoc(_Base):
+    """Что прогон делает с одним документом. Без текста: он есть в файле."""
+
+    doc_path: str
+    node_id: str | None
+    file_action: FileAction
+    status: Status
+    relocate_from: str | None
+    confidence: Confidence | None
+
+
+class MaterializeReport(_Base):
+    """Отчёт `materialize --format json`: план прогона структурой.
+
+    `counts` — по действию с файлом и по всем пяти действиям, с нулями: «ни
+    одного `update`» должно читаться как ноль, а не как отсутствующий ключ,
+    который легко принять за «не показали». `errors` — ошибки прогона целиком:
+    блокирующие ошибки плана (тогда не записано ничего) либо ошибки записи
+    отдельных файлов.
+    """
+
+    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    dry_run: bool
+    counts: dict[str, int]
+    documents: list[MaterializedDoc]
+    notes: list[str]
+    substituted: list[SubstitutedTemplate]
+    errors: list[str]
+    manifest_partial: bool
+
+
+def materialize_report(
+    plan: MaterializePlan, result: ApplyResult, dry_run: bool = False
+) -> MaterializeReport:
+    """Собрать отчёт из плана и итога применения.
+
+    Записи — по плану: `file_action` и есть то, что прогон делает с файлом.
+    Ошибки — по итогу: при блокирующих ошибках `apply_plan` возвращает их же,
+    без них — ошибки записи.
+    """
+    documents = sorted(plan.documents, key=lambda doc: doc.doc_path)
+    counts = {action: 0 for action in sorted(get_args(FileAction))}
+    for doc in documents:
+        counts[doc.file_action] += 1
+    return MaterializeReport(
+        dry_run=dry_run,
+        counts=counts,
+        documents=[
+            MaterializedDoc(
+                doc_path=doc.doc_path,
+                node_id=doc.node_id,
+                file_action=doc.file_action,
+                status=doc.status,
+                relocate_from=doc.relocate_from,
+                confidence=doc.confidence,
+            )
+            for doc in documents
+        ],
+        notes=list(plan.notes),
+        substituted=substituted_templates(plan),
+        errors=list(result.errors),
+        manifest_partial=plan.manifest_partial,
+    )
 
 
 def format_result(plan: MaterializePlan, result: ApplyResult, dry_run: bool = False) -> str:

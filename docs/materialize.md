@@ -179,19 +179,21 @@ docpipe docs explain artifacts/doc-tree.json docs/modules/…/pricing-controller
 ```bash
 docpipe materialize MANIFEST --root PATH [--config FILE] [--templates DIR]
                              [--ownership FILE] [--team NAME] [--dry-run] [--force]
+                             [--format text|json]
 
 docpipe docs status MANIFEST [PATH...] [--action write|review|skip]
                              [--file-action create|update|unchanged|relocate|refuse]
                              [--fail-on STATUS] [--team NAME] [--format text|json]
 
 docpipe docs explain MANIFEST PATH [--root PATH] [--config FILE] [--diff]
+                             [--format text|json]
 
 docpipe docs accept MANIFEST [PATH...] [--node ID] [--team NAME] [--all]
                              [--force] [--dry-run]
 
 docpipe docs adopt  MANIFEST --from PATH --to PATH [--dry-run]
 
-docpipe docs owners MANIFEST [--explain NODE] [--lint]
+docpipe docs owners MANIFEST [--explain NODE] [--lint] [--format text|json]
 
 docpipe worklist MANIFEST [--root PATH] [--config FILE] [--templates DIR]
                           [--ownership FILE] [--team NAME] [--out FILE]
@@ -199,7 +201,10 @@ docpipe worklist MANIFEST [--root PATH] [--config FILE] [--templates DIR]
 ```
 
 Коды возврата: **0** — успех, **1** — проверка не прошла или отказ, **2** — ошибка
-пользователя.
+пользователя. Битая конфигурация (`--config`) — тоже **2** и строка
+«Ошибка конфигурации: …» в stderr у всех команд шага 2; раньше `load_config`
+стоял вне обработки ошибок, и опечатка в `docpipe.yaml` давала трассировку
+и код 1 — тот же, что «документ устарел» у `docs status --fail-on`.
 
 `--team` сужает множество того, что **пишется**. Множество, с которым сравнивают,
 не сужается никогда — иначе прогон одной команды объявил бы сиротами документацию
@@ -230,6 +235,68 @@ docpipe worklist MANIFEST [--root PATH] [--config FILE] [--templates DIR]
 каталога. Показываются двадцать самых крупных, остаток сворачивается в строку
 «и ещё каталогов: N, документов в них: M»: полный список на большом репозитории
 утопил бы отчёт, а оценку объёма даёт и свёрнутый.
+
+### Машинный вывод (`--format json`)
+
+У каждой команды шага 2, отвечающей отчётом, есть `--format json`: агенту
+настройки план и вердикты нужны структурой, а не разбором русского текста.
+Значение флага проверяется — `--format jsno` даёт код 2, а не молчаливый текст.
+Коды возврата в JSON те же, что в тексте; предупреждения (`бизнес-ссылки: …`)
+и отказы входа идут в stderr, поэтому stdout разбирается всегда. У каждого
+отчёта своё `schema_version`, не связанное ни с манифестом, ни с очередью.
+
+**`docs status --format json`** — конверт вокруг записей документов:
+
+| Поле | Что означает |
+|---|---|
+| `schema_version` | `1.0` |
+| `counts`, `total`, `documents` | по выборке (пути, `--action`, `--file-action`, `--team`); записи — те же, что в очереди `worklist`, поле в поле |
+| `errors`, `manifest_partial` | блокирующие ошибки плана; частичный манифест (`--scope`) |
+| `notes` | замечания по переносам — те же, что «Замечания по переносам» текста |
+| `substituted` | `[{template, count}]` — виды, получившие базовый скелет за неимением своего; чаще — выше |
+| `document_errors` | `[{doc_path, error}]` — почему файл трогать нельзя (обычно у `broken`) |
+
+Новое живёт **только в конверте**: запись документа собирает одна функция для
+`docs status` и для `worklist`, и новое поле в ней уронило бы очередь
+(`WorklistEntry` строгий). Поэтому у записи по-прежнему 15 ключей, а очередь
+не меняется ни на байт.
+
+**`materialize --format json`** — что прогон делает с каждым файлом; с
+`--dry-run` это план, без него — сделанное (поле `dry_run`):
+
+```json
+{
+  "schema_version": "1.0",
+  "dry_run": true,
+  "counts": {"create": 6, "refuse": 0, "relocate": 0, "unchanged": 0, "update": 0},
+  "documents": [
+    {"doc_path": "docs/modules/controllers/…/pricing-controller.md",
+     "node_id": "type:…PricingController`0", "file_action": "create",
+     "status": "missing", "relocate_from": null, "confidence": null}
+  ],
+  "notes": [], "substituted": [], "errors": [], "manifest_partial": false
+}
+```
+
+`counts` — по всем пяти действиям, с нулями: «ни одного `update`» читается
+нулём, а не пропавшим ключом. `errors` — блокирующие ошибки плана (тогда
+не записано ничего) либо ошибки записи отдельных файлов.
+
+**`docs explain --format json`** — тот же разбор одного документа:
+
+| Поле | Что означает |
+|---|---|
+| `exists` | есть ли файл на диске |
+| `scan_verdict` | почему обход не примет файл; `null` — принят **или** файла нет (различает `exists`) |
+| `plan` | решение плана: `status`, `file_action` с правилом (`file_action_rule`), `reason`, `relocate_from`, `confidence`, `agent_action`, `node_id`, `team`, `error`, пустые и чужие секции; `null` — такого документа в плане нет |
+| `zone_diff` | `front_matter` (строки «ключ: было → стало»), `generated_changed`, `sections_added`, `sections_changed`, `sections_removed`, `touches_authored`; `null` — сравнивать нечего (файла нет либо прогон его не открывает) |
+| `errors` | блокирующие ошибки плана; тогда `plan` и `zone_diff` пусты, код 1 |
+
+Код 1 при `touches_authored` — в обоих форматах: он считается из того же
+сравнения зон, что и отчёт. `--diff` есть только у текста.
+
+**`docs owners --lint --format json`** — находки линта владения, см.
+«Владение» ниже. Без `--lint` JSON не выдаётся (код 2).
 
 ## Цикл работы
 
@@ -409,6 +476,24 @@ docpipe docs owners MANIFEST --ownership ownership.yaml --lint
 `--lint` находит мёртвые правила, узлы без владельца — со срезами по модулям
 и каталогам, то есть с ответом «куда писать следующее правило», — команды
 без узлов и ничьи по приоритету.
+
+`--lint --format json` отдаёт то же структурой: `{schema_version, nodes,
+findings, warnings}`, где каждая находка — `{code, subject, count, message}`,
+по коду на каждый вид строки текста:
+
+| `code` | Где в тексте | `subject` | `count` |
+|---|---|---|---|
+| `dead-rule` | «Правила, не совпавшие ни с одним узлом» | id правила | 0 |
+| `unowned-nodes` | «Узлов без владельца: N из M» (`M` — поле `nodes`) | пусто | N |
+| `unowned-module` | срез «модули» | модуль | узлов без владельца в нём |
+| `unowned-directory` | срез «каталоги внутри модуля» | каталог | то же |
+| `idle-team` | «Команды, которым не досталось ни одного узла» | id команды | 0 |
+| `priority-tie` (предупреждение) | «Ничьи по приоритету» | `doc_path` узла | правил с равным высшим приоритетом |
+| `split-type` (предупреждение) | «Типов, чьи файлы лежат в разных каталогах» | `doc_path` узла | каталогов у типа |
+
+Списки в JSON полные; текст показывает по десять в каждом срезе. Срезы
+упорядочены по убыванию числа, при равенстве — по имени (раньше при равенстве
+решал порядок узлов в манифесте).
 
 ## Автоперенос
 

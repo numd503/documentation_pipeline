@@ -1060,7 +1060,8 @@ uv run pytest tests/test_business_build.py -q
 `tests/test_materialize_build.py`, `tests/test_materialize_cli.py`,
 `tests/test_business_build.py`
 
-Индекс собирается в `cli._with_business_links` и кладётся в `BuildContext` полями
+Индекс собирается в `step2._business_links` (до S06 плана настройки —
+`cli._with_business_links`) и кладётся в `BuildContext` полями
 `business_root` и `business_links`. Флаг `business_root` нужен именно как отдельное
 поле: он отличает «каталог не задан» от «каталог задан, но этот узел в нём
 не упомянут». Без различия раздел появлялся бы у всех узлов сразу при первом же

@@ -25,6 +25,7 @@
 ```bash
 docpipe arch validate arch-registry.yaml          # проверить целиком
 docpipe arch validate черновик.yaml --draft       # проверить черновик скилла
+docpipe arch validate … --format json             # то же машине
 docpipe arch status arch-registry.yaml --root .   # не отстал ли снимок
 docpipe arch status … --json                      # то же машине
 docpipe arch status … --fail-on-stale             # ненулевой код при отставании
@@ -34,6 +35,14 @@ docpipe schema --model arch                       # JSON Schema из модел�
 Путь берётся из ключа `arch` в `docpipe.yaml`, если не задан аргументом.
 Это **вход** инструмента, поэтому он разрешается двумя ступенями: сначала
 от текущего каталога, потом от каталога `docpipe.yaml`.
+
+`arch validate --format json` отвечает отчётом `{schema_version, path, valid,
+version, counts, problems: [{where, message}]}`: находки — все и в порядке
+файла, `version` и `counts` (записей по виду) — только у прошедшего реестра.
+Коды те же, что у текста: 1 — реестр не прошёл проверку; 2 — реестра нет
+или YAML не разбирается, и это по-прежнему строка в stderr, а не JSON: отказ
+чтения — про вход команды, а не про содержимое. Флаг `--json` у `arch status`
+и `arch records` остаётся булевым — его не трогали.
 
 ## Как заполнить за пятнадцать минут
 

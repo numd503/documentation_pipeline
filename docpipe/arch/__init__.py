@@ -16,11 +16,15 @@ from docpipe.arch.collect import (
 )
 from docpipe.arch.dump import dump_registry
 from docpipe.arch.load import (
+    KIND_ORDER,
     ArchProblem,
+    ArchValidation,
+    ValidationProblem,
     check_document,
     load_arch_registry,
     load_optional,
     read_document,
+    validate_document,
 )
 from docpipe.arch.model import (
     ARCH_VERSION,
@@ -38,10 +42,12 @@ from docpipe.arch.status import SourceStatus, format_statuses, source_statuses, 
 __all__ = [
     "ADAPTERS",
     "ARCH_VERSION",
+    "KIND_ORDER",
     "AdapterSpec",
     "ArchProblem",
     "ArchRecord",
     "ArchRegistry",
+    "ArchValidation",
     "DataField",
     "DataRecord",
     "EntryPointRecord",
@@ -49,6 +55,7 @@ __all__ = [
     "SeamRecord",
     "Source",
     "SourceStatus",
+    "ValidationProblem",
     "Collected",
     "adapter_specs",
     "check_document",
@@ -63,4 +70,5 @@ __all__ = [
     "run_adapter",
     "source_statuses",
     "statuses_json",
+    "validate_document",
 ]

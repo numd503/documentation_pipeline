@@ -1,6 +1,6 @@
 # Настройка с ассистентом: план (S01–S32)
 
-> **Статус: в работе** (план от 07.10.2026): ✅ S01, S02, S03, S04, S05, S10, S11, S15, S16, S26.
+> **Статус: в работе** (план от 07.10.2026): ✅ S01, S02, S03, S04, S05, S06, S10, S11, S15, S16, S26.
 > [`setup-assistant-analysis.md`](setup-assistant-analysis.md); цель —
 > [`purpose.md`](../purpose.md), раздел «Настройка с ассистентом». При споре
 > плана с `purpose.md` прав `purpose.md`; при расхождении плана с кодом
@@ -197,7 +197,7 @@ T04–T20). Тест фикстуры проверяет наличие **кон
 | S03 | ✅ Прогоны без молчания | — | M |
 | S04 | ✅ `config check`: функция, JSON, коды возврата | — | S |
 | S05 | ✅ JSON у `scan --stats` и `web scan --stats`; срез «последнее слово» | — | M |
-| S06 | Вход шага 2 — в библиотеку; JSON у команд шага 2 и `arch validate`; сверка схем | — | M |
+| S06 | ✅ Вход шага 2 — в библиотеку; JSON у команд шага 2 и `arch validate`; сверка схем | — | M |
 | S07 | `symbols`: причина, страница, правило-победитель, `--path` | — | S |
 | S08 | Справочники сверить с кодом | S02–S07 | S |
 | S09 | Карта цепочек настройки и тест на её полноту | S08 | M |
@@ -723,7 +723,7 @@ uv run docpipe scan --root tests/fixtures/SampleSolution --stats --format json -
 
 ---
 
-## S06 — вход шага 2 в библиотеку; JSON у команд шага 2 и `arch validate`; сверка схем
+## S06 — вход шага 2 в библиотеку; JSON у команд шага 2 и `arch validate`; сверка схем ✅
 
 **Цель:** `materialize`, `docs status`, `worklist` можно позвать из сервера
 без CLI; агент получает план и вердикты структурой.
@@ -784,6 +784,57 @@ uv run docpipe scan --root tests/fixtures/SampleSolution --stats --format json -
 > **Ловушка. `lint` владения зовут семь тестов** как
 > `findings, warnings = lint(...)` (`test_ownership.py`, `test_ownership_web.py`):
 > структура — новой функцией, старая остаётся.
+
+> **Ловушка (найдена при реализации). `read_anchors` жила в `cli.py`.**
+> Бизнес-ссылки зовут её, а `step2.py` импортировать CLI не вправе (цикл
+> и тот самый шов, который выносом убирается). Перенесена в
+> `registry/anchors.py` рядом с `resolve_anchors`; `anchors *` и `business *`
+> берут её оттуда же. Своя копия в `step2.py` была бы четвёртой сборкой
+> цепочки «реестры → якоря», а их однажды было три.
+
+> **Ловушка (найдена при реализации). «Одна строка» — только у отказов
+> самого загрузчика.** `enrolled:` без элементов даёт одну строку, а
+> неизвестный ключ — `ValidationError` pydantic на четыре строки (`extra_forbidden`
+> и ссылка на errors.pydantic.dev) — у всех команд, не только у шага 2.
+> Критерий проверяется на первом (`test_broken_config_is_code_2_and_one_line`),
+> на втором — код 2 без трассировки. Синтаксическая ошибка YAML по-прежнему
+> даёт трассировку и код 1 (`yaml.YAMLError` не `ValueError`) — пункт бэклога S03.
+
+> **Ловушка (найдена при реализации). Срез «топ-10» линта владения зависел
+> от порядка узлов.** `Counter.most_common` при равных числах оставляет
+> порядок первого появления, то есть порядок узлов манифеста. Структура
+> упорядочена явным ключом `(-count, имя)`, текст режет её первые десять —
+> при равенстве чисел порядок строк в тексте может смениться. Списки в JSON
+> полные: срез по десять — дело печати, иначе агент не узнал бы, что модулей
+> без владельца больше десяти.
+
+> **Ловушка (найдена при реализации). Код возврата `docs explain` и строка
+> отчёта считали разницу зон каждая сама.** Нормализация текста с диска
+> (BOM, CRLF) была записана дважды — в форматтере и в CLI. Теперь одна
+> `explain.disk_text`, и код 1 берётся из `report.zone_diff.touches_authored`
+> — из того же сравнения, что печатается.
+
+Отклонения при реализации (07.10): модели отчётов лежат рядом с форматтерами
+своих команд, а не в `step2.py` — `StatusReport` в `status.py`,
+`MaterializeReport` в `apply.py` (рядом с `format_result`), `ExplainReport`
+в `explain.py`, `OwnershipLint` в `ownership.py`, `ArchValidation`
+в `arch/load.py` (`validate_document`). Поля сверх спецификации — то, что
+печатает текст: у `MaterializeReport` — `schema_version`, `dry_run`,
+`manifest_partial` (`--format json` работает и без `--dry-run`); у
+`ExplainReport` — `schema_version`, `exists` (иначе `scan_verdict: null`
+не отличает «принят» от «файла нет»), `errors` (блокирующие ошибки плана)
+и в `plan` — `file_action_rule`, `confidence`, `agent_action`, `node_id`,
+`team`, `error`, `empty_sections`, `orphan_sections`; у `ArchValidation` —
+`version` и `counts`; у `OwnershipLint` — `nodes` (знаменатель «N из M»)
+и два списка `findings`/`warnings` (stdout и stderr текста). `StatusReport.documents`
+— словари `document_json`, а не модель: модель записи уже есть
+(`WorklistEntry`), а `worklist.py` импортирует `status.py`, не наоборот.
+`docs owners --format json` без `--lint` — код 2. Предупреждения
+`Step2Inputs.warnings` хранятся с префиксом «бизнес-ссылки: », CLI печатает
+их как есть. `prepare` принимает уже прочитанный `Manifest`, файл читает
+`load_manifest` (`Step2Error(2, …)`). Номера строк в «Изменить» и п. 1
+(`cli.py:1090-1165`, «восемь мест вызова» с номерами) к моменту S06 уехали
+после S03/S04/S11; все восемь мест уже шли через `_prepare` и не менялись.
 
 **Критерии приёмки**
 - `prepare` зовётся в тесте без CLI на `SampleSolution` и даёт тот же план,

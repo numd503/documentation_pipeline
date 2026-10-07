@@ -13,9 +13,10 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 import yaml
+from pydantic import BaseModel, ConfigDict
 
 from docpipe.classify import matches_any_type
 from docpipe.discovery import matches_glob
@@ -283,78 +284,225 @@ def owner_of(node: DocNode, ownership: Ownership) -> OwnerDecision:
     )
 
 
-def _top(values: list[str]) -> list[tuple[str, int]]:
-    return Counter(values).most_common(_TOP)
+# Версия отчёта `docs owners --lint --format json`.
+LINT_SCHEMA_VERSION: Final[Literal["1.0"]] = "1.0"
+
+# По коду на каждый вид строки, который печатает `lint`. Порядок — порядок
+# строк в тексте: по нему же собирается текстовая обёртка.
+LintCode = Literal[
+    "dead-rule",
+    "unowned-nodes",
+    "unowned-module",
+    "unowned-directory",
+    "idle-team",
+    "priority-tie",
+    "split-type",
+]
 
 
-def _slice(title: str, rows: list[tuple[str, int]]) -> list[str]:
-    return [f"  {title}:"] + [f"    {count:6}  {name}" for name, count in rows]
+class _Model(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
 
-def lint(nodes: list[DocNode], ownership: Ownership) -> tuple[list[str], list[str]]:
-    """Диагностика набора правил: `(находки, предупреждения)`.
+class OwnershipFinding(_Model):
+    """Одна находка линта владения.
 
-    Находка — то, что почти наверняка дефект настройки. Предупреждение — то, что
-    формально корректно, но обычно означает недосмотр.
+    `subject` — то, о чём находка: id правила или команды, модуль, каталог,
+    `doc_path` узла; у сводки `unowned-nodes` — пустая строка, она о дереве
+    целиком. `count` — число, ради которого находка заведена: узлов без
+    владельца (в дереве, модуле, каталоге), правил с равным приоритетом
+    у ничьей, каталогов у типа, разложенного по нескольким; у мёртвого
+    правила и команды без узлов — ноль совпавших узлов.
     """
+
+    code: LintCode
+    subject: str
+    count: int
+    message: str
+
+
+class OwnershipLint(_Model):
+    """Диагностика набора правил владения структурой.
+
+    `findings` — почти наверняка дефект настройки, `warnings` — формально
+    корректно, но обычно недосмотр: то же деление, что у текста (stdout
+    и stderr). Списки полные; срез по десять — дело печати (`lint`), иначе
+    агент, читающий JSON, не узнал бы, что модулей без владельца больше.
+    """
+
+    schema_version: Literal["1.0"] = LINT_SCHEMA_VERSION
+    nodes: int
+    findings: list[OwnershipFinding]
+    warnings: list[OwnershipFinding]
+
+
+def _ranked(values: list[str]) -> list[tuple[str, int]]:
+    """Счётчик по убыванию, при равенстве по имени.
+
+    Явный ключ, а не `Counter.most_common`: тот при равенстве оставляет
+    порядок первого появления, то есть порядок узлов в манифесте, и срез
+    «топ-10» зависел бы от того, как отсортированы узлы.
+    """
+    return sorted(Counter(values).items(), key=lambda item: (-item[1], item[0]))
+
+
+def lint_findings(nodes: list[DocNode], ownership: Ownership) -> OwnershipLint:
+    """Диагностика набора правил: находки и предупреждения структурой."""
     decisions = {node.id: owner_of(node, ownership) for node in nodes}
     used = {rule.id for decision in decisions.values() for rule in decision.matched}
     owned = {node.id for node in nodes if decisions[node.id].team}
 
-    findings: list[str] = []
+    findings: list[OwnershipFinding] = []
 
     # 1. Мёртвые правила — самый частый дефект сопровождения: каталог
     #    переименовали, правило осталось.
-    dead = sorted(rule.id for rule in ownership.rules if rule.id not in used)
-    if dead:
-        findings.append(f"Правила, не совпавшие ни с одним узлом: {', '.join(dead)}")
+    findings += [
+        OwnershipFinding(
+            code="dead-rule",
+            subject=rule_id,
+            count=0,
+            message="правило не совпало ни с одним узлом",
+        )
+        for rule_id in sorted(rule.id for rule in ownership.rules if rule.id not in used)
+    ]
 
     # 2. Узлы без владельца. Один счётчик бесполезен: именно срезы показывают,
     #    что дописать.
     orphans = [node for node in nodes if node.id not in owned]
     if orphans:
-        findings.append(f"Узлов без владельца: {len(orphans)} из {len(nodes)}")
-        findings += _slice("модули", _top([node.module for node in orphans]))
-        findings += _slice(
-            "каталоги внутри модуля",
-            _top(
+        findings.append(
+            OwnershipFinding(
+                code="unowned-nodes",
+                subject="",
+                count=len(orphans),
+                message=f"узлов без владельца: {len(orphans)} из {len(nodes)}",
+            )
+        )
+        findings += [
+            OwnershipFinding(
+                code="unowned-module",
+                subject=module,
+                count=count,
+                message=f"узлов без владельца в модуле: {count}",
+            )
+            for module, count in _ranked([node.module for node in orphans])
+        ]
+        findings += [
+            OwnershipFinding(
+                code="unowned-directory",
+                subject=directory,
+                count=count,
+                message=f"узлов без владельца в каталоге: {count}",
+            )
+            for directory, count in _ranked(
                 [
                     (node.symbol.sources[0].path.rsplit("/", 1)[0] if node.symbol.sources else "?")
                     for node in orphans
                     if node.symbol
                 ]
-            ),
-        )
+            )
+        ]
 
     # 3. Команды без узлов.
     assigned = {decisions[node.id].team for node in nodes}
-    idle = sorted(team.id for team in ownership.teams if team.id not in assigned)
-    if idle:
-        findings.append(f"Команды, которым не досталось ни одного узла: {', '.join(idle)}")
+    findings += [
+        OwnershipFinding(
+            code="idle-team",
+            subject=team_id,
+            count=0,
+            message="команде не досталось ни одного узла",
+        )
+        for team_id in sorted(team.id for team in ownership.teams if team.id not in assigned)
+    ]
 
-    warnings: list[str] = []
+    warnings: list[OwnershipFinding] = []
 
     # 4. Ничьи по приоритету. Формально детерминированно, но человек узнаёт
     #    об этом, только когда документ уезжает не в ту команду.
-    ties = sorted(node.doc_path for node in nodes if decisions[node.id].tie)
-    if ties:
-        warnings.append(f"Ничьи по приоритету у {len(ties)} узлов, победил меньший id:")
-        warnings += [f"    {path}" for path in ties[:_TOP]]
+    for node in sorted(nodes, key=lambda item: (item.doc_path, item.id)):
+        decision = decisions[node.id]
+        if decision.tie and decision.winner is not None:
+            top = decision.winner.priority
+            rivals = sum(1 for rule in decision.matched if rule.priority == top)
+            warnings.append(
+                OwnershipFinding(
+                    code="priority-tie",
+                    subject=node.doc_path,
+                    count=rivals,
+                    message=f"ничья по приоритету между {rivals} правилами, победил меньший id",
+                )
+            )
 
     # Partial-класс, чьи файлы лежат в зонах разных команд: правило «любой
     # источник» отдаёт его одной из них, и это стоит увидеть глазами.
-    split = sorted(
-        node.doc_path
-        for node in nodes
-        if node.symbol
-        and len({source.path.rsplit("/", 1)[0] for source in node.symbol.sources}) > 1
-        and decisions[node.id].team
-    )
+    for node in sorted(nodes, key=lambda item: (item.doc_path, item.id)):
+        if node.symbol is None or not decisions[node.id].team:
+            continue
+        folders = len({source.path.rsplit("/", 1)[0] for source in node.symbol.sources})
+        if folders > 1:
+            warnings.append(
+                OwnershipFinding(
+                    code="split-type",
+                    subject=node.doc_path,
+                    count=folders,
+                    message=f"файлы типа лежат в {folders} каталогах",
+                )
+            )
+
+    return OwnershipLint(nodes=len(nodes), findings=findings, warnings=warnings)
+
+
+def _slice(title: str, rows: list[OwnershipFinding]) -> list[str]:
+    return [f"  {title}:"] + [f"    {row.count:6}  {row.subject}" for row in rows[:_TOP]]
+
+
+def _of(rows: list[OwnershipFinding], code: LintCode) -> list[OwnershipFinding]:
+    return [row for row in rows if row.code == code]
+
+
+def format_lint(report: OwnershipLint) -> tuple[list[str], list[str]]:
+    """Текст линта: `(находки, предупреждения)` строками, срезы — по десять."""
+    findings: list[str] = []
+
+    dead = _of(report.findings, "dead-rule")
+    if dead:
+        names = ", ".join(row.subject for row in dead)
+        findings.append(f"Правила, не совпавшие ни с одним узлом: {names}")
+
+    for summary in _of(report.findings, "unowned-nodes"):
+        findings.append(f"Узлов без владельца: {summary.count} из {report.nodes}")
+        findings += _slice("модули", _of(report.findings, "unowned-module"))
+        findings += _slice("каталоги внутри модуля", _of(report.findings, "unowned-directory"))
+
+    idle = _of(report.findings, "idle-team")
+    if idle:
+        names = ", ".join(row.subject for row in idle)
+        findings.append(f"Команды, которым не досталось ни одного узла: {names}")
+
+    warnings: list[str] = []
+
+    ties = _of(report.warnings, "priority-tie")
+    if ties:
+        warnings.append(f"Ничьи по приоритету у {len(ties)} узлов, победил меньший id:")
+        warnings += [f"    {row.subject}" for row in ties[:_TOP]]
+
+    split = _of(report.warnings, "split-type")
     if split:
         warnings.append(f"Типов, чьи файлы лежат в разных каталогах: {len(split)}")
-        warnings += [f"    {path}" for path in split[:_TOP]]
+        warnings += [f"    {row.subject}" for row in split[:_TOP]]
 
     return findings, warnings
+
+
+def lint(nodes: list[DocNode], ownership: Ownership) -> tuple[list[str], list[str]]:
+    """Диагностика набора правил: `(находки, предупреждения)` строками.
+
+    Находка — то, что почти наверняка дефект настройки. Предупреждение — то, что
+    формально корректно, но обычно означает недосмотр. Текстовая обёртка над
+    `lint_findings`: структура — для агента, строки — для человека и для тех,
+    кто зовёт `lint` по-старому.
+    """
+    return format_lint(lint_findings(nodes, ownership))
 
 
 def explain(node: DocNode, ownership: Ownership) -> str:

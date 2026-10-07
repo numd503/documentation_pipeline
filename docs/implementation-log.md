@@ -9988,3 +9988,38 @@ git отказал целиком, ничего не добавив, а выво
 
 **Проверка:** SampleSolution 6/1/1/2 при `total` 10; WebWorkspace 25/4/0, `page_covered` 5;
 протухшее правило — в `stale_overrides`; полная — ниже, после S06 и S12.
+
+---
+
+## S06 — вход шага 2 в библиотеку; JSON у команд шага 2 и `arch validate`; сверка схем (07.10.2026)
+
+**Создано:** `docpipe/step2.py`, `tests/test_step2.py`, `tests/test_schemas.py` (вместе 41).
+**Изменено:** `docpipe/cli.py`, `docpipe/materialize/{status,apply,explain,ownership}.py`,
+`docpipe/arch/{load,__init__}.py`, `docpipe/registry/anchors.py` (сюда переехала
+`read_anchors`), `docs/materialize.md`, `docs/arch-registry.md`, `docs/backlog.md`
+(пункт о схемах закрыт), `docs/module-review.md`, `docs/business-implementation-plan.md`,
+`CLAUDE.md` (абзац о входе шага 2).
+
+`step2.prepare(manifest, root, settings, config, *, …, links)` не печатает и не выходит
+из процесса: ошибки входа — `Step2Error(code, message)`, предупреждения бизнес-ссылок —
+`Step2Inputs.warnings`. `_prepare` в CLI — обёртка, `load_config` внутри `try`: битая
+конфигурация — код 2 вместо трассировки и кода 1. JSON: `MaterializeReport`,
+`ExplainReport` (с `exists` и `zone_diff`; код 1 — из того же сравнения зон),
+`OwnershipLint` (находки `{code, subject, count, message}`; `lint()` — обёртка),
+`ArchValidation`; конверт `docs status` — `schema_version`, `notes`, `substituted`,
+`document_errors`, записи документов не тронуты. `tests/test_schemas.py`: каждая модель
+`SCHEMA_MODELS` равна закоммиченному файлу, в `schema/` нет файла без модели.
+
+**Отклонения и находки.**
+- `worklist` снят до и после правки — совпадает байт в байт; совпадают и тексты
+  `materialize`, `docs status`, `docs explain`, `docs owners --lint` с кодами возврата.
+- `read_anchors` перенесена из `cli.py`: `step2` не может импортировать CLI.
+- Нормализация BOM/CRLF в `docs explain` была записана дважды (для кода возврата и для
+  отчёта) — теперь одна `disk_text`.
+- Срез «топ-10» линта владения зависел от порядка узлов в манифесте (`most_common`) —
+  явный ключ `(-count, имя)`.
+- «Одна строка при битой конфигурации» выполняется только для отказов самого загрузчика:
+  `ValidationError` pydantic многострочна, `YAMLError` — по-прежнему трассировка (бэклог).
+- Тест держит, что сборки плана нет в `cli.py` (`build_plan(`, `scan_docs(` и т. д.).
+
+**Проверка:** команда S06 — 127 passed; полная — ниже, после S12.

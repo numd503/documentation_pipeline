@@ -20,16 +20,25 @@
 import difflib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
+
+from pydantic import BaseModel, ConfigDict
 
 from docpipe.discovery import matches_glob
 from docpipe.documents.model import ParsedDocument
 from docpipe.documents.zones import DocumentError, parse_document, read_document
 from docpipe.materialize.plan import (
     SCHEMA_PREFIX,
+    AgentAction,
+    Confidence,
+    FileAction,
     PlannedDoc,
+    Status,
     opens_front_matter,
 )
+
+# Версия отчёта `docs explain --format json`.
+SCHEMA_VERSION: Final[Literal["1.0"]] = "1.0"
 
 # Правило, по которому выбрано действие с файлом. Формулировки здесь, а не
 # в отчёте: их читают, чтобы понять поведение, и разойтись с кодом они не должны.
@@ -232,6 +241,122 @@ def _zone_lines(diff: ZoneDiff) -> list[str]:
     return lines
 
 
+def disk_text(path: Path) -> str:
+    """Текст файла так, как его сравнивает план: без BOM, переводы строк — LF.
+
+    Одна функция на отчёт и на код возврата: сравни их по-разному, и строка
+    «авторские секции не тронуты» разошлась бы с кодом 1 на файле с CRLF.
+    """
+    return path.read_bytes().decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+
+
+class _Base(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class ExplainPlan(_Base):
+    """Решение плана по документу — те же поля, что печатает текст."""
+
+    status: Status
+    file_action: FileAction
+    # Правило, по которому выбрано действие (`FILE_ACTION_RULES`).
+    file_action_rule: str
+    reason: str
+    relocate_from: str | None
+    confidence: Confidence | None
+    agent_action: AgentAction
+    node_id: str | None
+    team: str | None
+    # Почему файл трогать нельзя; у `refuse` — всегда.
+    error: str | None
+    empty_sections: list[str]
+    orphan_sections: list[str]
+
+
+class ExplainZones(_Base):
+    """Разница по зонам (`ZoneDiff`) с вычисленным `touches_authored`."""
+
+    front_matter: list[str]
+    generated_changed: bool
+    sections_added: list[str]
+    sections_changed: list[str]
+    sections_removed: list[str]
+    touches_authored: bool
+
+
+class ExplainReport(_Base):
+    """Отчёт `docs explain --format json`.
+
+    `scan_verdict` — почему обход документов не примет файл; `None` и при
+    принятом файле, и при отсутствующем — их различает `exists`. `plan` пуст,
+    когда в плане такого документа нет (или план не собрался, тогда причины
+    в `errors`). `zone_diff` пуст, когда сравнивать нечего: файла нет либо
+    прогон его не открывает на запись.
+    """
+
+    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    doc_path: str
+    exists: bool
+    scan_verdict: str | None
+    plan: ExplainPlan | None
+    zone_diff: ExplainZones | None
+    errors: list[str]
+
+
+def explain_report(
+    doc_path: str,
+    doc: PlannedDoc | None,
+    root: Path,
+    globs: list[str],
+    errors: list[str] | None = None,
+) -> ExplainReport:
+    """Отчёт по одному документу структурой. Те же вердикты, что у текста.
+
+    Обе формы строятся из `scan_verdict` и `zone_diff`: правило отсева
+    и сравнение зон живут в одном месте, расходиться им негде.
+    """
+    path = root / doc_path
+    exists = path.is_file()
+    verdict = scan_verdict(path, root, globs) if exists else None
+
+    plan: ExplainPlan | None = None
+    zones: ExplainZones | None = None
+    if doc is not None:
+        plan = ExplainPlan(
+            status=doc.status,
+            file_action=doc.file_action,
+            file_action_rule=FILE_ACTION_RULES.get(doc.file_action, ""),
+            reason=doc.reason,
+            relocate_from=doc.relocate_from,
+            confidence=doc.confidence,
+            agent_action=doc.agent_action,
+            node_id=doc.node_id,
+            team=doc.team,
+            error=doc.error,
+            empty_sections=list(doc.empty_sections),
+            orphan_sections=list(doc.orphan_sections),
+        )
+        if doc.content is not None and exists:
+            diff = zone_diff(disk_text(path), doc.content)
+            zones = ExplainZones(
+                front_matter=list(diff.front_matter),
+                generated_changed=diff.generated_changed,
+                sections_added=list(diff.sections_added),
+                sections_changed=list(diff.sections_changed),
+                sections_removed=list(diff.sections_removed),
+                touches_authored=diff.touches_authored,
+            )
+
+    return ExplainReport(
+        doc_path=doc_path,
+        exists=exists,
+        scan_verdict=verdict,
+        plan=plan,
+        zone_diff=zones,
+        errors=list(errors or []),
+    )
+
+
 def format_explain_document(
     doc_path: str,
     doc: PlannedDoc | None,
@@ -279,7 +404,7 @@ def format_explain_document(
     if doc.content is None or not exists:
         return "\n".join(lines)
 
-    before = path.read_bytes().decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+    before = disk_text(path)
     lines += _zone_lines(zone_diff(before, doc.content))
 
     if show_diff:
@@ -290,7 +415,13 @@ def format_explain_document(
 
 __all__ = [
     "FILE_ACTION_RULES",
+    "SCHEMA_VERSION",
+    "ExplainPlan",
+    "ExplainReport",
+    "ExplainZones",
     "ZoneDiff",
+    "disk_text",
+    "explain_report",
     "format_explain_document",
     "scan_verdict",
     "unified",

@@ -11,13 +11,16 @@
 
 from collections import Counter, defaultdict
 from difflib import get_close_matches
+from pathlib import Path
 from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from docpipe.model import DocNode, Manifest
+from docpipe.registry.config import load_registries
 from docpipe.registry.model import RegistryItem, RegistryResult
 from docpipe.registry.parse import split_type_name, strip_generic_arity
+from docpipe.registry.reader import read_registry
 
 # Виды якорей, которые являются точками входа. Остальное (поля списка, шаги
 # workflow) описывает устройство, а не вход, и в счётчик входов не идёт.
@@ -198,6 +201,25 @@ def resolve_anchors(results: list[RegistryResult], manifest: Manifest) -> list[R
                     anchors.append(_anchor(child, index, scope=item.ref))
 
     return sorted(anchors, key=lambda a: (a.kind, a.scope or "", a.ref, a.version or ""))
+
+
+def read_anchors(
+    manifest: Manifest, registries: Path, root: Path
+) -> tuple[list[ResolvedAnchor], list[str]]:
+    """Реестры → разрешённые якоря. Единственная сборка этой цепочки.
+
+    Политику отказа задаёт вызывающий, а не эта функция: `anchors` и `business`
+    падают на нечитаемых реестрах, а шаг 2 продолжает без бизнес-раздела —
+    реестры могут быть описаны раньше первого бизнес-документа, и ронять из-за
+    этого материализацию технической документации было бы наказанием не за то.
+    Раньше расхождение политик тянуло за собой три копии самой цепочки.
+
+    Живёт здесь, а не в `cli.py`: её зовёт и вход шага 2 (`docpipe.step2`),
+    которому импортировать CLI нельзя.
+    """
+    results = [read_registry(spec, root) for spec in load_registries(registries)]
+    errors = [error for result in results for error in result.errors]
+    return resolve_anchors(results, manifest), errors
 
 
 class AnchorMatch(_Base):

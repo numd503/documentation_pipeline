@@ -4,12 +4,20 @@
 matter» превращает её в изменяющую, и её перестают гонять в CI.
 """
 
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
+
+from pydantic import BaseModel, ConfigDict
 
 from docpipe.hashing import stable_json_dumps
 from docpipe.materialize.plan import MaterializePlan, PlannedDoc
+
+# Версия конверта `docs status --format json`. Своя, не связана ни с очередью
+# (`worklist`), ни с манифестом: у них разные потребители и разные поводы
+# менять формат.
+SCHEMA_VERSION: Final[Literal["1.0"]] = "1.0"
 
 AGENT_ACTIONS: Final[frozenset[str]] = frozenset({"write", "review", "skip"})
 
@@ -99,23 +107,86 @@ def document_json(doc: PlannedDoc) -> dict[str, Any]:
     }
 
 
+class _Base(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class SubstitutedTemplate(_Base):
+    """Вид, документированный базовым скелетом за неимением своего, и сколько узлов."""
+
+    template: str
+    count: int
+
+
+class DocumentProblem(_Base):
+    """Почему файл трогать нельзя (`PlannedDoc.error`), по одному документу."""
+
+    doc_path: str
+    error: str
+
+
+class StatusReport(_Base):
+    """Конверт `docs status --format json`.
+
+    Записи документов — словари `document_json`, а не модель: их форму держит
+    `WorklistEntry` (`extra="forbid"`), и вторая модель той же записи здесь
+    разошлась бы с ней на первом поле. Всё новое — только в конверте: новое
+    поле в записи уронило бы `worklist`, который собирает очередь из неё же.
+
+    `notes`, `substituted` и `document_errors` текст печатал всегда, а JSON
+    терял: агент, читавший JSON, не видел ни замечаний по переносам, ни
+    подстановки скелета, ни причины отказа — только статус `broken`.
+    """
+
+    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    counts: dict[str, int]
+    documents: list[dict[str, Any]]
+    errors: list[str]
+    manifest_partial: bool
+    total: int
+    notes: list[str]
+    substituted: list[SubstitutedTemplate]
+    document_errors: list[DocumentProblem]
+
+
+def substituted_templates(plan: MaterializePlan) -> list[SubstitutedTemplate]:
+    """Подстановки скелета списком: чаще — выше, при равенстве по имени.
+
+    Общая для `docs status` и `materialize`: порядок задан ключом здесь,
+    а не порядком словаря в плане.
+    """
+    return [
+        SubstitutedTemplate(template=name, count=count)
+        for name, count in sorted(plan.substituted.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
+def status_report(plan: MaterializePlan, documents: list[PlannedDoc]) -> StatusReport:
+    """Отчёт по выборке. Счётчики и записи — по ней, `notes` и подстановки — по плану.
+
+    `notes` и `substituted` описывают прогон, а не документ, и сузить их
+    фильтром нечем: замечание о переносе не привязано к одному пути.
+    """
+    ordered = sorted(documents, key=lambda item: item.doc_path)
+    counted = Counter(doc.status for doc in documents)
+    return StatusReport(
+        counts=dict(sorted(counted.items())),
+        documents=[document_json(doc) for doc in ordered],
+        errors=list(plan.errors),
+        manifest_partial=plan.manifest_partial,
+        total=len(documents),
+        notes=list(plan.notes),
+        substituted=substituted_templates(plan),
+        document_errors=[
+            DocumentProblem(doc_path=doc.doc_path, error=doc.error) for doc in ordered if doc.error
+        ],
+    )
+
+
 def format_status_json(plan: MaterializePlan, documents: list[PlannedDoc]) -> str:
     """Машинный вывод. Через `stable_json_dumps`, поэтому два вызова совпадают
     байт в байт — иначе агент увидит изменение там, где его нет."""
-    from collections import Counter
-
-    counted = Counter(doc.status for doc in documents)
-    return stable_json_dumps(
-        {
-            "counts": dict(sorted(counted.items())),
-            "documents": [
-                document_json(doc) for doc in sorted(documents, key=lambda item: item.doc_path)
-            ],
-            "errors": plan.errors,
-            "manifest_partial": plan.manifest_partial,
-            "total": len(documents),
-        }
-    ).rstrip("\n")
+    return stable_json_dumps(status_report(plan, documents).model_dump(mode="json")).rstrip("\n")
 
 
 def format_status(plan: MaterializePlan, documents: list[PlannedDoc]) -> str:
