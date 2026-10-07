@@ -397,7 +397,7 @@ def test_config_check_separates_write_targets_from_inputs(nested: Path) -> None:
 
 def test_config_check_reports_a_missing_engine(nested: Path) -> None:
     """Движок задаётся явно и не ищется в PATH; «не найден» обязано быть видно
-    до сборки графа, а не на ней."""
+    до сборки графа, а не на ней — и кодом возврата, а не только строкой."""
     config = nested / "docs/ml/cashflow-docpipe/docpipe.yaml"
     config.write_text(
         config.read_text(encoding="utf-8") + 'graph:\n  engine_path: "/нет/такого"\n',
@@ -409,6 +409,7 @@ def test_config_check_reports_a_missing_engine(nested: Path) -> None:
         ["config", "check", "--config", str(config), "--root", "."],
     )
 
+    assert result.exit_code == 1
     assert "НЕ НАЙДЕН" in result.output
     assert "/нет/такого" in result.output
 
