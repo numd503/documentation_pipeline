@@ -29,7 +29,10 @@ from docpipe.model import FileParseResult, ParserVersions
 # И при новом поле `FileParseResult`: запись старой версии разберётся
 # с пустым значением по умолчанию, и находка даст ноль, неотличимый от
 # «таких нет». 5 — поле `registration_calls` (кандидаты в `di_methods`).
-CACHE_VERSION = "5"
+# 6 — `Attribute.expression_args`/`expression_named_args` (S17): без сброса
+# аргумент-выражение из старой записи читался бы литералом, и маршрут
+# `Constants.PrefixApi` остался бы неразличим с настоящим.
+CACHE_VERSION = "6"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta  (key TEXT PRIMARY KEY, value TEXT);

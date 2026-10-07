@@ -64,6 +64,22 @@ _MEMBER_KIND_BY_NODE: dict[str, MemberKind] = {
 # включая ограничения `where T : class`.
 _SIGNATURE_TERMINATORS = frozenset({"block", "arrow_expression_clause", "accessor_list", ";"})
 
+# Литералы — всё, чьё значение известно из текста. Остальное (`Constants.X`,
+# `nameof(X)`, `$"{X}/y"`, `X + "/y"`) — выражение: его текст хранится как есть
+# и помечается, иначе потребитель примет `Constants.PrefixApi` за значение.
+_LITERAL_NODES = frozenset(
+    {
+        "string_literal",
+        "verbatim_string_literal",
+        "raw_string_literal",
+        "integer_literal",
+        "real_literal",
+        "boolean_literal",
+        "character_literal",
+        "null_literal",
+    }
+)
+
 _WHITESPACE = re.compile(r"\s+")
 _SPACE_AROUND_DOT = re.compile(r"\s*\.\s*")
 _SUMMARY = re.compile(r"<summary>(.*?)</summary>", re.DOTALL | re.IGNORECASE)
@@ -134,6 +150,8 @@ def _attributes(declaration: Node) -> list[Attribute]:
 
             args: list[str] = []
             named: dict[str, str] = {}
+            expression_args: list[int] = []
+            expression_named: list[str] = []
             argument_list = next(
                 (c for c in attribute.children if c.type == "attribute_argument_list"), None
             )
@@ -144,13 +162,26 @@ def _attributes(declaration: Node) -> list[Attribute]:
                     if not argument.named_children:
                         continue
                     value = argument.named_children[-1]
+                    expression = value.type not in _LITERAL_NODES
                     key = argument.child_by_field_name("name")
                     if key is not None and len(argument.named_children) > 1:
                         named[_text(key)] = _literal_text(value)
+                        if expression:
+                            expression_named.append(_text(key))
                     else:
+                        if expression:
+                            expression_args.append(len(args))
                         args.append(_literal_text(value))
 
-            found.append(Attribute(name=name, args=args, named_args=dict(sorted(named.items()))))
+            found.append(
+                Attribute(
+                    name=name,
+                    args=args,
+                    named_args=dict(sorted(named.items())),
+                    expression_args=expression_args,
+                    expression_named_args=sorted(set(expression_named)),
+                )
+            )
     return found
 
 

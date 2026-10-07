@@ -2,13 +2,27 @@
   "$defs": {
     "Attribute": {
       "additionalProperties": false,
-      "description": "Атрибут C# вида `[Route(\"api/v1\", Name = \"x\")]`.\n\n`name` — без суффикса `Attribute`: `[RouteAttribute]` и `[Route]` неразличимы.\nСтроковые значения хранятся без кавычек.",
+      "description": "Атрибут C# вида `[Route(\"api/v1\", Name = \"x\")]`.\n\n`name` — без суффикса `Attribute`: `[RouteAttribute]` и `[Route]` неразличимы.\nСтроковые значения хранятся без кавычек.\n\nАргумент-выражение (`[Route(Constants.PrefixApi)]`, `nameof(X)`) хранится\nисходным текстом, и по одной строке его не отличить от литерала с тем же\nтекстом. Поэтому рядом — номера таких позиционных аргументов и имена таких\nименованных. Без флага `Constants.PrefixApi` уходил в маршрут как есть:\nпуть `Constants.PrefixApi/apps` выглядит настоящим и не совпадает ни с чем.",
       "properties": {
         "args": {
           "items": {
             "type": "string"
           },
           "title": "Args",
+          "type": "array"
+        },
+        "expression_args": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Expression Args",
+          "type": "array"
+        },
+        "expression_named_args": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Expression Named Args",
           "type": "array"
         },
         "name": {
@@ -332,7 +346,7 @@
     },
     "Endpoint": {
       "additionalProperties": false,
-      "description": "HTTP-эндпоинт контроллера со склеенным маршрутом.",
+      "description": "HTTP-эндпоинт контроллера со склеенным маршрутом.\n\n`http_method` — `GET`, `POST`, … либо `*`: действие с `[Route]` без глагола\nASP.NET принимает на любом методе.\n\n`unresolved` — почему маршрут не собран: аргумент маршрута записан\nвыражением, которое не разрешилось в литерал. Тогда `route` пуст, а не\nвыдуман: путь `Constants.PrefixApi/apps` выглядит настоящим и не совпадает\nни с чем. Пустая строка — маршрут собран (в том числе законно пустой\nу конвенционального действия).",
       "properties": {
         "http_method": {
           "title": "Http Method",
@@ -348,6 +362,11 @@
         },
         "route": {
           "title": "Route",
+          "type": "string"
+        },
+        "unresolved": {
+          "default": "",
+          "title": "Unresolved",
           "type": "string"
         }
       },
@@ -1093,7 +1112,7 @@
       "type": "string"
     },
     "schema_version": {
-      "default": "2.1",
+      "default": "2.2",
       "pattern": "^2\\.[0-9]+$",
       "title": "Schema Version",
       "type": "string"

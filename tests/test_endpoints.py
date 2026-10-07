@@ -9,15 +9,20 @@ from docpipe.model import Endpoint, Symbol
 from tests.conftest import by_fqn, index_of
 
 
-def _symbol(source: bytes) -> Symbol:
-    """Единственный тип из исходника."""
+def _symbol(source: bytes) -> tuple[Symbol, dict[str, Symbol]]:
+    """Единственный тип из исходника и индекс, в котором он лежит."""
     result = parse_source(source, "x.cs")
     index = build_symbol_index([result], {"x.cs": "m/M.csproj"})
-    return next(iter(index.values()))
+    return next(iter(index.values())), index
 
 
 def _routes(source: bytes) -> list[tuple[str, str]]:
-    return [(e.http_method, e.route) for e in extract_endpoints(_symbol(source))]
+    return [(e.http_method, e.route) for e in extract_endpoints(*_symbol(source))]
+
+
+def _endpoints_of(root: Path, fqn: str) -> list[Endpoint]:
+    index = index_of(root)
+    return extract_endpoints(by_fqn(index)[fqn], index)
 
 
 # --------------------------------------------------------------------------------------
@@ -26,8 +31,7 @@ def _routes(source: bytes) -> list[tuple[str, str]]:
 
 
 def test_controller_endpoints(sample_solution: Path) -> None:
-    index = by_fqn(index_of(sample_solution))
-    endpoints = extract_endpoints(index["Sample.Pricing.Api.Controllers.PricingController"])
+    endpoints = _endpoints_of(sample_solution, "Sample.Pricing.Api.Controllers.PricingController")
 
     assert endpoints == [
         Endpoint(http_method="POST", route="api/v1/Pricing", member="RecalculateAsync", line=24),
@@ -36,8 +40,7 @@ def test_controller_endpoints(sample_solution: Path) -> None:
 
 
 def test_non_controller_has_no_endpoints(sample_solution: Path) -> None:
-    index = by_fqn(index_of(sample_solution))
-    assert extract_endpoints(index["Sample.Pricing.Api.Services.PricingService"]) == []
+    assert _endpoints_of(sample_solution, "Sample.Pricing.Api.Services.PricingService") == []
 
 
 # --------------------------------------------------------------------------------------
@@ -230,10 +233,15 @@ public class C
     assert _routes(source) == [("GET", "x"), ("POST", "x")]
 
 
-def test_route_only_member_is_skipped() -> None:
-    """`[Route]` без `Http*` — маршрут без ограничения по методу; глагола нет."""
+def test_route_only_member_accepts_any_method() -> None:
+    """`[Route]` без `Http*` — маршрут без ограничения по методу: эндпоинт `*` (S17).
+
+    До S17 такое действие не давало эндпоинта вовсе, и контроллер попадал
+    в «конвенциональные» (squidex: 6 таких действий). Подробно —
+    `tests/test_endpoints_routes.py`.
+    """
     source = b'namespace N;\npublic class C { [Route("x")] public void M() { } }\n'
-    assert _routes(source) == []
+    assert _routes(source) == [("*", "x")]
 
 
 def test_non_http_attributes_are_ignored() -> None:
@@ -263,14 +271,15 @@ public class C
 
 def test_member_line_is_recorded() -> None:
     source = b'namespace N;\npublic class C\n{\n    [HttpGet("x")]\n    public void M() { }\n}\n'
-    endpoint = extract_endpoints(_symbol(source))[0]
+    endpoint = extract_endpoints(*_symbol(source))[0]
     assert endpoint.member == "M"
     assert endpoint.line == 4  # строка с атрибутом: он потомок объявления члена
 
 
 def test_extraction_is_deterministic(sample_solution: Path) -> None:
-    symbol = by_fqn(index_of(sample_solution))["Sample.Pricing.Api.Controllers.PricingController"]
-    assert extract_endpoints(symbol) == extract_endpoints(symbol)
+    index = index_of(sample_solution)
+    symbol = by_fqn(index)["Sample.Pricing.Api.Controllers.PricingController"]
+    assert extract_endpoints(symbol, index) == extract_endpoints(symbol, index)
 
 
 # --------------------------------------------------------------------------------------
@@ -290,8 +299,7 @@ def test_production_route_forms_on_one_controller(wild_solution: Path) -> None:
     То есть глагол и путь метода объявлены **разными** атрибутами, и резолвер
     обязан складывать три независимые части, ни одна из которых не обязательна.
     """
-    index = by_fqn(index_of(wild_solution))
-    endpoints = extract_endpoints(index["Wild.Api.Controllers.InnerDebtsController"])
+    endpoints = _endpoints_of(wild_solution, "Wild.Api.Controllers.InnerDebtsController")
 
     assert [(e.http_method, e.route) for e in endpoints] == [
         ("GET", "api/ml/innerdebts"),  # пустой [HttpGet] без [Route]
@@ -312,8 +320,7 @@ def test_conventional_controller_has_no_endpoints(wild_solution: Path) -> None:
     `controller`, у которого эндпоинтов нет вовсе либо есть эндпоинт с пустым
     маршрутом.
     """
-    index = by_fqn(index_of(wild_solution))
-    assert extract_endpoints(index["Wild.Api.Controllers.HomeController"]) == []
+    assert _endpoints_of(wild_solution, "Wild.Api.Controllers.HomeController") == []
 
 
 def test_controller_without_a_type_route_gives_an_empty_route() -> None:

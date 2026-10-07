@@ -176,6 +176,9 @@ def _decorator_attribute(decorator: Node) -> Attribute | None:
 
     args: list[str] = []
     named: dict[str, str] = {}
+    # Позиционный аргумент-выражение (`@Action(LoadDebts)`) хранится текстом,
+    # как и у C#; номер — в `expression_args`, чтобы текст не приняли за литерал.
+    expressions: list[int] = []
 
     if inner.type == "call_expression":
         name_node = inner.child_by_field_name("function")
@@ -193,6 +196,7 @@ def _decorator_attribute(decorator: Node) -> Attribute | None:
             elif _is_literal(argument):
                 args.append(_string_value(argument))
             else:
+                expressions.append(len(args))
                 args.append(normalize_type_text(_text(argument)))
     else:
         # Декоратор без скобок: `@Injectable` вместо `@Injectable()`.
@@ -201,7 +205,12 @@ def _decorator_attribute(decorator: Node) -> Attribute | None:
     name = normalize_type_text(_text(name_node)).rpartition(".")[2]
     if not name:
         return None
-    return Attribute(name=name, args=args, named_args=dict(sorted(named.items())))
+    return Attribute(
+        name=name,
+        args=args,
+        named_args=dict(sorted(named.items())),
+        expression_args=expressions,
+    )
 
 
 def _attributes(declaration: Node) -> list[Attribute]:

@@ -21,6 +21,7 @@ from docpipe.model import Attribute, FileParseResult, Member, RawDeclaration, So
 from docpipe.symbols import strip_generics, symbol_key
 
 __all__ = [
+    "base_symbol_key",
     "base_type_arity",
     "build_symbol_index",
     "compute_closures",
@@ -142,9 +143,15 @@ def _unique_attributes(attributes: list[Attribute]) -> list[Attribute]:
     Ключ строится вручную: аргументы — списки и словари, поэтому модель
     нехэшируема и `set` тут не работает.
     """
-    seen: dict[tuple[str, str], Attribute] = {}
+    seen: dict[tuple[str, str, str], Attribute] = {}
     for attribute in attributes:
-        key = (attribute.name, repr((attribute.args, sorted(attribute.named_args.items()))))
+        key = (
+            attribute.name,
+            repr((attribute.args, sorted(attribute.named_args.items()))),
+            # Флаги — последним элементом: порядок атрибутов с разным текстом
+            # от них не зависит, а `[Route("X.Y")]` и `[Route(X.Y)]` не сливаются.
+            repr((attribute.expression_args, attribute.expression_named_args)),
+        )
         seen.setdefault(key, attribute)
     return [seen[key] for key in sorted(seen)]
 
@@ -286,7 +293,7 @@ def _build_symbol(
     )
 
 
-def _base_symbol_key(
+def base_symbol_key(
     symbol: Symbol,
     position: int,
     index: dict[str, Symbol],
@@ -337,7 +344,7 @@ def compute_closures(index: dict[str, Symbol]) -> dict[str, Symbol]:
             current = index[queue.pop()]
             for position, fqn in enumerate(current.base_types):
                 closure.add(fqn)
-                base_key = _base_symbol_key(current, position, index, by_fqn)
+                base_key = base_symbol_key(current, position, index, by_fqn)
                 # Защита от циклов: `A : B`, `B : A` в C# невозможны, но
                 # получить их из битого или частично разобранного кода можно.
                 if base_key is not None and base_key not in visited:

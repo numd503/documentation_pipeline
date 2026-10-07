@@ -83,6 +83,8 @@
         "attributes": [
           {
             "args": [],
+            "expression_args": [],
+            "expression_named_args": [],
             "name": "ApiController",
             "named_args": {}
           }
@@ -151,13 +153,15 @@
           "http_method": "POST",
           "line": 24,
           "member": "RecalculateAsync",
-          "route": "api/v1/Pricing"
+          "route": "api/v1/Pricing",
+          "unresolved": ""
         },
         {
           "http_method": "GET",
           "line": 18,
           "member": "GetAsync",
-          "route": "api/v1/Pricing/{id:guid}"
+          "route": "api/v1/Pricing/{id:guid}",
+          "unresolved": ""
         }
       ],
       "id": "type:src/Sample.Pricing.Api/Sample.Pricing.Api.csproj#Sample.Pricing.Api.Controllers.PricingController`0",
@@ -178,6 +182,8 @@
             "args": [
               "api/v1/[controller]"
             ],
+            "expression_args": [],
+            "expression_named_args": [],
             "name": "Route",
             "named_args": {}
           }
@@ -226,6 +232,8 @@
                 "args": [
                   "{id:guid}"
                 ],
+                "expression_args": [],
+                "expression_named_args": [],
                 "name": "HttpGet",
                 "named_args": {}
               }
@@ -245,6 +253,8 @@
             "attributes": [
               {
                 "args": [],
+                "expression_args": [],
+                "expression_named_args": [],
                 "name": "HttpPost",
                 "named_args": {}
               }
@@ -653,7 +663,7 @@
   },
   "partial": null,
   "ruleset_version": "2026-07-30.1",
-  "schema_version": "2.1",
+  "schema_version": "2.2",
   "sql_objects": [],
   "sql_usages": [],
   "table_literals": []

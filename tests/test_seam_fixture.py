@@ -6,7 +6,7 @@
 выражением по тексту, а не существование файла: «упрощение» фикстуры
 оставило бы тесты этапа C зелёными и бессмысленными.
 
-Вторая половина фиксирует числа прогона — сейчас **после S16**. Это не
+Вторая половина фиксирует числа прогона — сейчас **после S17**. Это не
 спецификация, а точка отсчёта: каждая задача этапа C меняет их и обязана
 поправить здесь то, что изменила, с комментарием «задача: было → стало», —
 тогда разница видна в диффе теста, а не в пересказе. Что именно проверяет
@@ -495,31 +495,47 @@ def test_web_scan_runs_without_errors(frontend: WebScanResult) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Числа после S16 — их обновляет каждая следующая задача этапа C (S17–S21)
+# Числа после S17 — их обновляет каждая следующая задача этапа C (S18–S21)
 # --------------------------------------------------------------------------------------
 
 LINK_COUNTS: Final = {
-    "linked": 0,
+    # S17: 0 → 1. `GET api/info` фронта лёг на `InfoController`: префикс `api`
+    # пришёл от базы `ApiController` через `Constants.PrefixApi`.
+    "linked": 1,
     # S16: 1 → 0. `GET ''` редактора «почти» совпадал с `GET {id}` заказов
     # (оба ключа без фиксированных сегментов); вызов редактора теперь
     # невосстановлен — поле присваивается вне инициализатора.
     "almost": 0,
     # S16: 12 → 4. Вызовы больше не удваиваются на DTO, и из восстановленных
     # ушли четыре ключа-ошибки (`list`, `get`, `legacy`, редактор).
-    "calls_without_endpoint": 4,
+    # S17: 4 → 3. `api/info` связался; остались `archived`, `search` и внешний `feed.json`.
+    "calls_without_endpoint": 3,
     # S16: 9 → 10. `GET {id}` заказов больше не «занят» выдуманной связью.
-    "endpoints_without_caller": 10,
-    # `GET info` у InfoController и OrdersController: базы не наследуются (S17).
-    "duplicate_endpoints": 1,
+    # S17: 10 → 13. Эндпоинтов 14 вместо 10 (`*` у комментариев, `GET`/`POST`
+    # у `AcceptVerbs`, `GET api/orders` вместо пустого), один из них теперь зовут.
+    "endpoints_without_caller": 13,
+    # S17: 1 → 0. `GET info` у InfoController и OrdersController был ложным
+    # дублем: под своими базами это `api/info` и `api/orders/info`.
+    "duplicate_endpoints": 0,
     # S16: 13 → 4. Ровно число восстановленных вызовов в коде: вызов достаётся
     # узлу, в чей диапазон попал, а не каждому узлу файла (`AppDto` — ни одного).
     "calls_total": 4,
-    "endpoints_total": 10,
+    # S17: 10 → 14. Плюс `* api/comments/{}`, `GET`/`POST api/verbs`
+    # и `GET api/orders` — до S17 у него был пустой маршрут, и в ключи он не шёл.
+    "endpoints_total": 14,
+    # S17: новый счётчик. Все аргументы-выражения фикстуры разрешились.
+    "endpoints_unresolved": 0,
 }
 
 
 def test_endpoints(backend: ScanResult) -> None:
-    """До S17: префикс базы не наследуется, `[Route]` без глагола и `AcceptVerbs` пусты."""
+    """S17: префикс базы наследуется, `[Route]` без глагола даёт `*`, `AcceptVerbs` — два.
+
+    До S17 у `AppsController` и `InfoController` не было `api/` (база
+    `[Route(Constants.PrefixApi)]` не наследовалась и константа не
+    разрешалась), у `OrdersController` — `api/[controller]` базы с токеном,
+    а `CommentsController` и `VerbsController` не давали ничего.
+    """
     endpoints = {
         node.title: [(item.http_method, item.route) for item in node.endpoints]
         for node in backend.manifest.nodes
@@ -527,25 +543,32 @@ def test_endpoints(backend: ScanResult) -> None:
     assert endpoints == {
         "ApiController": [],
         "AppsController": [
-            ("GET", "apps"),
-            ("POST", "apps"),
-            ("GET", "apps/{app}"),
-            ("PUT", "apps/{app}"),
+            ("GET", "api/apps"),
+            ("POST", "api/apps"),
+            ("GET", "api/apps/{app}"),
+            ("PUT", "api/apps/{app}"),
         ],
-        "CommentsController": [],
+        "CommentsController": [("*", "api/comments/{id}")],
+        # Свой `[Route]` у класса отменяет маршрут базы `ApiController`.
         "ContentController": [
             ("GET", "content/{app}/{schema}"),
             ("POST", "content/{app}/{schema}"),
             ("GET", "content/{app}/{schema}/{id}"),
         ],
-        "InfoController": [("GET", "info")],
+        "InfoController": [("GET", "api/info")],
         "LegacyController": [],
-        # Пустой маршрут — `[HttpGet]` без базы: в ключи связи он не идёт.
-        "OrdersController": [("GET", ""), ("GET", "info"), ("GET", "{id}")],
+        # `[controller]` базы `TokenApiController` — имя наследника, а не базы.
+        "OrdersController": [
+            ("GET", "api/Orders"),
+            ("GET", "api/Orders/info"),
+            ("GET", "api/Orders/{id}"),
+        ],
         "TokenApiController": [],
-        "VerbsController": [],
+        "VerbsController": [("GET", "api/verbs"), ("POST", "api/verbs")],
     }
-    assert sum(len(node.endpoints) for node in backend.manifest.nodes) == 11
+    # S17: 11 → 14.
+    assert sum(len(node.endpoints) for node in backend.manifest.nodes) == 14
+    assert all(not item.unresolved for node in backend.manifest.nodes for item in node.endpoints)
 
 
 def _name(path: str) -> str:
@@ -651,31 +674,33 @@ def test_link(link: LinkReport) -> None:
     assert link.counts == LINK_COUNTS
     assert link.unconfigured_modules == ["seam-web"]
 
-    [duplicate] = link.duplicate_endpoints
-    assert (duplicate.http_method, duplicate.route) == ("GET", "info")
-    assert [node.rsplit(".", 1)[-1] for node in duplicate.nodes] == [
-        "InfoController`0",
-        "OrdersController`0",
-    ]
+    # S17: дубль `GET info` (InfoController и OrdersController) был ложным —
+    # у них разные базы, и маршруты `api/info` и `api/orders/info`.
+    assert link.duplicate_endpoints == []
+    assert link.unresolved_endpoints == []
 
     # S16: единственная «связь» (`GET ''` редактора «почти» с `GET {id}`) была
-    # выдуманной; вызов редактора невосстановлен, и связей нет ни одной.
-    assert link.links == []
+    # выдуманной; вызов редактора невосстановлен.
+    # S17: первая настоящая связь — прямой литерал `api/info`.
+    assert [
+        (
+            item.http_method,
+            item.route,
+            item.match,
+            [node.rsplit(".", 1)[-1] for node in item.endpoints],
+        )
+        for item in link.links
+    ] == [("GET", "api/info", "exact", ["InfoController`0"])]
 
 
 def test_conventional_controllers(link: LinkReport) -> None:
-    """До S17: шесть «конвенциональных», настоящий из них один — `LegacyController`.
+    """S17: шесть «конвенциональных» → один, настоящий: `LegacyController`.
 
-    Две абстрактные базы, `[Route]` без глагола, `AcceptVerbs` и пустой маршрут
-    `[HttpGet]` у наследника базы с токеном — всё это сюда попадать не должно.
+    До S17 сюда шли две абстрактные базы, `[Route]` без глагола, `AcceptVerbs`
+    и пустой маршрут `[HttpGet]` у наследника базы с токеном.
     """
     assert [node.rsplit(".", 1)[-1] for node in link.conventional_controllers] == [
-        "CommentsController`0",
         "LegacyController`0",
-        "OrdersController`0",
-        "VerbsController`0",
-        "ApiController`0",
-        "TokenApiController`0",
     ]
 
 

@@ -375,9 +375,15 @@ def declaration_fqn(path: str, declaration: RawDeclaration) -> str:
 
 def _unique_attributes(attributes: list[Attribute]) -> list[Attribute]:
     """Дедупликация атрибутов с устойчивым порядком (модель нехэшируема)."""
-    seen: dict[tuple[str, str], Attribute] = {}
+    seen: dict[tuple[str, str, str], Attribute] = {}
     for attribute in attributes:
-        key = (attribute.name, repr((attribute.args, sorted(attribute.named_args.items()))))
+        key = (
+            attribute.name,
+            repr((attribute.args, sorted(attribute.named_args.items()))),
+            # Флаги — последним элементом: порядок атрибутов с разным текстом
+            # от них не зависит, а литерал и выражение с одним текстом не сливаются.
+            repr((attribute.expression_args, attribute.expression_named_args)),
+        )
         seen.setdefault(key, attribute)
     return [seen[key] for key in sorted(seen)]
 

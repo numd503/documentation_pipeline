@@ -54,7 +54,10 @@ Lang = Literal["cs", "ts"]
 # `Module.lang`. Схема стала общей для двух языков, и старое имя врало бы
 # в каждом отчёте по фронту.
 # 2.1 — `WebCall.host`: хост абсолютного адреса вызова фронта (S16).
-SCHEMA_VERSION: Final = "2.1"
+# 2.2 — `Endpoint.unresolved` и `Attribute.expression_args`/`expression_named_args`:
+# маршрут, собрать который не удалось, и аргумент атрибута, записанный
+# выражением, а не литералом (S17).
+SCHEMA_VERSION: Final = "2.2"
 
 _VERSION = re.compile(r"(?P<major>\d+)\.(?P<minor>\d+)")
 
@@ -100,11 +103,21 @@ class Attribute(_Base):
 
     `name` — без суффикса `Attribute`: `[RouteAttribute]` и `[Route]` неразличимы.
     Строковые значения хранятся без кавычек.
+
+    Аргумент-выражение (`[Route(Constants.PrefixApi)]`, `nameof(X)`) хранится
+    исходным текстом, и по одной строке его не отличить от литерала с тем же
+    текстом. Поэтому рядом — номера таких позиционных аргументов и имена таких
+    именованных. Без флага `Constants.PrefixApi` уходил в маршрут как есть:
+    путь `Constants.PrefixApi/apps` выглядит настоящим и не совпадает ни с чем.
     """
 
     name: str
     args: list[str] = Field(default_factory=list)
     named_args: dict[str, str] = Field(default_factory=dict)
+    # Номера в `args` и ключи `named_args`, значение которых — текст выражения,
+    # а не литерал. Пусто — все аргументы литералы.
+    expression_args: list[int] = Field(default_factory=list)
+    expression_named_args: list[str] = Field(default_factory=list)
 
 
 class SourceSpan(_Base):
@@ -418,12 +431,23 @@ class Symbol(_Base):
 
 
 class Endpoint(_Base):
-    """HTTP-эндпоинт контроллера со склеенным маршрутом."""
+    """HTTP-эндпоинт контроллера со склеенным маршрутом.
+
+    `http_method` — `GET`, `POST`, … либо `*`: действие с `[Route]` без глагола
+    ASP.NET принимает на любом методе.
+
+    `unresolved` — почему маршрут не собран: аргумент маршрута записан
+    выражением, которое не разрешилось в литерал. Тогда `route` пуст, а не
+    выдуман: путь `Constants.PrefixApi/apps` выглядит настоящим и не совпадает
+    ни с чем. Пустая строка — маршрут собран (в том числе законно пустой
+    у конвенционального действия).
+    """
 
     http_method: str
     route: str
     member: str
     line: int
+    unresolved: str = ""
 
 
 class Dependency(_Base):

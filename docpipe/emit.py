@@ -26,7 +26,12 @@ from docpipe.dotnet.csproj import parse_csproj, resolve_references
 from docpipe.dotnet.endpoints import extract_endpoints
 from docpipe.dotnet.facts import SQL_METHODS
 from docpipe.dotnet.parser import parse_source
-from docpipe.dotnet.resolve import build_symbol_index, compute_closures, file_usings
+from docpipe.dotnet.resolve import (
+    build_symbol_index,
+    compute_closures,
+    file_usings,
+    index_by_fqn,
+)
 from docpipe.hashing import content_hash, stable_json_dumps
 from docpipe.merge import (
     handler_order,
@@ -536,13 +541,16 @@ def run(
         registration for result in all_results for registration in result.di_registrations
     ]
     handlers = collect_dispatch(index, config.dispatch_interfaces)
+    # Индекс — целиком, а не по символу: `[Route]` наследуется от базового
+    # класса, а константа в аргументе маршрута живёт в другом типе.
+    by_fqn = index_by_fqn(index)
     configured, nodes = build_nodes(
         index,
         modules,
         ruleset,
         config,
         registrations,
-        {key: extract_endpoints(symbol) for key, symbol in index.items()},
+        {key: extract_endpoints(symbol, index, by_fqn) for key, symbol in index.items()},
     )
 
     manifest = Manifest(

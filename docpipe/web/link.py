@@ -13,13 +13,17 @@
 Пять категорий, и только последняя — дефект. Остальные четыре печатаются всегда
 и кода возврата не меняют, пока не названы в `--fail-on`: линт, красный
 с первого дня, выключат на второй, и вместе с ним пропадут работающие проверки.
+
+**Эндпоинт с методом `*`** — действие с `[Route]` без глагола — принимает
+любой метод, и сопоставляется с вызовом любого метода: и точно, и «почти».
 """
 
+from dataclasses import replace
 from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from docpipe.model import Manifest
+from docpipe.model import DocNode, Manifest
 from docpipe.route import RouteKey, almost_equal, route_key
 
 MatchKind = Literal["exact", "almost"]
@@ -28,6 +32,14 @@ MatchKind = Literal["exact", "almost"]
 # Значение из `rules/dotnet.yaml`; в наборе с другим именем категория
 # «конвенциональная маршрутизация» просто останется пустой.
 CONTROLLER_KIND: Final = "controller"
+
+# Метод эндпоинта, принимающего любой глагол (`dotnet.endpoints.ANY_METHOD`).
+# Литерал, а не импорт: `docpipe/web/**` не импортирует `docpipe/dotnet/**`.
+ANY_METHOD: Final = "*"
+
+# Атрибут, задающий шаблон маршрута типа. Глагол без шаблона (`[HttpGet]`)
+# его не задаёт: действие остаётся конвенциональным с ограничением по методу.
+_ROUTE_ATTRIBUTE: Final = "Route"
 
 CATEGORIES: Final[tuple[str, ...]] = (
     "linked",
@@ -83,6 +95,20 @@ class DuplicateEndpoint(_Base):
     nodes: list[str]
 
 
+class UnresolvedEndpoint(_Base):
+    """Эндпоинт, маршрут которого не собрался: аргумент — выражение без литерала.
+
+    В индекс ключей он не идёт (пустой маршрут склеил бы их все в один),
+    и без отдельного списка пропал бы из отчёта молча: до S17 такой контроллер
+    хотя бы выглядел «конвенциональным», теперь у него есть атрибуты маршрута.
+    """
+
+    http_method: str
+    node: str
+    member: str
+    reason: str
+
+
 class LinkReport(_Base):
     """Артефакт `web-link.json`.
 
@@ -90,7 +116,8 @@ class LinkReport(_Base):
     на каждом прогоне и его нельзя сравнить.
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    # 1.1 — `unresolved_endpoints` и `counts.endpoints_unresolved` (S17).
+    schema_version: Literal["1.1"] = "1.1"
     links: list[Link] = Field(default_factory=list)
     calls_without_endpoint: list[CallRef] = Field(default_factory=list)
     endpoints_without_caller: list[EndpointRef] = Field(default_factory=list)
@@ -99,6 +126,7 @@ class LinkReport(_Base):
     # Не категории связи, а состояние настройки и знания о бэкенде.
     unconfigured_modules: list[str] = Field(default_factory=list)
     conventional_controllers: list[str] = Field(default_factory=list)
+    unresolved_endpoints: list[UnresolvedEndpoint] = Field(default_factory=list)
 
     counts: dict[str, int] = Field(default_factory=dict)
 
@@ -125,6 +153,53 @@ def _backend_keys(manifest: Manifest) -> dict[RouteKey, list[EndpointRef]]:
     return found
 
 
+def _unresolved(manifest: Manifest) -> list[UnresolvedEndpoint]:
+    """Эндпоинты с невосстановленным маршрутом — с узлом, членом и причиной."""
+    return sorted(
+        (
+            UnresolvedEndpoint(
+                http_method=endpoint.http_method,
+                node=node.id,
+                member=endpoint.member,
+                reason=endpoint.unresolved,
+            )
+            for node in manifest.nodes
+            for endpoint in node.endpoints
+            if endpoint.unresolved
+        ),
+        key=lambda item: (item.node, item.member, item.http_method, item.reason),
+    )
+
+
+def _is_conventional(node: DocNode) -> bool:
+    """Настоящий ли конвенциональный контроллер: URL из атрибутов не собирается.
+
+    Прежнее условие («эндпоинтов нет либо есть с пустым маршрутом») на двух
+    открытых репозиториях дало 10 записей, настоящих из них 2: в список шли
+    абстрактные базы (`ApiController` — своих действий нет, маршрут она отдаёт
+    наследникам), контроллеры с `[Route]` без глагола и `AcceptVerbs`.
+
+    Голый `[HttpGet]` шаблона не задаёт, и действие под ним в ASP.NET остаётся
+    конвенциональным с ограничением по методу. Поэтому смотрим не на наличие
+    атрибутов на членах, а на то, собрался ли из них маршрут: свой `[Route]`
+    типа, непустой маршрут хоть одного эндпоинта (в том числе унаследованный
+    от базы) или невосстановленный — всё это атрибутная маршрутизация.
+    """
+    symbol = node.symbol
+    if symbol is None or "abstract" in symbol.modifiers:
+        return False
+    if not any(
+        member.kind == "method"
+        and "public" in member.modifiers
+        and "static" not in member.modifiers
+        for member in symbol.members
+    ):
+        return False
+    if any(attribute.name == _ROUTE_ATTRIBUTE for attribute in symbol.attributes):
+        return False
+    return all(not endpoint.route and not endpoint.unresolved for endpoint in node.endpoints)
+
+
 def _conventional(manifest: Manifest) -> list[str]:
     """Контроллеры, маршрут которых из атрибутов не собирается.
 
@@ -135,9 +210,21 @@ def _conventional(manifest: Manifest) -> list[str]:
     return sorted(
         node.id
         for node in manifest.nodes
-        if node.kind == CONTROLLER_KIND
-        and (not node.endpoints or any(not endpoint.route for endpoint in node.endpoints))
+        if node.kind == CONTROLLER_KIND and _is_conventional(node)
     )
+
+
+def _exact(keys: dict[RouteKey, list[EndpointRef]], lookup: RouteKey) -> list[RouteKey]:
+    """Ключи бэкенда, совпавшие с вызовом точно: свой метод и `*`."""
+    candidates = [lookup, replace(lookup, http_method=ANY_METHOD)]
+    return [key for key in candidates if key in keys]
+
+
+def _almost(key: RouteKey, lookup: RouteKey) -> bool:
+    """«Почти» с учётом `*`: у эндпоинта на любой метод глагол не сравнивается."""
+    if key.http_method == ANY_METHOD:
+        return almost_equal(key, replace(lookup, http_method=ANY_METHOD))
+    return almost_equal(key, lookup)
 
 
 def _unconfigured(web: Manifest, configured: set[str]) -> list[str]:
@@ -167,9 +254,9 @@ def build_report(
     for node in web.nodes:
         for call in node.web_calls:
             lookup = RouteKey(http_method=call.key.http_method, route=call.key.route)
-            exact = keys.get(lookup)
-            if exact is not None:
-                used.add(lookup)
+            exact = _exact(keys, lookup)
+            if exact:
+                used.update(exact)
                 links.append(
                     Link(
                         http_method=lookup.http_method,
@@ -178,14 +265,14 @@ def build_report(
                         caller=node.id,
                         file=call.file,
                         line=call.line,
-                        endpoints=sorted(item.node for item in exact),
+                        endpoints=sorted({item.node for key in exact for item in keys[key]}),
                         match="exact",
                     )
                 )
                 continue
 
             near = sorted(
-                (key for key in keys if almost_equal(key, lookup)),
+                (key for key in keys if _almost(key, lookup)),
                 key=lambda key: (key.route, key.http_method),
             )
             if near:
@@ -234,6 +321,7 @@ def build_report(
 
     links.sort(key=lambda link: (link.route, link.http_method, link.discriminator, link.caller))
     orphans.sort(key=lambda item: (item.route, item.http_method, item.caller))
+    unresolved = _unresolved(backend)
 
     return LinkReport(
         links=links,
@@ -242,6 +330,7 @@ def build_report(
         duplicate_endpoints=duplicates,
         unconfigured_modules=_unconfigured(web, configured_modules or set()),
         conventional_controllers=_conventional(backend),
+        unresolved_endpoints=unresolved,
         counts={
             "linked": sum(1 for link in links if link.match == "exact"),
             "almost": sum(1 for link in links if link.match == "almost"),
@@ -250,6 +339,7 @@ def build_report(
             "duplicate_endpoints": len(duplicates),
             "calls_total": sum(len(node.web_calls) for node in web.nodes),
             "endpoints_total": sum(len(items) for items in keys.values()),
+            "endpoints_unresolved": len(unresolved),
         },
     )
 
@@ -293,6 +383,17 @@ def format_report(report: LinkReport, top: int = 10) -> str:
             f"Контроллеров с конвенциональной маршрутизацией: "
             f"{len(report.conventional_controllers)}. Их маршрут задан в конфигурации "
             "приложения, а не атрибутами, — вызовы к ним попадают в «вызов без эндпоинта».",
+        ]
+
+    if report.unresolved_endpoints:
+        lines += [
+            "",
+            f"Эндпоинтов с невосстановленным маршрутом: {len(report.unresolved_endpoints)}. "
+            "В ключи связи они не входят — вызовы к ним попадают в «вызов без эндпоинта»:",
+        ]
+        lines += [
+            f"  {item.http_method} {item.node}.{item.member}: {item.reason}"
+            for item in report.unresolved_endpoints[:top]
         ]
 
     if report.unconfigured_modules:

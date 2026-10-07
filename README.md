@@ -197,7 +197,7 @@ jq '.nodes[].doc_path' /tmp/dt.json
 
 ```jsonc
 {
-  "schema_version": "2.1",
+  "schema_version": "2.2",
   "ruleset_version": "2026-07-30.1",
   "parser": { "tree_sitter": "0.26.0", "grammar_c_sharp": "0.23.5" },
   "modules": [

@@ -111,7 +111,7 @@ def build_tree(
         load_ruleset(rules or Path("rules/rules.yaml"), "dotnet"),
         config or DocpipeConfig(),
         [registration for result in results for registration in result.di_registrations],
-        {key: extract_endpoints(symbol) for key, symbol in index.items()},
+        {key: extract_endpoints(symbol, index) for key, symbol in index.items()},
     )
 
 
