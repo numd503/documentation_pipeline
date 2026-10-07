@@ -335,7 +335,7 @@ def check_config(
     roots = []
     sources: tuple[tuple[Literal["roots", "web.roots"], list[str]], ...] = (
         ("roots", settings.roots),
-        ("web.roots", settings.web.roots),
+        ("web.roots", settings.web.root_paths),
     )
     for roots_key, entries in sources:
         for entry in sorted(entries):

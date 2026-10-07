@@ -61,7 +61,7 @@ from docpipe.model import (
 )
 from docpipe.sql import read as read_sql
 from docpipe.stats import Stats, collect_stats, kind_counts
-from docpipe.tree import build_nodes
+from docpipe.tree import build_nodes, module_scopes
 
 DEFAULT_EXCLUDE = [
     "**/obj/**",
@@ -89,7 +89,18 @@ def exclude_globs(config: DocpipeConfig) -> list[str]:
     Порядок для результата безразличен (проверка — «совпал хотя бы один»),
     но список всё равно отсортирован: он попадает человеку на глаза в диагностике.
     """
-    return sorted({*DEFAULT_EXCLUDE, *config.exclude})
+    return sorted({*DEFAULT_EXCLUDE, *config.exclude_patterns})
+
+
+def parse_options(config: DocpipeConfig) -> str:
+    """Настройки, меняющие разбор того же файла, — строкой для ключа кэша.
+
+    Сейчас это одни имена `di_methods`: список самодельных обёрток регистрации
+    меняет результат разбора, а хэш содержимого файла при этом тот же. Причина
+    записи (`reason`) сюда не входит намеренно: правка формулировки разбора
+    не меняет, и сброс кэша на ней стоил бы полного прогона впустую.
+    """
+    return stable_json_dumps(sorted(frozenset(config.di_method_names)))
 
 
 def parser_versions() -> ParserVersions:
@@ -495,12 +506,15 @@ def run(
     modules: list[Module] = resolve_references(
         [parse_csproj(root / relative, root) for relative in found.csproj_files]
     )
+    # Противоречие `enrolled`/`not_enrolled` — отказ до разбора: модули уже
+    # известны, а разбор большого репозитория стоит минут.
+    module_scopes(modules, config)
 
     # Список самодельных методов регистрации входит в ключ кэша: он меняет
     # результат разбора того же файла, а хэш содержимого при этом тот же.
-    di_methods = frozenset(config.di_methods)
+    di_methods = frozenset(config.di_method_names)
     cache = (
-        ParseCache(cache_dir / "parse.sqlite", versions, stable_json_dumps(sorted(di_methods)))
+        ParseCache(cache_dir / "parse.sqlite", versions, parse_options(config))
         if cache_dir
         else None
     )
@@ -540,7 +554,7 @@ def run(
     registrations = [
         registration for result in all_results for registration in result.di_registrations
     ]
-    handlers = collect_dispatch(index, config.dispatch_interfaces)
+    handlers = collect_dispatch(index, config.dispatch_interface_names)
     # Индекс — целиком, а не по символу: `[Route]` наследуется от базового
     # класса, а константа в аргументе маршрута живёт в другом типе.
     by_fqn = index_by_fqn(index)

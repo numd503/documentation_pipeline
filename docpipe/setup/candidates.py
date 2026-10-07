@@ -21,7 +21,7 @@ from typing import Final, Literal
 from pydantic import BaseModel, ConfigDict
 
 from docpipe.classify import load_ruleset
-from docpipe.config import DocpipeConfig, resolve_input
+from docpipe.config import DocpipeConfig, ScopeConflict, resolve_input
 from docpipe.dotnet.di import is_standard_method
 from docpipe.dotnet.facts import bare_type
 from docpipe.emit import ScanResult, dispatch_name, dispatch_names, split_type_arguments
@@ -191,7 +191,7 @@ def di_method_candidates(
         else:
             by_method[call.method].append((path, call))
 
-    configured = frozenset(settings.di_methods)
+    configured = frozenset(settings.di_method_names)
     declarations = _extension_declarations(scan.index)
 
     found: list[DiMethodCandidate] = []
@@ -478,7 +478,7 @@ def dispatch_candidates(
     packages_of = {
         module.project_file: module.package_references for module in scan.manifest.modules
     }
-    configured = dispatch_names(settings.dispatch_interfaces)
+    configured = dispatch_names(settings.dispatch_interface_names)
 
     found: list[DispatchCandidate] = []
     for (interface, resolved), implementations in heads.items():
@@ -602,7 +602,11 @@ def _scan(inputs: CandidateInputs) -> ScanResult:
     except (OSError, ValueError) as exc:
         raise InputError(f"набор правил не читается: {exc}") from exc
     cache_dir = inputs.root / inputs.settings.cache_dir if inputs.use_cache else None
-    return run_scan(inputs.root, inputs.settings, ruleset, cache_dir)
+    try:
+        return run_scan(inputs.root, inputs.settings, ruleset, cache_dir)
+    except ScopeConflict as exc:
+        # Противоречие `enrolled`/`not_enrolled` — ошибка настройки, как и у `scan`.
+        raise InputError(str(exc)) from exc
 
 
 def _di_methods(inputs: CandidateInputs, limit: int, offset: int) -> CandidateReport:

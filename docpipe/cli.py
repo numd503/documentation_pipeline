@@ -42,16 +42,22 @@ from docpipe.business.status import DocumentStatus as BusinessStatus
 from docpipe.business.status import accepted_state as business_accepted_state
 from docpipe.business.status import format_statuses as format_business_statuses
 from docpipe.business.status import statuses as business_statuses
-from docpipe.classify import load_ruleset
-from docpipe.config import DocpipeConfig, candidate_inputs, load_config, resolve_input
+from docpipe.classify import Ruleset, load_ruleset
+from docpipe.config import (
+    DocpipeConfig,
+    ScopeConflict,
+    candidate_inputs,
+    load_config,
+    resolve_input,
+)
 from docpipe.configcheck import check_config
 from docpipe.configcheck import format_problems as format_config_problems
 from docpipe.configcheck import format_report as format_config_report
 from docpipe.diff import diff_manifests, format_changes
 from docpipe.discovery import is_excluded
 from docpipe.documents import accepted_block, write_atomic
+from docpipe.emit import ScanResult, run_meta_path, write_manifest, write_run_meta
 from docpipe.emit import run as run_scan
-from docpipe.emit import run_meta_path, write_manifest, write_run_meta
 from docpipe.explain import ANY, format_selection, select, selection_json
 from docpipe.graph import build as build_graph
 from docpipe.graph import read_index, read_meta, read_reach, write_index
@@ -211,6 +217,29 @@ def schema(
     typer.echo(f"Схема записана: {target}")
 
 
+def _scan_or_refuse(
+    root: Path,
+    settings: DocpipeConfig,
+    ruleset: Ruleset,
+    cache_dir: Path | None,
+    jobs: int,
+    scope: list[str] | None = None,
+    previous: Manifest | None = None,
+) -> ScanResult:
+    """Прогон шага 1; противоречие области (`ScopeConflict`) — код 2.
+
+    Ловится только оно, а не любой `ValueError`: сбой разбора под вывеской
+    «ошибка конфигурации» потерял бы трассировку. Противоречие же — ошибка
+    настройки, которую видно только на модулях репозитория, поэтому загрузка
+    `docpipe.yaml` поймать его не может.
+    """
+    try:
+        return run_scan(root, settings, ruleset, cache_dir, jobs, scope, previous)
+    except ScopeConflict as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+
 @app.command()
 def scan(
     root: Annotated[Path, typer.Option("--root", help="Корень репозитория с исходниками.")],
@@ -303,7 +332,7 @@ def scan(
     # каталогом. Флаг по-прежнему важнее — но только когда он действительно задан.
     destination = out or Path(settings.out)
 
-    result = run_scan(root, settings, ruleset, cache_dir, jobs, scope or None, previous)
+    result = _scan_or_refuse(root, settings, ruleset, cache_dir, jobs, scope or None, previous)
     manifest, meta = result.manifest, result.meta
 
     # Неполнота прогона печатается до ветвления: `--stats` и `--dry-run` зовут
@@ -629,7 +658,7 @@ def symbols(
 
     cache_dir = None if no_cache else root / settings.cache_dir
     if lang == "cs":
-        scanned = run_scan(root, settings, ruleset, cache_dir, jobs)
+        scanned = _scan_or_refuse(root, settings, ruleset, cache_dir, jobs)
         index, manifest = scanned.index, scanned.manifest
         configured = {module.project_file for module in manifest.modules if module.enrolled}
     else:
@@ -1967,7 +1996,7 @@ def graph_build(
         )
         raise typer.Exit(code=2)
 
-    ruleset_excludes = list(settings.exclude)
+    ruleset_excludes = settings.exclude_patterns
     engine = Engine(
         binary=Path(settings.graph.engine_path).expanduser(),
         cache_dir=Path(settings.graph.cache_dir),

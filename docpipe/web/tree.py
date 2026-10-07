@@ -1009,7 +1009,7 @@ def run(
     ruleset = ruleset or load_ruleset(Path(config.web.rules), "web")
     versions = parser_versions()
 
-    found = discover(root, exclude_globs(config), roots=config.web.roots)
+    found = discover(root, exclude_globs(config), roots=config.web.root_paths)
     modules = discover_modules(root, found)
 
     cache = ParseCache(cache_dir / "parse-web.sqlite", versions) if cache_dir else None

@@ -9,7 +9,7 @@ import re
 from collections import defaultdict
 
 from docpipe.classify import Ruleset, classify
-from docpipe.config import DocLayout, DocpipeConfig
+from docpipe.config import DocLayout, DocpipeConfig, Scope, ScopeClash, ScopeConflict, scope_of
 from docpipe.discovery import matches_glob
 from docpipe.hashing import slugify, stable_hash
 from docpipe.model import (
@@ -54,13 +54,37 @@ def _domain_of(module: Module, domains: dict[str, str]) -> str:
     return module.name
 
 
+def module_scopes(modules: list[Module], config: DocpipeConfig) -> dict[str, Scope]:
+    """Решение об области по каждому модулю: `.csproj` → `scope_of`.
+
+    Противоречия собираются по всем модулям и выходят одним `ScopeConflict`:
+    отказ по первому заставил бы агента чинить их по одному на прогон.
+    Зовётся и до разбора (`emit.run`), чтобы противоречие в настройке
+    стоило секунды, а не полного прогона.
+    """
+    scopes: dict[str, Scope] = {}
+    clashes: list[ScopeClash] = []
+    for module in sorted(modules, key=lambda item: item.project_file):
+        try:
+            scopes[module.project_file] = scope_of(module.project_file, config)
+        except ScopeConflict as conflict:
+            label = f"{module.name} ({module.project_file})"
+            clashes.extend(clash._replace(module=label) for clash in conflict.clashes)
+    if clashes:
+        raise ScopeConflict(clashes)
+    return scopes
+
+
 def _apply_config(modules: list[Module], config: DocpipeConfig) -> list[Module]:
+    # В манифест идёт только «включён или нет»: `not_enrolled` и `undecided`
+    # там одинаково `enrolled: false`, а различает их настройка (`scope_of`).
+    scopes = module_scopes(modules, config)
     return sorted(
         (
             module.model_copy(
                 update={
                     "domain": _domain_of(module, config.domains),
-                    "enrolled": any(matches_glob(module.project_file, g) for g in config.enrolled),
+                    "enrolled": scopes[module.project_file] == "enrolled",
                 }
             )
             for module in modules

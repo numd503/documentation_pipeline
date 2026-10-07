@@ -10128,3 +10128,38 @@ git отказал целиком, ничего не добавив, а выво
 пуст, его решение — `exclusion.id`: охват в S24 считать по двум полям раздельно.
 
 **Проверка:** команда S07 — 112 passed; `test_classify.py:74` без правки.
+
+---
+
+## S22 — вторая форма с причиной; `not_enrolled` (07.10.2026)
+
+**Создано:** `tests/test_config_reasons.py` (33). **Изменено:** `docpipe/config.py`,
+`docpipe/tree.py`, `docpipe/emit.py`, `docpipe/web/tree.py`, `docpipe/configcheck.py`,
+`docpipe/cli.py`, `docpipe/setup/candidates.py`, `tests/test_config_strict.py`,
+`docs/configuration.md` (раздел «Решение с причиной»), `docpipe.example.yaml`.
+
+`enrolled`, `exclude`, `di_methods`, `dispatch_interfaces`, `web.roots` принимают строку
+и запись с `reason` вперемешку; у `url_rewrite` и `registry_calls` — поле `reason`. Новый
+ключ `not_enrolled` — причина обязательна. Потребители читают только нормализованные
+свойства (`enrolled_globs`, `exclude_patterns`, `di_method_names`,
+`dispatch_interface_names`, `web.root_paths`) — это держит тест-сторож по AST (проверен
+вставкой `settings.enrolled` в `stats.py`). `config.scope_of` → `enrolled` / `not_enrolled`
+/ `undecided`; `undecided` — только при явном `enrolled` (`model_fields_set`: умолчание
+`["**"]` решением не считается). Модуль под обоими списками — отказ прогона с кодом 2,
+до разбора файлов, все противоречия одним сообщением. Ключ кэша — только имена `di_methods`.
+Golden и прежние тесты без изменений.
+
+**Отклонения и находки.**
+- Запись — замороженная модель и хэшируема; план ошибался: множество её принимает,
+  падает следующий `sorted` (`str < ExcludeEntry`).
+- Объединение `str | Model` без дискриминатора давало две ошибки на одну опечатку, первой —
+  «should be a valid string»: слабую модель это толкает свернуть запись в строку
+  и потерять причину. Выбор формы по виду значения (`pydantic.Discriminator`) — одна ошибка
+  про ключ (`enrolled.0.entry.reson`). Имя `Discriminator` в `config.py` уже занято моделью
+  `registry_calls` — pydantic-овский импортирован как `ByForm`.
+- `not_enrolled` дополняет `enrolled`, а не вычитает: `src/**` вместе с `src/Samples/**` —
+  отказ (П-2), сказано в справочнике.
+- Перечень ключей-списков в `test_config_strict.py` получил `not_enrolled` — это и есть
+  смысл того теста; иначе ловушка S02 вернулась бы на новом ключе.
+
+**Проверка:** команда S22 — 120 passed.

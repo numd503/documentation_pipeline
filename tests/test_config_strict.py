@@ -370,6 +370,7 @@ def test_commented_out_enrolled_is_refused_not_turned_into_everything(tmp_path: 
     [
         "roots",
         "enrolled",
+        "not_enrolled",
         "exclude",
         "docs_scan_exclude",
         "dispatch_interfaces",
@@ -391,6 +392,7 @@ def test_list_keys_are_taken_from_the_model_not_from_a_hand_list() -> None:
     assert set(_list_fields(DocpipeConfig)) == {
         "roots",
         "enrolled",
+        "not_enrolled",
         "exclude",
         "docs_scan_exclude",
         "dispatch_interfaces",
