@@ -1,0 +1,18 @@
+/* To learn more about this file see: https://angular.io/config/tsconfig. */
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "baseUrl": "./",
+    // Алиас фреймворка: импорт `@app/framework/…` разрешается только после
+    // разбора JSONC — `json.loads` на этом файле падает.
+    "paths": {
+      "@app/*": ["src/app/*"]
+    },
+    "strict": true,
+    "experimentalDecorators": true,
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+  },
+  "include": ["src/**/*.ts"]
+}

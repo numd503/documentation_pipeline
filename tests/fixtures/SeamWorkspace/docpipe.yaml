@@ -1,0 +1,14 @@
+# Настройка фикстуры шва фронт↔.NET (S15). Бэк и фронт в одном корне, как
+# на squidex: `roots` сужает шаг 1 до `backend`, `web.roots` — шаг `web`
+# до `frontend`.
+#
+# Правила — входы: путь записан от каталога этого файла и разрешается второй
+# ступенью `resolve_input`. Правил шва (`url_rewrite`, обёрток, секции `link`)
+# здесь нет намеренно: их добавляют тесты задач S16–S21 в копии фикстуры
+# в `tmp_path`, а числа «без настройки» фиксирует `tests/test_seam_fixture.py`.
+roots: [backend]
+rules: ../../../rules/rules.yaml
+
+web:
+  roots: [frontend]
+  rules: ../../../rules/rules.yaml

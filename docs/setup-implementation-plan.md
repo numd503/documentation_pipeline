@@ -1,6 +1,6 @@
 # Настройка с ассистентом: план (S01–S32)
 
-> **Статус: в работе** (план от 07.10.2026): ✅ S01, S02, S03, S04, S10, S11, S26.
+> **Статус: в работе** (план от 07.10.2026): ✅ S01, S02, S03, S04, S10, S11, S15, S26.
 > [`setup-assistant-analysis.md`](setup-assistant-analysis.md); цель —
 > [`purpose.md`](../purpose.md), раздел «Настройка с ассистентом». При споре
 > плана с `purpose.md` прав `purpose.md`; при расхождении плана с кодом
@@ -208,7 +208,7 @@ T04–T20). Тест фикстуры проверяет наличие **кон
 | S13 | Кандидаты в `web.registry_calls` | S16 | M |
 | S14 | Кандидаты в разделы без маршрута | — | M |
 | **C** | **Шов фронт↔.NET** | | |
-| S15 | Фикстура форм шва и инвентарь squidex/abp | — | S |
+| S15 | ✅ Фикстура форм шва и инвентарь squidex/abp | — | S |
 | S16 | Ключ вызова без правдоподобных ошибок; версия манифеста | S15 | M |
 | S17 | Эндпоинты .NET: наследование `[Route]`, маршрут без глагола, константы | S15 | M |
 | S18 | Невосстановленные вызовы — в манифест; кандидаты в обёртки | S16 | M |
@@ -1321,7 +1321,7 @@ uv run pytest tests/test_setup_candidates_features.py tests/test_web_features.py
 
 ---
 
-## S15 — фикстура форм шва и инвентарь
+## S15 — фикстура форм шва и инвентарь ✅
 
 **Цель:** все формы шва фронт↔.NET, найденные на squidex и abp, воспроизведены
 в одной самодостаточной фикстуре; числа прогона записаны.
@@ -1337,8 +1337,9 @@ uv run pytest tests/test_setup_candidates_features.py tests/test_web_features.py
 | Сторона | Форма | Где |
 |---|---|---|
 | .NET | абстрактная база `[ApiController][Route(Constants.PrefixApi)]`, `public const string PrefixApi = "api";` | `backend/Seam.Api/Web/ApiController.cs`, `Web/Constants.cs` |
-| .NET | контроллер на этой базе: `[HttpGet("apps")]`, `[HttpGet("apps/{app}")]`, `[HttpPost("apps")]` | `Controllers/AppsController.cs` |
+| .NET | контроллер на этой базе: `[HttpGet("apps")]`, `[HttpGet("apps/{app}")]`, `[HttpPost("apps")]`, `[HttpPut("apps/{app}")]` (адресат `requestVersioned` с `'PUT'`) | `Controllers/AppsController.cs` |
 | .NET | база с токеном `[Route("api/[controller]")]` и наследник `OrdersController` | `Web/TokenApiController.cs`, `Controllers/OrdersController.cs` |
+| .NET | один относительный маршрут `[HttpGet("info")]` под разными базами — ложный дубль `GET info` (squidex) | `Controllers/InfoController.cs` (на `ApiController`, адресат `api/info`), `OrdersController` |
 | .NET | действие с `[Route("comments/{id}")]` без глагола, класс с `[Route("api")]` | `Controllers/CommentsController.cs` |
 | .NET | `[AcceptVerbs("GET", "POST")]` | `Controllers/VerbsController.cs` |
 | .NET | публичный API для внешних клиентов `[Route("content/{app}")]` | `Controllers/ContentController.cs` |
@@ -1346,22 +1347,49 @@ uv run pytest tests/test_setup_candidates_features.py tests/test_web_features.py
 | фронт | прямой `this.http.get('api/info')` | `src/app/services/info.service.ts` |
 | фронт | построитель: `const url = this.apiUrl.buildUrl('/api/apps'); return this.http.get(url)` | `src/app/services/apps.service.ts`, метод `list` |
 | фронт | второй метод того же файла со своим `const url = this.apiUrl.buildUrl(\`/api/apps/${app}\`)` | там же, метод `get` |
-| фронт | обёртка с URL в позиционном аргументе: `HTTP.getVersioned(this.http, url)`; тело обёртки `http.get(url)` | `src/app/framework/http-extensions.ts` |
-| фронт | обёртка с методом из аргумента: `HTTP.requestVersioned(this.http, 'PUT', url)` | там же |
-| фронт | обёртка с объектом-запросом: `this.rest.request({ method: 'POST', url: '/api/apps' })` | `src/app/services/apps-proxy.service.ts` |
+| фронт | литеральный `const url = 'api/apps/archived'` третьего метода — до S16 подставляется и в `list`, и в `get` | там же, метод `archived` |
+| фронт | DTO рядом с сервисом: вызовы файла достаются обоим узлам (S16, п. 6) | `apps.service.ts`, `AppDto` |
+| фронт | обёртка с URL в позиционном аргументе: `HTTP.getVersioned(this.http, url)` с `const url = 'api/apps'`; тела `getVersioned`/`postVersioned`/`putVersioned`/`deleteVersioned` — `http.get(url)` и т. д. | тела — `src/app/framework/http-extensions.ts`; вызов — `src/app/services/apps-versioned.service.ts`, метод `getApps` |
+| фронт | обёртка с методом из аргумента: ``HTTP.requestVersioned(this.http, 'PUT', `api/apps/${app}`, …)``; тело — `http.request(method, url, …)` | тело — там же; вызов — `apps-versioned.service.ts`, метод `putApp` |
+| фронт | обёртка с объектом-запросом: `this.rest.request({ method: 'POST', url: '/api/apps' })`; тело — `this.http.request(config.method, config.url, …)` | `src/app/services/apps-proxy.service.ts`, метод `create`; `src/app/framework/rest.service.ts` |
 | фронт | хвостовой построитель query: `` this.http.get(`api/apps/search${buildQuery(q)}`) `` | `apps.service.ts`, метод `search` |
 | фронт | внешний адрес `this.http.get('https://ext.example.org/feed.json')` | `src/app/services/feed.service.ts` |
-| фронт | гипермедиа `this.http.request(link.method, link.href)` | `src/app/services/links.service.ts` |
+| фронт | гипермедиа `this.http.request(link.method, link.href)` — не видна вовсе; и та же гипермедиа через глагол `this.http.get(link.href)` — видна, не восстановлена | `src/app/services/links.service.ts`, методы `follow` и `fetch` |
 | фронт | конкатенация с невосстановленной базой `this.base + '/api/apps'` | `apps.service.ts`, метод `legacy` |
 | фронт | изменяемое поле `public fileSource = ''`, позже `this.fileSource = src`, вызов `this.http.get(this.fileSource)` | `src/app/components/editor.component.ts` |
 | фронт | `proxy.conf.json` с `pathRewrite`, `angular.json` с `proxyConfig`, `tsconfig.json` с комментарием, страница в `app.routes.ts` | корень фронта |
-| обе | `docpipe.yaml` фикстуры: `roots: [backend]`, `web.roots: [frontend]`, `rules` — `../../../rules/rules.yaml` (вход, вторая ступень `resolve_input`); правил шва нет — их добавляют тесты в `tmp_path`-копии | корень фикстуры |
+| обе | `docpipe.yaml` фикстуры: `roots: [backend]`, `web.roots: [frontend]`, `rules` и `web.rules` — `../../../rules/rules.yaml` (вход, вторая ступень `resolve_input`); правил шва нет — их добавляют тесты в `tmp_path`-копии | корень фикстуры |
 
 `tests/test_seam_fixture.py` проверяет **наличие каждой конструкции**
 (регулярным выражением по файлу), а не файлов — иначе «упрощение» фикстуры
 оставит тесты S16–S21 зелёными и бессмысленными. Там же — прогон `scan`
 и `web scan` по фикстуре без ошибок и числа **до** S16 (их обновляет каждая
 задача этапа C).
+
+> **Ловушка. `this.http.request(…)` не виден ни одному счётчику**: `request`
+> нет в `HTTP_METHODS` (`calls.py:42`), а получатель `http` — в `HTTP_RECEIVERS`,
+> поэтому вызов не становится и кандидатом S18 («получатель не из
+> `HTTP_RECEIVERS`»). Критерии S18 и S20 про `links.service.ts` держатся
+> на втором методе `fetch` (`this.http.get(link.href)`); `follow` остаётся
+> невидимым, пока S16/S18 не решат, считать ли `request(method, url)` вызовом
+> с методом из аргумента (squidex: 15 мест в 7 файлах).
+
+> **Ловушка. Кандидат S18 требует аргумента, похожего на адрес.** Поэтому
+> у вызовов обёрток в `apps-versioned.service.ts` адрес — литеральный `const`
+> или шаблон `api/…`, а не `const` от построителя: `HTTP.getVersioned(this.http, url)`
+> с `url = this.apiUrl.buildUrl(…)` кандидатом не стал бы. Связка «построитель +
+> обёртка» (основная форма squidex) в фикстуре не воспроизведена.
+
+> **Ловушка. Первая ступень `resolve_input` для `../../../rules/rules.yaml`.**
+> В git worktree на три уровня ниже основного клона (`.claude/worktrees/<имя>/`)
+> путь от текущего каталога ведёт в `rules/rules.yaml` **основного клона**, и
+> прогон молча берёт набор другой ветки. Тесты передают правила явно
+> (`--rules rules/rules.yaml`, `load_ruleset(Path("rules/rules.yaml"), …)`).
+
+> **Ловушка. Анонимный тип в сигнатуре метода** (`get<{ version: string }>`,
+> `link: { href: string }`) web-разбор записывает членами класса, и вызов
+> приписывается «члену» `version`. Фикстура этой формы избегает (`ResourceLink`
+> — именованный тип); дефект — вне этапа C.
 
 **`docs/findings-seam.md`** — инвентарь от 07.10.2026: настройки прогонов
 (squidex: `roots: [backend]`, `web.roots: [frontend]`,
