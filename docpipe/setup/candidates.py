@@ -11,6 +11,7 @@
 для CLI и сервера настройки (S27): вид → нужный прогон → отчёт.
 """
 
+import re
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,10 +23,11 @@ from pydantic import BaseModel, ConfigDict
 from docpipe.classify import load_ruleset
 from docpipe.config import DocpipeConfig, resolve_input
 from docpipe.dotnet.di import is_standard_method
-from docpipe.emit import ScanResult
+from docpipe.dotnet.facts import bare_type
+from docpipe.emit import ScanResult, dispatch_name, dispatch_names, split_type_arguments
 from docpipe.emit import run as run_scan
 from docpipe.hashing import stable_json_dumps
-from docpipe.model import Member, RegistrationCall, Symbol
+from docpipe.model import Construction, Member, RegistrationCall, SourceSpan, Symbol
 
 # Длина страницы по умолчанию. Агент контура обрезает вывод инструмента,
 # и «таких нет» без `total` неотличимо от «не показали» (правило 5 плана).
@@ -36,7 +38,15 @@ DEFAULT_LIMIT: Final = 20
 # и с ключом (`dotnet/di.py`, `_types`).
 MIN_CALLS_WITH_TYPES: Final = 2
 
+# База, которую стоит назвать интерфейсом диспетчеризации: хотя бы две
+# реализации и два разных типа-запроса, объявленных в репозитории. Одна
+# реализация — не диспетчеризация, а наследование; типы-запросы извне
+# (`IClassFixture<WebApplicationFactory<Program>>`) — не запросы репозитория.
+MIN_IMPLEMENTATIONS: Final = 2
+MIN_REQUEST_TYPES: Final = 2
+
 _TOP_RECEIVERS: Final = 3
+_TOP_PACKAGES: Final = 3
 _EXAMPLES: Final = 3
 
 
@@ -267,12 +277,307 @@ def _page_line(total: int, offset: int, shown: int) -> str:
 
 
 # --------------------------------------------------------------------------------------
+# Кандидаты в `dispatch_interfaces`
+# --------------------------------------------------------------------------------------
+
+
+class DispatchCandidate(_Base):
+    """Обобщённая база, похожая на интерфейс диспетчеризации по типу запроса.
+
+    `interface` — FQN, если база объявлена в репозитории (`resolved`), иначе
+    имя без квалификатора: внешний `IRequestHandler` резолву не поддаётся
+    принципиально. В `dispatch_interfaces` пишется имя без квалификатора
+    в обоих случаях — так ключ читает прогон (`emit.dispatch_name`).
+
+    `exclusivity` — доля типов-запросов, которые встречаются первым
+    аргументом обобщённой базы **только** у этой головы. Обобщённых баз-шумов
+    больше, чем обработчиков (на eShopOnWeb `Specification` 8,
+    `IEntityTypeConfiguration` 7 против двух `IRequestHandler`), и отделяет
+    их именно это: запрос встречается аргументом только у своего
+    обработчика, а сущность `Order` — у нескольких разных баз.
+
+    `sent` — сколько раз тип-запрос создают (`new X(…)`) вне классов-
+    реализаций этой головы: запрос, которого не отправляет никто, ребра
+    диспетчеризации не даст и с ключом.
+
+    `handler_members` — методы реализаций, в сигнатуре которых есть их
+    тип-запрос, от частых к редким. Граф ведёт ребро диспетчеризации в метод
+    `Handle` (`graph/binding.py`), а у `HandleEventAsync` и `Consume` — в тип;
+    здесь это видно человеку до того, как он решит.
+
+    `packages` — до трёх `PackageReference` модулей с реализациями, чьё
+    пространство имён реализации импортируют (`using`), от частых к редким;
+    у объявленной в репозитории базы — пусто. Пустой список у внешней
+    базы не значит «библиотеки нет»: `Directory.*.props` разбор `.csproj`
+    не читает (`dotnet/csproj.py`).
+
+    `requests` — первые по имени типы-запросы: по ним человек отвечает
+    на вопрос, а `IEntityTypeConfiguration` с запросами `Customer, Order`
+    объясняет себя без открытия файлов.
+    """
+
+    interface: str
+    resolved: bool
+    implementations: int
+    request_types: int
+    exclusivity: float
+    sent: int
+    handler_members: list[str]
+    packages: list[str]
+    requests: list[str]
+    configured: bool
+    examples: list[str]
+
+
+class DispatchCandidates(_Base):
+    """Отчёт `setup candidates dispatch-interfaces`."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    total: int
+    offset: int
+    items: list[DispatchCandidate]
+
+
+def _generic_base(raw: str) -> tuple[str, list[str]] | None:
+    """Голова и аргументы первой группы `<…>`: `I<A, B<C>>` → (`I`, [`A`, `B<C>`]).
+
+    Скобка ищется парная, а не последняя: у
+    `EndpointBaseAsync.WithRequest<A>.WithActionResult<B>` аргумент головы —
+    `A`, а срез до последней `>` дал бы `A>.WithActionResult<B`. Голова —
+    текст до первой `<`, как у `emit.collect_dispatch`: отметка «уже
+    в настройке» обязана говорить о той же голове, которую найдёт прогон.
+    """
+    start = raw.find("<")
+    if start <= 0:
+        return None
+    depth = 0
+    for position in range(start, len(raw)):
+        if raw[position] == "<":
+            depth += 1
+        elif raw[position] == ">":
+            depth -= 1
+            if depth == 0:
+                arguments = split_type_arguments(raw[start + 1 : position])
+                return (raw[:start].strip(), arguments) if arguments else None
+    return None
+
+
+def _inside(spans: list[SourceSpan], path: str, line: int) -> bool:
+    return any(span.path == path and span.start <= line <= span.end for span in spans)
+
+
+def _handler_members(symbol: Symbol, requests: set[str]) -> set[str]:
+    """Методы, в сигнатуре которых есть один из типов-запросов этой реализации.
+
+    Только методы: конструктор, принимающий запрос, назвал бы «обработчиком»
+    имя самого класса, а точкой входа диспетчера он не бывает. Граница
+    слова обязательна: `CreateOrderResult` запросом `CreateOrder` не является.
+    """
+    if not requests:
+        return set()
+    pattern = re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(requests))) + r")\b")
+    return {
+        member.name
+        for member in symbol.members
+        if member.kind == "method" and pattern.search(member.signature)
+    }
+
+
+def _imported_packages(
+    symbol: Symbol, packages_of: dict[str, list[str]], usings: dict[str, list[str]]
+) -> tuple[set[str], set[str]]:
+    """`PackageReference` модуля реализации, пространство имён которых она импортирует.
+
+    Не все пакеты модуля: их десятки, и первые три по алфавиту назвали бы
+    на eShopOnWeb `Ardalis.ListStartupServices, Ardalis.Specification,
+    AutoMapper…` вместо `MediatR` — подсказка о библиотеке, указывающая
+    не на неё, хуже пустой.
+
+    Два ответа: точное совпадение (`using MediatR` ↔ `MediatR`, `using
+    Ardalis.Specification.Builder` ↔ `Ardalis.Specification`) и пакет
+    внутри импортированного пространства (`using MassTransit` ↔
+    `MassTransit.RabbitMQ`: модуль ссылается на транспорт, интерфейс живёт
+    в основе). Второе слабее: `using System` с ним совпадает с каждым
+    `System.*`, поэтому оно идёт в ход, только когда точных нет.
+    """
+    imported = {namespace for span in symbol.sources for namespace in usings.get(span.path, [])}
+    exact: set[str] = set()
+    inner: set[str] = set()
+    for package in packages_of.get(symbol.module, []):
+        if any(ns == package or ns.startswith(package + ".") for ns in imported):
+            exact.add(package)
+        elif any(package.startswith(ns + ".") for ns in imported):
+            inner.add(package)
+    return exact, inner
+
+
+# Голова базы: FQN или имя и признак «объявлена в репозитории». Признак —
+# часть ключа: FQN объявленной базы и имя внешней совпасть не должны,
+# но склеить их молча было бы хуже, чем показать две строки.
+type _Head = tuple[str, bool]
+
+
+def dispatch_candidates(
+    scan: ScanResult,
+    settings: DocpipeConfig,
+    *,
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
+) -> DispatchCandidates:
+    """Кандидаты в `dispatch_interfaces` по обобщённым базам классов этого прогона.
+
+    Реализация — класс, не абстрактный: абстрактный обработчик запроса
+    не обслуживает, его обслуживает наследник, а у наследника своя голова
+    (`CommandHandler<CreateOrder>`), и именно её найдёт прогон — ключ
+    сверяется с прямыми базами. Голова группируется по FQN, если база
+    объявлена в репозитории, иначе по имени.
+
+    Тип-запрос — первый аргумент базы, объявленный в репозитории
+    и не совпадающий с самим классом и его параметрами-дженериками:
+    `Money : IEquatable<Money>` и CRTP-база `Entity<Order>` у `Order` —
+    не диспетчеризация, а у value object отправок (`new Money(…)`) больше,
+    чем у любого запроса, и без этого отсева они шли бы первыми.
+
+    Порядок — `(-exclusivity, -sent, -implementations, interface)`.
+    """
+    fqns = {symbol.fqn for symbol in scan.index.values()}
+    declared = {symbol.name for symbol in scan.index.values()}
+
+    heads: defaultdict[_Head, dict[str, set[str]]] = defaultdict(dict)
+    for key, symbol in scan.index.items():
+        if symbol.type_kind != "class" or "abstract" in symbol.modifiers:
+            continue
+        own = {symbol.name, *symbol.type_parameters}
+        # Списки параллельны (`dotnet/resolve.py`): по позиции известны и
+        # текст базы с аргументами, и её FQN, если резолв удался.
+        for raw, base in zip(symbol.base_types_raw, symbol.base_types, strict=True):
+            parsed = _generic_base(raw)
+            if parsed is None:
+                continue
+            written, arguments = parsed
+            resolved = base in fqns
+            head = (base if resolved else dispatch_name(written), resolved)
+            requests = heads[head].setdefault(key, set())
+            request = bare_type(arguments[0])
+            if request in declared and request not in own:
+                requests.add(request)
+
+    # Чьим аргументом встречается тип-запрос — по всем головам, включая
+    # не прошедшие порог: `Specification<Order>` с одной реализацией тоже
+    # говорит, что `Order` — не запрос `IEntityTypeConfiguration`.
+    owners: defaultdict[str, set[_Head]] = defaultdict(set)
+    for head, implementations in heads.items():
+        for requests in implementations.values():
+            for request in requests:
+                owners[request].add(head)
+
+    created: defaultdict[str, list[tuple[str, Construction]]] = defaultdict(list)
+    for path, construction in scan.constructions:
+        created[construction.type_name].append((path, construction))
+
+    packages_of = {
+        module.project_file: module.package_references for module in scan.manifest.modules
+    }
+    configured = dispatch_names(settings.dispatch_interfaces)
+
+    found: list[DispatchCandidate] = []
+    for (interface, resolved), implementations in heads.items():
+        requests = {request for handled in implementations.values() for request in handled}
+        if len(implementations) < MIN_IMPLEMENTATIONS or len(requests) < MIN_REQUEST_TYPES:
+            continue
+        keys = sorted(implementations)
+        symbols = [scan.index[key] for key in keys]
+        spans = [span for symbol in symbols for span in symbol.sources]
+        members: Counter[str] = Counter()
+        exact: Counter[str] = Counter()
+        inner: Counter[str] = Counter()
+        for key, symbol in zip(keys, symbols, strict=True):
+            members.update(_handler_members(symbol, implementations[key]))
+            # Пакет объявленной базы не ищется: она не из пакета.
+            if not resolved:
+                strong, weak = _imported_packages(symbol, packages_of, scan.usings)
+                exact.update(strong)
+                inner.update(weak)
+        packages = exact or inner
+        located = sorted(
+            (symbol.sources[0].path, symbol.sources[0].start)
+            for symbol in symbols
+            if symbol.sources
+        )
+        exclusive = sum(1 for request in requests if len(owners[request]) == 1)
+        found.append(
+            DispatchCandidate(
+                interface=interface,
+                resolved=resolved,
+                implementations=len(implementations),
+                request_types=len(requests),
+                exclusivity=round(exclusive / len(requests), 4),
+                # Отправка внутри реализации — сам обработчик создаёт свой
+                # запрос (повтор, проброс дальше), а не вызывающий код.
+                sent=sum(
+                    1
+                    for request in requests
+                    for path, construction in created[request]
+                    if not _inside(spans, path, construction.line)
+                ),
+                handler_members=[name for name, _ in _top(members, len(members))],
+                packages=[name for name, _ in _top(packages, _TOP_PACKAGES)],
+                requests=sorted(requests)[:_EXAMPLES],
+                configured=dispatch_name(interface) in configured,
+                examples=[f"{path}:{line}" for path, line in located[:_EXAMPLES]],
+            )
+        )
+
+    found.sort(key=lambda c: (-c.exclusivity, -c.sent, -c.implementations, c.interface, c.resolved))
+    return DispatchCandidates(total=len(found), offset=offset, items=_page(found, limit, offset))
+
+
+def _packages_text(item: DispatchCandidate) -> str:
+    if item.resolved:
+        return "— (база объявлена в репозитории)"
+    if item.packages:
+        return ", ".join(item.packages)
+    # Пустой список — не «библиотеки нет»: пакет мог прийти из props.
+    return (
+        "не видны: ни один PackageReference не совпал с using реализаций "
+        "(Directory.*.props разбор не читает)"
+    )
+
+
+def format_dispatch_interfaces(report: DispatchCandidates) -> str:
+    lines = [
+        f"Кандидаты в dispatch_interfaces: {report.total} "
+        f"(обобщённые базы классов: реализаций не меньше {MIN_IMPLEMENTATIONS}, "
+        f"типов-запросов из репозитория не меньше {MIN_REQUEST_TYPES})."
+    ]
+    for item in report.items:
+        mark = "  [уже в dispatch_interfaces]" if item.configured else ""
+        where = "объявлен в репозитории" if item.resolved else "внешний тип"
+        more = " …" if item.request_types > len(item.requests) else ""
+        lines += [
+            "",
+            f"{item.interface}{mark}",
+            f"  реализаций {item.implementations}, типов-запросов {item.request_types}, "
+            f"исключительность {item.exclusivity:.2f}, отправок {item.sent}",
+            f"  в ключ: {dispatch_name(item.interface)} ({where})",
+            f"  запросы: {', '.join(item.requests)}{more}",
+            f"  методы с запросом в сигнатуре: {', '.join(item.handler_members) or 'нет'}",
+            f"  пакеты: {_packages_text(item)}",
+            f"  примеры: {', '.join(item.examples)}",
+        ]
+
+    lines.append("")
+    lines.append(_page_line(report.total, report.offset, len(report.items)))
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------------------
 # Вид кандидатов → прогон → отчёт
 # --------------------------------------------------------------------------------------
 
-# Объединение отчётов всех видов: следующие задачи (S12–S14) дописывают сюда
+# Объединение отчётов всех видов: следующие задачи (S13–S14) дописывают сюда
 # свои модели, а в `_KINDS` — свои функции.
-type CandidateReport = DiMethodCandidates
+type CandidateReport = DiMethodCandidates | DispatchCandidates
 
 
 @dataclass(frozen=True)
@@ -304,8 +609,13 @@ def _di_methods(inputs: CandidateInputs, limit: int, offset: int) -> CandidateRe
     return di_method_candidates(_scan(inputs), inputs.settings, limit=limit, offset=offset)
 
 
+def _dispatch_interfaces(inputs: CandidateInputs, limit: int, offset: int) -> CandidateReport:
+    return dispatch_candidates(_scan(inputs), inputs.settings, limit=limit, offset=offset)
+
+
 _KINDS: Final[dict[str, Callable[[CandidateInputs, int, int], CandidateReport]]] = {
     "di-methods": _di_methods,
+    "dispatch-interfaces": _dispatch_interfaces,
 }
 
 KINDS: Final[tuple[str, ...]] = tuple(sorted(_KINDS))
@@ -325,6 +635,8 @@ def candidates(
 
 def format_candidates(report: CandidateReport) -> str:
     """Текст для человека. Вид отчёта определяется моделью, а не флагом."""
+    if isinstance(report, DispatchCandidates):
+        return format_dispatch_interfaces(report)
     return format_di_methods(report)
 
 

@@ -26,7 +26,7 @@ from docpipe.dotnet.csproj import parse_csproj, resolve_references
 from docpipe.dotnet.endpoints import extract_endpoints
 from docpipe.dotnet.facts import SQL_METHODS
 from docpipe.dotnet.parser import parse_source
-from docpipe.dotnet.resolve import build_symbol_index, compute_closures
+from docpipe.dotnet.resolve import build_symbol_index, compute_closures, file_usings
 from docpipe.hashing import content_hash, stable_json_dumps
 from docpipe.merge import (
     handler_order,
@@ -39,6 +39,7 @@ from docpipe.merge import (
     table_order,
 )
 from docpipe.model import (
+    Construction,
     DispatchDeclaration,
     DispatchSend,
     DocNode,
@@ -227,6 +228,16 @@ class ScanResult:
     `registration_calls` — все вызовы `Add*` парами «файл, факт», отсортированные
     по файлу и строке. Вход кандидатов в `di_methods` (`setup candidates`);
     в манифест не идут: это знание о настройке, а не о структуре документации.
+
+    `constructions` — все `new X(…)` тем же порядком. В манифест из них
+    попадают только отправки запросов с объявленным обработчиком
+    (`dispatch_sends`), а до записи `dispatch_interfaces` обработчиков нет —
+    и кандидатам в этот ключ (`setup candidates dispatch-interfaces`) нечем
+    было бы посчитать, где запрос отправляют.
+
+    `usings` — usings, действующие в файле (`resolve.file_usings`, как у
+    резолва). По ним кандидат узнаёт пакет внешней базы: у
+    `IRequestHandler` FQN нет, а `using MediatR` в файлах реализаций есть.
     """
 
     manifest: Manifest
@@ -234,6 +245,8 @@ class ScanResult:
     stats: Stats
     index: dict[str, Symbol]
     registration_calls: list[tuple[str, RegistrationCall]]
+    constructions: list[tuple[str, Construction]]
+    usings: dict[str, list[str]]
 
 
 def scan(
@@ -265,12 +278,12 @@ def collect_dispatch(
     if not interfaces:
         return []
 
-    wanted = {name.strip() for name in interfaces if name.strip()}
+    wanted = dispatch_names(interfaces)
     found: list[DispatchDeclaration] = []
     for symbol in symbols.values():
         for raw in symbol.base_types_raw:
             head, _, arguments = raw.partition("<")
-            head = head.strip().rsplit(".", 1)[-1]
+            head = dispatch_name(head)
             if head not in wanted or not arguments:
                 continue
             request = split_type_arguments(arguments.rstrip(">"))
@@ -288,6 +301,23 @@ def collect_dispatch(
                 )
             )
     return sorted(found, key=handler_order)
+
+
+def dispatch_name(head: str) -> str:
+    """Имя, по которому базу находит ключ `dispatch_interfaces`: голова без квалификатора.
+
+    Общее у прогона и у кандидатов в этот ключ (`setup candidates
+    dispatch-interfaces`): отметка «уже в настройке» обязана значить ровно
+    «прогон эту базу найдёт». Своя копия в кандидатах разошлась бы с этой
+    на квалифицированном имени — `MediatR.IRequestHandler<X>` — и показала
+    бы настроенным то, по чему прогон не находит ни одного обработчика.
+    """
+    return head.strip().rsplit(".", 1)[-1]
+
+
+def dispatch_names(interfaces: list[str]) -> frozenset[str]:
+    """Значение ключа `dispatch_interfaces` множеством имён, как его читает прогон."""
+    return frozenset(name.strip() for name in interfaces if name.strip())
 
 
 def split_type_arguments(text: str) -> list[str]:
@@ -581,12 +611,25 @@ def run(
             item[1].member,
         ),
     )
+    # Тот же охват, что у вызовов регистрации: место отправки вне скоупа
+    # тоже отправка, и без него кандидат в `dispatch_interfaces` при
+    # скоуп-прогоне выглядел бы интерфейсом, запросы которого не шлёт никто.
+    constructions = sorted(
+        (
+            (result.path, construction)
+            for result in all_results
+            for construction in result.constructions
+        ),
+        key=lambda item: (item[0], item[1].line, item[1].type_name, item[1].member),
+    )
     return ScanResult(
         manifest=manifest,
         meta=meta,
         stats=statistics,
         index=index,
         registration_calls=calls,
+        constructions=constructions,
+        usings=file_usings(all_results, file_to_module),
     )
 
 

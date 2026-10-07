@@ -10023,3 +10023,37 @@ git отказал целиком, ничего не добавив, а выво
 - Тест держит, что сборки плана нет в `cli.py` (`build_plan(`, `scan_docs(` и т. д.).
 
 **Проверка:** команда S06 — 127 passed; полная — ниже, после S12.
+
+---
+
+## S12 — кандидаты в `dispatch_interfaces` (07.10.2026)
+
+**Создано:** `tests/test_setup_candidates_dispatch.py` (22). **Изменено:**
+`docpipe/setup/candidates.py`, `docpipe/emit.py` (`ScanResult.constructions`, `.usings`;
+общие `dispatch_name`/`dispatch_names` — через них ключ читает и прогон),
+`docpipe/dotnet/facts.py` (`bare_type` публичная), `docpipe/dotnet/resolve.py`
+(`file_usings` вынесена из `build_symbol_index` без смены поведения), `docpipe/cli.py`
+(справка), `docs/setup.md`, `docs/configuration.md`, `docs/module-review.md`,
+`docs/backlog.md`.
+
+`docpipe setup candidates dispatch-interfaces`: обобщённые базы классов (не абстрактных,
+`type_kind == "class"`) с двумя и более реализациями и двумя и более типами-запросами
+из репозитория; `exclusivity`, `sent`, `handler_members`, `packages`, `requests`,
+`configured`.
+
+**Отклонения и находки.**
+- «Три пакета модуля» на eShopOnWeb — `Ardalis.*`, `AutoMapper`, без `MediatR`: пакет
+  выбирается по `using` реализаций, вложенное совпадение — только без точного.
+- `Money : IEquatable<Money>` и CRTP-базы давали исключительность 1.0 и шли бы первыми:
+  аргумент, равный самому классу или его параметру, — не тип-запрос.
+- `rstrip(">")` в `collect_dispatch` портит аргумент (`GetPage<Order`) — в кандидатах
+  аргумент ищется по парной скобке.
+- **Дефект прогона, в бэклоге:** `collect_sends` сравнивает имя из `new` без
+  квалификатора с аргументом базы как написан — у `IRequestHandler<App.CreateOrder>`
+  и `IRequestHandler<GetPage<Order>>` обработчик в манифесте есть, отправок ноль.
+- Числа: eShopOnWeb — 5 кандидатов, первый `IRequestHandler` (2 реализации,
+  исключительность 1.0, `sent` 4 — с `dispatch_sends` после записи ключа сходится);
+  squidex — 32, `IMessageHandler` третий; abp — 62, `ILocalEventHandler` 32-й (одни
+  события у двух голов). Если скиллу (S29) порядка не хватит — довод пересмотреть сортировку.
+
+**Проверка:** команда S12 — 39 passed; полная — ниже.

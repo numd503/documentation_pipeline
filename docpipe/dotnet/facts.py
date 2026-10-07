@@ -122,8 +122,15 @@ def member_of(node: Node) -> str:
     return ""
 
 
-def _bare_type(text: str) -> str:
-    """Имя типа без дженерика и без квалификатора: `Ns.Query<T>` → `Query`."""
+def bare_type(text: str) -> str:
+    """Имя типа без дженерика и без квалификатора: `Ns.Query<T>` → `Query`.
+
+    Публичная, потому что этим же именем кандидаты в `dispatch_interfaces`
+    (`setup/candidates.py`) называют тип-запрос из аргумента базы: место
+    отправки находится сравнением с `Construction.type_name`, и вторая
+    копия нормализации разошлась бы с этой на первом `global::` или
+    квалифицированном имени — отправок стало бы ноль без единого сообщения.
+    """
     bracket = text.find("<")
     if bracket != -1:
         text = text[:bracket]
@@ -135,7 +142,7 @@ def extract_constructions(nodes: list[Node]) -> list[Construction]:
     found: dict[tuple[str, str, int], Construction] = {}
     for node in nodes:
         type_node = node.child_by_field_name("type")
-        name = _bare_type(_text(type_node))
+        name = bare_type(_text(type_node))
         if not name:
             continue
         line = node.start_point[0] + 1
@@ -185,7 +192,7 @@ def _entity_of_member(call: Node) -> str:
         if arguments is None:
             continue
         first = next((child for child in arguments.named_children), None)
-        found = _bare_type(_text(first))
+        found = bare_type(_text(first))
         if found:
             return found
     return ""
@@ -214,7 +221,7 @@ def _generic_of_receiver(call: Node) -> str:
     if arguments is None:
         return ""
     first = next((c for c in arguments.named_children), None)
-    return _bare_type(_text(first))
+    return bare_type(_text(first))
 
 
 def _called_name(call: Node) -> str:

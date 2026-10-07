@@ -25,6 +25,7 @@ __all__ = [
     "build_symbol_index",
     "compute_closures",
     "declaration_fqn",
+    "file_usings",
     "index_by_fqn",
     "strip_generics",
     "symbol_key",
@@ -163,6 +164,35 @@ class _Group:
         return sorted(self.items, key=lambda item: (item[0], item[1].span.start))
 
 
+def file_usings(
+    results: list[FileParseResult], file_to_module: dict[str, str]
+) -> dict[str, list[str]]:
+    """Usings, действующие в файле: свои и `global using` всего проекта.
+
+    `global using` действует на весь проект, а не на файл, в котором объявлен:
+    обычно все они собраны в одном GlobalUsings.cs, и без этого шага
+    не резолвился бы ни один тип, видимый только через них. Файлы без
+    проекта пропускаются — как и в индексе символов.
+
+    Отдельная функция, потому что тот же ответ нужен кандидатам
+    в `dispatch_interfaces` (пакет внешней базы узнаётся по `using`
+    реализаций), а вторая копия разошлась бы с резолвом на первом
+    `global using`.
+    """
+    own: dict[str, set[str]] = {}
+    module_globals: defaultdict[str, set[str]] = defaultdict(set)
+    for result in results:
+        module = file_to_module.get(result.path)
+        if module is None:
+            continue
+        own[result.path] = set(result.usings)
+        module_globals[module].update(result.global_usings)
+    return {
+        path: sorted(usings | module_globals[file_to_module[path]])
+        for path, usings in sorted(own.items())
+    }
+
+
 def build_symbol_index(
     results: list[FileParseResult],
     file_to_module: dict[str, str],
@@ -176,19 +206,11 @@ def build_symbol_index(
     """
     groups: defaultdict[str, _Group] = defaultdict(_Group)
     known_fqns: set[str] = set()
-    own_usings: dict[str, set[str]] = {}
-    module_globals: defaultdict[str, set[str]] = defaultdict(set)
 
     for result in results:
         module = file_to_module.get(result.path)
         if module is None:
             continue
-        own_usings[result.path] = set(result.usings)
-        # `global using` действует на весь проект, а не на файл, в котором объявлен:
-        # обычно все они собраны в одном GlobalUsings.cs, и без этого шага
-        # не резолвился бы ни один тип, видимый только через них.
-        module_globals[module].update(result.global_usings)
-
         for declaration in result.declarations:
             fqn = declaration_fqn(declaration)
             known_fqns.add(fqn)
@@ -196,10 +218,7 @@ def build_symbol_index(
                 result.path, declaration
             )
 
-    usings_by_file = {
-        path: sorted(usings | module_globals[file_to_module[path]])
-        for path, usings in own_usings.items()
-    }
+    usings_by_file = file_usings(results, file_to_module)
 
     return {
         key: _build_symbol(group, usings_by_file, known_fqns, file_to_module)

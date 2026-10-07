@@ -210,8 +210,9 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 селектора `only.team` бизнес-ссылки берут то же, что и план: `--ownership`,
 а без флага — ключ `ownership`.
 
-`docpipe setup candidates di-methods` колонкой не выделен: он зовёт прогон
-шага 1 и читает ровно ключи столбца `scan`, а `di_methods` — ещё раз, чтобы
+`docpipe setup candidates` колонкой не выделен: он зовёт прогон шага 1
+и читает ровно ключи столбца `scan`, а `di_methods` (вид `di-methods`)
+и `dispatch_interfaces` (вид `dispatch-interfaces`) — ещё раз, чтобы
 пометить уже перечисленные (`configured`).
 
 Секцию `graph` (`engine_path`, `engine_sha256`, `mode`, `out`, `cache_dir`)
@@ -294,6 +295,41 @@ di_methods: ["AddSingletonAs", "AddTransientAs", "AddScopedAs"]
 двух раз, с долей вызовов на тех же получателях, что у стандартных
 регистраций. Обёртку отличает от `AddField` на `schema` и `AddDays`
 на дате именно это пересечение, а не имя; решение остаётся за человеком.
+
+## Диспетчеризация по типу запроса: `dispatch_interfaces`
+
+Интерфейсы, через которые запрос находит обработчик по своему типу:
+`class CreateOrderHandler : IRequestHandler<CreateOrder>` у MediatR,
+`ILocalEventHandler<T>` у abp, свой `ICommandHandler<T>`.
+
+```yaml
+dispatch_interfaces: ["IRequestHandler", "INotificationHandler"]
+```
+
+Пишется **имя без квалификатора**: прогон сверяет с ним голову прямой базы
+типа, сняв пространство имён (`MediatR.IRequestHandler<X>` тоже найдётся).
+Тип запроса — **первый** аргумент дженерика; второй — результат, и путать
+их нельзя. Сверка идёт только с прямыми базами: у
+`AHandler : CommandHandler<A>` где `CommandHandler<T> : IRequestHandler<T>`
+в ключ идёт `CommandHandler`.
+
+Умолчание пустое по той же причине, что у `di_methods`: имя интерфейса
+у каждого репозитория своё. Без ключа в манифесте нет ни
+`dispatch_handlers`, ни `dispatch_sends`, а граф — рёбер
+диспетчеризации; ошибкой это не выглядит.
+
+**Место отправки сравнивается с аргументом как написан.** Создание объекта
+записано именем без квалификатора и дженерика (`new App.CreateOrder()` →
+`CreateOrder`), а тип запроса — текстом аргумента базы, поэтому у
+`IRequestHandler<App.CreateOrder>` и `IRequestHandler<GetPage<Order>>`
+обработчик есть, а отправок ноль (долг, [`backlog.md`](backlog.md)).
+
+**Что вписать, подсказывает `docpipe setup candidates dispatch-interfaces`**
+([`setup.md`](setup.md)): обобщённые базы классов с двумя и больше
+реализациями и типами-запросами из репозитория, с долей запросов, которые
+встречаются аргументом только у этой базы, и числом мест, где их создают.
+`IRequestHandler` от `IEntityTypeConfiguration<Order>` отличает именно
+эта доля, а не имя библиотеки; решение остаётся за человеком.
 
 ## Две ветки дерева документации
 

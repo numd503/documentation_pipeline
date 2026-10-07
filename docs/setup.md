@@ -30,6 +30,7 @@
 ```bash
 uv run docpipe setup candidates di-methods --root . --config docpipe.yaml
 uv run docpipe setup candidates di-methods --root . --format json --limit 5
+uv run docpipe setup candidates dispatch-interfaces --root . --config docpipe.yaml
 ```
 
 Кандидаты в ключ настройки — факты, из которых агент строит вопрос
@@ -39,6 +40,7 @@ uv run docpipe setup candidates di-methods --root . --format json --limit 5
 | `KIND` | Ключ | Задача плана |
 |---|---|---|
 | `di-methods` | `di_methods` | S11 |
+| `dispatch-interfaces` | `dispatch_interfaces` | S12 |
 
 ### `di-methods`
 
@@ -88,3 +90,78 @@ uv run docpipe setup candidates di-methods --root . --format json --limit 5
 `services.AddMvc().AddX()` это `AddMvc()`, потому что объект там —
 результат вызова, а не коллекция сервисов. Форма, которую разбор
 не называет (`items[0]`, `base`), — пустая строка, в тексте `—`.
+
+### `dispatch-interfaces`
+
+Обобщённые базы, похожие на интерфейс диспетчеризации по типу запроса
+(`class CreateOrderHandler : IRequestHandler<CreateOrder>`). Без ключа
+`dispatch_interfaces` в манифесте нет ни обработчиков, ни мест отправки
+(`dispatch_handlers`, `dispatch_sends`), а граф не строит рёбер
+диспетчеризации — и это молчит: имя интерфейса у каждого репозитория своё.
+
+Отбор: класс, не абстрактный, с обобщённой базой; тип-запрос — **первый**
+аргумент базы, объявленный в репозитории и не совпадающий с самим классом
+или его параметром-дженериком (`Money : IEquatable<Money>` и CRTP-база
+`Entity<Order>` у `Order` — не диспетчеризация). Голова базы — FQN, если
+база объявлена в репозитории, иначе имя без квалификатора. Порог —
+не меньше двух реализаций и двух разных типов-запросов. Порядок —
+`(-exclusivity, -sent, -implementations, interface)`.
+
+| Поле | Что значит |
+|---|---|
+| `interface` | FQN объявленной в репозитории базы или имя внешней |
+| `resolved` | база объявлена в репозитории |
+| `implementations` | классов-реализаций |
+| `request_types` | разных типов-запросов |
+| `exclusivity` | доля типов-запросов, которые первым аргументом обобщённой базы встречаются **только** у этой головы |
+| `sent` | сколько раз тип-запрос создают (`new X(…)`) вне классов-реализаций этой головы |
+| `handler_members` | методы реализаций, в сигнатуре которых есть их тип-запрос, от частых к редким |
+| `packages` | до трёх `PackageReference` модулей с реализациями, чьё пространство имён реализации импортируют (`using`, включая `global using`); у объявленной базы — пусто |
+| `requests` | до трёх типов-запросов по имени |
+| `configured` | уже перечислен в `dispatch_interfaces` |
+| `examples` | до трёх `файл:строка` объявлений реализаций |
+
+В `dispatch_interfaces` пишется имя **без квалификатора** — так ключ
+читает прогон, и текст печатает его строкой «в ключ: …». У объявленной
+в репозитории базы это последний сегмент FQN.
+
+Как читать:
+
+- **Исключительность 1.0 и есть отправки** — почти наверняка
+  диспетчеризация: запрос встречается аргументом только у своего
+  обработчика, и его кто-то создаёт.
+- **Исключительность меньше 1** — аргументы общие с другими базами:
+  сущность `Order` у `IEntityTypeConfiguration` и `Specification`.
+  Но не только шум: один запрос под двумя головами законен
+  (событие abp — у `ILocalEventHandler` и у `IDistributedEventHandler`,
+  у обоих 0.6–0.7), поэтому решают `handler_members` и `sent`, а не одно
+  число.
+- **Исключительность 1.0 без отправок и без методов с запросом** —
+  чаще всего тестовая обвязка (`IClassFixture<…>`,
+  `WebApplicationFactory<…>`): аргумент там — маркер, а не запрос.
+- **`handler_members`** показывает, куда диспетчер передаёт запрос. Граф
+  ведёт ребро в метод `Handle`, а у `HandleEventAsync` (abp) и `Consume` —
+  в тип (`graph/binding.py`); это ограничение графа, а не находки.
+- **`packages` пуст у внешней базы** — не довод против: `Directory.*.props`
+  разбор `.csproj` не читает, а пакет мог прийти оттуда. Точное совпадение
+  (`using MediatR` ↔ `MediatR`) важнее вложенного (`using MassTransit` ↔
+  `MassTransit.RabbitMQ`); вложенные показываются, только когда точных нет.
+- **`sent` и `dispatch_sends` манифеста после записи ключа могут
+  разойтись.** Кандидат не считает создание запроса внутри реализаций
+  (обработчик, пересылающий свой запрос, — не вызывающий код), а манифест
+  считает. И второе, хуже: прогон сравнивает место отправки с аргументом
+  базы **как написан**, поэтому у `IRequestHandler<App.CreateOrder>`
+  и `IRequestHandler<GetPage<Order>>` отправок в манифесте ноль, хотя
+  кандидат их видит (долг, [`backlog.md`](backlog.md)).
+- **Абстрактная реализация в счёт не идёт**: у
+  `abstract CommandHandler<T> : IRequestHandler<T>` запрос обслуживает
+  наследник, и кандидатом будет голова наследника `CommandHandler` — ключ
+  сверяется с прямыми базами.
+
+Числа на открытых репозиториях (07.10): eShopOnWeb — 5 кандидатов,
+первый `IRequestHandler` (2 реализации, 1.0, 4 отправки, пакет `MediatR`);
+squidex — 32, `IMessageHandler` третьим после `Content<T>` и
+`ReadonlyList<T>` (у всех 1.0, порядок решает `sent`); abp — 62, первыми
+`AsyncBackgroundJob` и `BackgroundJob` (диспетчеризация джобов по типу
+аргументов), `ILocalEventHandler` и `IDistributedEventHandler` — 32-м и
+33-м из-за общих событий.
