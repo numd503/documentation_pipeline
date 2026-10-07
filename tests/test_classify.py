@@ -177,7 +177,9 @@ def _ruleset_with(when: dict, tmp_path: Path, exclude: dict | None = None):  # t
     path.write_text(
         sectioned(
             {
-                "version": "1",
+                # `version` — ключ файла, а не секции: `sectioned` пишет его
+                # наверх сам. Внутри секции он раньше молча перекрывал версию
+                # файла, теперь это отказ загрузки (S02).
                 "ruleset_version": "test",
                 "exclude": exclude or {},
                 "rules": [{"id": "r", "kind": "k", "template": "t", "priority": 1, "when": when}],
@@ -706,7 +708,6 @@ def _with_unless(tmp_path: Path, unless: dict | None):  # type: ignore[no-untype
     path.write_text(
         sectioned(
             {
-                "version": "1",
                 "ruleset_version": "test",
                 "exclude": {"rules": [rule]},
                 "rules": [

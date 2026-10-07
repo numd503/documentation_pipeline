@@ -25,10 +25,22 @@ from docpipe.ruleset import (
     evaluate,
     load_rule_items,
     pick_winner,
+    reject_unknown_keys,
     validate_condition,
 )
 
 _TOP: Final[int] = 10
+
+# Допустимые ключи `ownership.yaml`. Без них `titel` у команды молча давал
+# заголовок, равный `id`; `team:` вместо `teams:` наверху оставлял список
+# команд пустым, и отказ звучал как «правило назначает команду, которой нет»
+# — про правило, а не про опечатку; `priorty` у правила давал «без полей
+# ['priority']», не называя написанного.
+_OWNERSHIP_KEYS: Final[frozenset[str]] = frozenset(
+    {"version", "ownership_version", "teams", "rules"}
+)
+_TEAM_KEYS: Final[frozenset[str]] = frozenset({"id", "title"})
+_OWNERSHIP_RULE_KEYS: Final[frozenset[str]] = frozenset({"id", "team", "priority", "when"})
 
 
 @dataclass(frozen=True)
@@ -199,10 +211,14 @@ def load_ownership(path: Path) -> Ownership:
     raw: Any = yaml.safe_load(path.read_bytes().decode("utf-8-sig"))
     if not isinstance(raw, dict):
         raise ValueError(f"{path}: правила владения должны быть словарём")
+    reject_unknown_keys(raw, _OWNERSHIP_KEYS, str(path))
 
     teams: list[Team] = []
     seen: set[str] = set()
     for index, item in enumerate(raw.get("teams") or []):
+        if isinstance(item, dict):
+            label = f" ({item['id']})" if "id" in item else ""
+            reject_unknown_keys(item, _TEAM_KEYS, f"{path}: команда #{index}{label}")
         if not isinstance(item, dict) or "id" not in item:
             raise ValueError(f"{path}: команда #{index} должна быть словарём с ключом `id`")
         if item["id"] in seen:
@@ -211,7 +227,12 @@ def load_ownership(path: Path) -> Ownership:
         teams.append(Team(id=item["id"], title=str(item.get("title", item["id"]))))
 
     rules: list[OwnershipRule] = []
-    for item in load_rule_items(raw.get("rules"), path, {"id", "team", "priority", "when"}):
+    for item in load_rule_items(
+        raw.get("rules"),
+        path,
+        {"id", "team", "priority", "when"},
+        allowed=_OWNERSHIP_RULE_KEYS,
+    ):
         if item["team"] not in seen:
             known = ", ".join(sorted(seen)) or "(список пуст)"
             raise ValueError(

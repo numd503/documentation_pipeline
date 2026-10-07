@@ -110,11 +110,54 @@ def pick_winner[R: Prioritised](matched: list[R]) -> R:
     return min(matched, key=lambda rule: (-rule.priority, rule.id))
 
 
-def load_rule_items(raw: Any, path: Any, required: set[str]) -> list[dict[str, Any]]:
-    """Проверить список правил: обязательные поля и повторы `id`.
+def reject_unknown_keys(
+    mapping: Mapping[str, Any],
+    allowed: frozenset[str],
+    where: str,
+    hints: Mapping[str, str] | None = None,
+) -> None:
+    """Отказ, если в словаре настройки есть ключ, которого загрузчик не читает.
+
+    Лишний ключ — почти всегда опечатка (`priorty`, `unles`), и молча
+    пропущенный он неотличим от правила, которое просто не сработало: набор
+    грузится, прогон проходит, решение пропадает. Настройку правит ассистент
+    и сразу перезапускает инструмент, поэтому опечатка обязана стоить ему
+    одного прогона, а не вечера поисков. Сообщение называет место и полный
+    список допустимого — по нему исправляют, не открывая код.
+
+    `hints` — пояснение к ключу, который законен в соседнем месте и поэтому
+    будет вписан не туда (`unless` у правила классификации).
+    """
+    unknown = sorted(key for key in mapping if key not in allowed)
+    if not unknown:
+        return
+
+    names = ", ".join(repr(key) for key in unknown)
+    label = "неизвестный ключ" if len(unknown) == 1 else "неизвестные ключи"
+    message = f"{where}: {label} {names}; допустимы: {', '.join(sorted(allowed))}"
+    notes = [hints[key] for key in unknown if hints and key in hints]
+    if notes:
+        message += " — " + "; ".join(notes)
+    raise ValueError(message)
+
+
+def load_rule_items(
+    raw: Any,
+    path: Any,
+    required: set[str],
+    *,
+    allowed: frozenset[str] | None = None,
+    hints: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Проверить список правил: лишние и обязательные поля, повторы `id`.
 
     Возвращает сырые словари: собирать из них свою модель — дело набора правил,
     у каждого она своя (`kind`/`template` у классификации, `team` у владения).
+
+    `allowed` ключевой и с умолчанием: без него лишние ключи не проверяются,
+    как раньше. Лишний ключ проверяется **до** обязательных: опечатка `idd`
+    иначе дала бы «правило без полей ['id']», и искать пришлось бы глазами,
+    какое из написанных полей им было.
     """
     if raw is None:
         return []
@@ -126,6 +169,10 @@ def load_rule_items(raw: Any, path: Any, required: set[str]) -> list[dict[str, A
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             raise ValueError(f"{path}: правило #{index} должно быть словарём")
+
+        if allowed is not None:
+            label = f" ({item['id']})" if "id" in item else ""
+            reject_unknown_keys(item, allowed, f"{path}: правило #{index}{label}", hints)
 
         missing = required - set(item)
         if missing:

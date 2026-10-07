@@ -5,12 +5,14 @@
 из него документировать*. Первое переносится между проектами, второе нет.
 """
 
+import json
 import posixpath
+from collections import Counter
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Literal
+from typing import Any, Literal, get_origin
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DocLayout = Literal["kind-first", "module-first"]
 
@@ -33,6 +35,18 @@ def _repo_relative(value: str, field: str) -> str:
     if ".." in parts:
         raise ValueError(f"{field}: выход за корень (`..`) запрещён, дано {value!r}")
     return "/".join(parts)
+
+
+def _cache_path(value: str, field: str) -> str:
+    """Каталог кэша: абсолютный путь разрешён, относительный — без `..` и `\\`.
+
+    Почему абсолютный законен, а `..` нет, — в комментарии к
+    `DocpipeConfig._check_cache_dir`: написанный руками путь наружу — решение,
+    видное в конфигурации, а `..` — место, зависящее от того, откуда звали.
+    """
+    if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute():
+        return value
+    return _repo_relative(value, field)
 
 
 class UrlRewrite(BaseModel):
@@ -108,7 +122,8 @@ class WebConfig(BaseModel):
     modules_dir: str = ""
 
     # Пустой список — законное значение: значит, проверено и ничего
-    # не преобразуется. Читается сверху вниз, первое совпадение выигрывает.
+    # не преобразуется. Модуль называется не больше одного раза — см.
+    # `_check_url_rewrite`.
     url_rewrite: list[UrlRewrite] = Field(default_factory=list)
     registry_calls: list[RegistryCallConfig] = Field(default_factory=list)
 
@@ -116,6 +131,26 @@ class WebConfig(BaseModel):
     @classmethod
     def _check_roots(cls, value: list[str]) -> list[str]:
         return [_repo_relative(item, "web.roots") for item in value]
+
+    @field_validator("url_rewrite")
+    @classmethod
+    def _check_url_rewrite(cls, value: list[UrlRewrite]) -> list[UrlRewrite]:
+        """Повтор модуля — отказ, а не «первая запись выигрывает».
+
+        `rewrite_for` берёт первую запись, и вторая не применялась никогда:
+        правка, вписанная ниже старой строки, выглядела сделанной, а связь
+        по-прежнему расходилась на префиксе. Какая из двух задумана,
+        инструмент знать не может — решает человек.
+        """
+        repeated = sorted(
+            module for module, count in Counter(item.module for item in value).items() if count > 1
+        )
+        if repeated:
+            raise ValueError(
+                f"web.url_rewrite: модуль назван больше одного раза: {', '.join(repeated)};"
+                " правило на модуль одно — оставьте одну запись"
+            )
+        return value
 
     @field_validator("modules_dir")
     @classmethod
@@ -170,6 +205,24 @@ class GraphConfig(BaseModel):
     # индекс и кэш разбора — артефакты прогона, а не часть репозитория.
     out: str = "artifacts/graph.db"
     cache_dir: str = ".docpipe/engine-cache"
+
+    @field_validator("cache_dir")
+    @classmethod
+    def _check_cache_dir(cls, value: str) -> str:
+        """Как у `cache_dir` верхнего уровня, и строже в одном.
+
+        Этот каталог мост **удаляет целиком** перед каждой сборкой
+        (`Engine.index`, `clean_cache`): `..` здесь означал бы `rmtree`
+        за пределами репозитория, а пустое значение или `.` — `rmtree`
+        текущего каталога, то есть репозитория, из которого зовут команду.
+        """
+        checked = _cache_path(value, "graph.cache_dir")
+        if not checked:
+            raise ValueError(
+                "graph.cache_dir: нужен отдельный каталог — мост очищает его перед"
+                f" каждой сборкой, а {value!r} указывает на текущий каталог"
+            )
+        return checked
 
 
 class DocpipeConfig(BaseModel):
@@ -309,14 +362,30 @@ class DocpipeConfig(BaseModel):
     @field_validator("cache_dir")
     @classmethod
     def _check_cache_dir(cls, value: str) -> str:
-        if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute():
-            return value
-        return _repo_relative(value, "cache_dir")
+        return _cache_path(value, "cache_dir")
 
     @field_validator("roots")
     @classmethod
     def _check_roots(cls, value: list[str]) -> list[str]:
         return [_repo_relative(item, "roots") for item in value]
+
+    @model_validator(mode="after")
+    def _check_adapter_ids(self) -> "DocpipeConfig":
+        """`id` адаптера уникален: им подписаны ошибки и счётчики сборки.
+
+        `collect` печатает «адаптер: сколько записей» и «адаптер: ошибка»
+        по `id`, а не по позиции в списке. Два адаптера с одним `id` дают
+        две строки, которые не различить, и ошибка одного читается как
+        ошибка другого.
+        """
+        repeated = sorted(
+            adapter_id
+            for adapter_id, count in Counter(item.id for item in self.arch_adapters).items()
+            if count > 1
+        )
+        if repeated:
+            raise ValueError(f"arch_adapters: повтор id {', '.join(map(repr, repeated))}")
+        return self
 
     @property
     def modules_root(self) -> str:
@@ -406,8 +475,56 @@ def load_config(path: Path | None) -> DocpipeConfig:
     if not isinstance(raw, dict):
         raise ValueError(f"Конфигурация должна быть словарём, получено: {type(raw).__name__}")
 
+    _reject_empty_lists(raw, path)
+
     # Секция, у которой закомментированы все записи, разбирается YAML как `None`.
     # Без этого фильтра конфигурация падала бы с «Input should be a valid dictionary»:
     # закомментировать записи — самое обычное действие при настройке, и оно
-    # не должно выглядеть как поломка.
+    # не должно выглядеть как поломка. Ключи-списки сюда уже не доходят —
+    # у них `None` отвергнут выше.
     return DocpipeConfig.model_validate({k: v for k, v in raw.items() if v is not None})
+
+
+def _list_fields(model: type[BaseModel]) -> dict[str, Any]:
+    """Поля-списки модели и их умолчания.
+
+    Строится по аннотациям, а не перечислением руками: ключ-список,
+    добавленный в модель, без этого остался бы без проверки на `None`,
+    и ловушка вернулась бы на нём молча.
+    """
+    return {
+        name: field.get_default(call_default_factory=True)
+        for name, field in model.model_fields.items()
+        if get_origin(field.annotation) is list
+    }
+
+
+def _reject_empty_lists(raw: dict[str, Any], path: Path) -> None:
+    """Ключ-список без элементов — отказ, а не умолчание.
+
+    `enrolled:`, под которым остались одни комментарии, YAML отдаёт как `None`.
+    Выброшенный, такой ключ получает умолчание, а у `enrolled` оно `["**"]`:
+    каждый модуль включён, без единого сообщения. Агент, «временно выключивший»
+    строку комментарием, получил бы противоположное задуманному. Поэтому `None`
+    у списка — отказ, и сообщение называет обе честные записи: `[]`, если
+    список и правда пуст, и удаление ключа, если нужно умолчание.
+
+    Вложенные секции (`web`, `graph`) проверяются так же: иначе у них `None`
+    давал бы `ValidationError` без подсказки.
+    """
+    places: list[tuple[str, dict[str, Any], type[BaseModel]]] = [("", raw, DocpipeConfig)]
+    for name, field in DocpipeConfig.model_fields.items():
+        section, nested = raw.get(name), field.annotation
+        if isinstance(section, dict) and isinstance(nested, type) and issubclass(nested, BaseModel):
+            places.append((f"{name}.", section, nested))
+
+    for prefix, values, model in places:
+        for name, default in sorted(_list_fields(model).items()):
+            if name not in values or values[name] is not None:
+                continue
+            where = f" в секции `{prefix.rstrip('.')}`" if prefix else ""
+            shown = json.dumps(default, ensure_ascii=False, default=str)
+            raise ValueError(
+                f"{path}: `{prefix}{name}:` без элементов — напишите `{name}: []`{where}"
+                f" или удалите ключ (умолчание: {shown})"
+            )

@@ -24,6 +24,7 @@ from docpipe.ruleset import (
     evaluate,
     load_rule_items,
     pick_winner,
+    reject_unknown_keys,
     validate_condition,
 )
 
@@ -243,6 +244,36 @@ _LEGACY: Final[dict[str, tuple[str, int, str]]] = {
 
 _EXCLUDE_KEYS: Final[frozenset[str]] = frozenset({*_LEGACY, "require_public", "rules"})
 
+# Секции файла правил — по одной на шаг разбора. Список закрытый: верх файла
+# проверяется строго, и секция, не названная здесь, — отказ загрузки. Новый
+# язык (в ветке `feat/python-parser` готовится `python`) добавляется в этот
+# кортеж и больше нигде: загрузчик сверяет с ним и имя секции, которое
+# просит вызывающий, и ключи верха файла, а тест держит с ним в паре
+# `tools/migrate_rules.py`.
+RULE_SECTIONS: Final[tuple[str, ...]] = ("dotnet", "web")
+
+# Допустимые ключи на каждом уровне файла правил. Опечатка в имени
+# необязательного ключа без этих списков не роняла загрузку, а молча
+# выключала часть решения: `unles` у правила отсева превращал вырез в отсев
+# всего каталога, `priorty` там же давал приоритет 0 и другого победителя.
+# По отчёту такое не отличить от «набор не покрывает этот случай».
+_FILE_KEYS: Final[frozenset[str]] = frozenset({"version", *RULE_SECTIONS})
+_SECTION_KEYS: Final[frozenset[str]] = frozenset({"ruleset_version", "exclude", "rules"})
+_EXCLUDE_RULE_KEYS: Final[frozenset[str]] = frozenset(
+    {"id", "reason", "priority", "when", "unless"}
+)
+_RULE_KEYS: Final[frozenset[str]] = frozenset({"id", "kind", "template", "priority", "when"})
+
+# Ключи, законные в соседнем месте файла и поэтому вписываемые не туда.
+# `unless` у правила классификации раньше молча игнорировался: правило
+# совпадало шире задуманного, и вырез, ради которого его писали, пропадал.
+_SECTION_HINTS: Final[dict[str, str]] = {
+    "version": "`version` — свойство файла и пишется снаружи секций",
+}
+_RULE_HINTS: Final[dict[str, str]] = {
+    "unless": "`unless` есть только у правил отсева (`exclude.rules`)",
+}
+
 # Префикс зарезервирован за развёрнутой краткой формой: иначе в таблице причин
 # появились бы две строки с одним id, и понять, какая из них сработала, было бы нельзя.
 _RESERVED_PREFIX: Final = "exclude."
@@ -284,7 +315,12 @@ def _load_exclusion(raw: Any, path: Path) -> Exclusion:
         if raw.get(field_name)
     ]
 
-    for item in load_rule_items(raw.get("rules"), f"{path}:exclude", {"id", "reason", "when"}):
+    for item in load_rule_items(
+        raw.get("rules"),
+        f"{path}:exclude",
+        {"id", "reason", "when"},
+        allowed=_EXCLUDE_RULE_KEYS,
+    ):
         if item["id"].startswith(_RESERVED_PREFIX):
             raise ValueError(
                 f"{path}: id правила отсева {item['id']!r} начинается с "
@@ -323,18 +359,30 @@ def _section(raw: dict[str, Any], section: str, path: Path) -> dict[str, Any]:
     загрузчик. Плоский файл, прочитанный шагом `web`, дал бы .NET-правила
     на TypeScript: `require_public: true` отсеял бы весь фронт разом,
     и отчёт показал бы пустое дерево без единой ошибки.
-    """
-    value = raw.get(section)
-    if isinstance(value, dict):
-        return value
 
-    known = sorted(key for key in raw if isinstance(raw[key], dict) and "rules" in raw[key])
-    if "ruleset_version" in raw or "rules" in raw:
+    Верх файла проверяется строго (`version` и `RULE_SECTIONS`), но **после**
+    распознавания плоского формата: его `ruleset_version` и `rules` наверху
+    иначе дали бы «неизвестный ключ» вместо команды переноса.
+    """
+    if section not in RULE_SECTIONS:
+        raise ValueError(
+            f"{path}: секции правил `{section}` нет; известны: {', '.join(RULE_SECTIONS)}"
+        )
+
+    sectioned = any(name in raw for name in RULE_SECTIONS)
+    if not sectioned and ("ruleset_version" in raw or "rules" in raw):
         raise ValueError(
             f"{path}: файл в старом плоском формате, а нужна секция `{section}:`."
             " Перенесите его: `uv run python tools/migrate_rules.py"
             f" --{section} {path} --out {path}` (комментарии сохраняются)"
         )
+    reject_unknown_keys(raw, _FILE_KEYS, str(path))
+
+    value = raw.get(section)
+    if isinstance(value, dict):
+        return value
+
+    known = sorted(key for key in raw if isinstance(raw[key], dict) and "rules" in raw[key])
     raise ValueError(
         f"{path}: нет секции `{section}:`; в файле есть: {', '.join(known) or '(ни одной)'}"
     )
@@ -351,17 +399,24 @@ def load_ruleset(path: Path, section: str) -> Ruleset:
         raise ValueError(f"{path}: файл правил должен быть словарём секций")
 
     raw = _section(document, section, path)
+    path = Path(f"{path}:{section}")
+    # До подмешивания `version`: внутри секции этот ключ раньше молча
+    # перекрывал версию файла — ровно то, от чего `version` вынесен наверх.
+    reject_unknown_keys(raw, _SECTION_KEYS, str(path), _SECTION_HINTS)
     # `version` — свойство формата файла, а не набора, поэтому читается
     # снаружи секции: два разных значения в одном файле означали бы, что
     # половину файла разбирают одними правилами, половину другими.
     raw = {"version": document.get("version", "1")} | raw
-    path = Path(f"{path}:{section}")
 
     exclusion = _load_exclusion(raw.get("exclude"), path)
 
     rules: list[Rule] = []
     for item in load_rule_items(
-        raw.get("rules"), path, {"id", "kind", "template", "priority", "when"}
+        raw.get("rules"),
+        path,
+        {"id", "kind", "template", "priority", "when"},
+        allowed=_RULE_KEYS,
+        hints=_RULE_HINTS,
     ):
         validate_condition(item["when"], f"{path}:{item['id']}.when", _TABLE)
         rules.append(

@@ -331,19 +331,46 @@ def scan(
 def _load_page_overrides(
     pages: Path | None, settings: DocpipeConfig, config: Path | None
 ) -> Overrides:
-    """Ручной состав страниц. Файла нет — пустые правила, а не отказ.
+    """Ручной состав страниц. Ключ пуст — пустые правила, а не отказ.
 
     Репозиторий, где обход находит страницы сам, ничего не дописывает руками,
     и требовать от него файл значило бы делать настройку обязательной там,
-    где она не нужна. Но **названный** файл обязан существовать: молча
-    проигнорировать `--pages` значит потерять решения человека.
+    где она не нужна. Но **названный** файл обязан существовать — и флагом
+    `--pages`, и ключом `web.pages`: молча проигнорировать его значит
+    потерять решения человека. Ключ раньше так и игнорировался — файла
+    по разрешённому пути нет, и прогон шёл с пустыми правилами.
+
+    Зовут её все прогоны фронта (`web scan`, `symbols --lang ts`): два прогона,
+    читающие состав страниц по-разному, считали бы страницы по-разному.
     """
     if pages is not None:
         return load_overrides(pages)
     if not settings.web.pages:
         return Overrides()
-    path = resolve_input(settings.web.pages, config)
-    return load_overrides(path) if path.is_file() else Overrides()
+    candidates = candidate_inputs(settings.web.pages, config)
+    found = next((path for path in candidates if path.is_file()), None)
+    if found is None:
+        tried = ", ".join(str(path) for path in candidates)
+        raise FileNotFoundError(
+            f"`web.pages`: файл {settings.web.pages!r} не найден; искали: {tried}"
+        )
+    return load_overrides(found)
+
+
+def _format(value: str, allowed: tuple[str, ...]) -> str:
+    """Проверить значение `--format`: неизвестное — код 2 с перечнем допустимых.
+
+    Без проверки опечатка `jsno` молча давала текст, и скрипт, ждущий JSON,
+    падал не здесь, а на разборе вывода — с сообщением, по которому причину
+    не найти.
+    """
+    if value not in allowed:
+        # Коротко намеренно: «Invalid value for --format» typer пишет сам, а длинная
+        # строка в его рамке переносится и разрывает перечень допустимых.
+        raise typer.BadParameter(
+            f"{value!r}; допустимы: {', '.join(allowed)}", param_hint="--format"
+        )
+    return value
 
 
 def _check_undecided(stats: Stats, fail: bool) -> None:
@@ -380,8 +407,7 @@ def diff(
     Наличие изменений — не ошибка, поэтому код возврата всегда 0: команда
     предназначена для конвейера, где по её выводу решают, что перегенерировать.
     """
-    if output_format not in ("text", "json"):
-        raise typer.BadParameter("допустимо text или json", param_hint="--format")
+    output_format = _format(output_format, ("text", "json"))
 
     try:
         before = Manifest.model_validate_json(old.read_text(encoding="utf-8"))
@@ -492,6 +518,7 @@ def symbols(
 
     if lang not in ("cs", "ts"):
         raise typer.BadParameter("известны cs и ts", param_hint="--lang")
+    output_format = _format(output_format, ("text", "json"))
 
     # Секция правил и есть язык: набор .NET, прочитанный шагом `web`, отсеял бы
     # весь фронт целиком (`require_public` на TypeScript), и это молчаливая
@@ -501,6 +528,10 @@ def symbols(
         settings = load_config(config)
         settings_rules = settings.rules if lang == "cs" else settings.web.rules
         ruleset = load_ruleset(rules or resolve_input(settings_rules, config), section)
+        # Тот же ручной состав страниц, что у `web scan`: без него `symbols`
+        # считал бы страницы по одной таблице роутов, и состояние
+        # `page_covered` расходилось бы с манифестом фронта.
+        overrides = _load_page_overrides(None, settings, config) if lang == "ts" else None
     except (OSError, ValueError) as exc:
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -511,7 +542,12 @@ def symbols(
         index, manifest = scanned.index, scanned.manifest
         configured = {module.project_file for module in manifest.modules if module.enrolled}
     else:
-        web = run_web_scan(root, settings, ruleset, cache_dir)
+        try:
+            web = run_web_scan(root, settings, ruleset, cache_dir, overrides)
+        except ValueError as exc:
+            # Неоднозначное правило снятия — тот же отказ, что у `web scan`.
+            typer.echo(f"Ошибка в ручном составе страниц: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
         index, manifest = web.index, web.manifest
         configured = {
             module.id.removeprefix("module:") for module in manifest.modules if module.enrolled
@@ -773,6 +809,7 @@ def web_link(
     с первого дня, выключат на второй, и вместе с ним пропадут работающие
     проверки.
     """
+    output_format = _format(output_format, ("text", "json"))
     try:
         settings = load_config(config)
         first = Manifest.model_validate_json(backend.read_text(encoding="utf-8"))
@@ -843,12 +880,7 @@ def web_pages(
     `web_calls` лежат на узле сервиса, где вызов и записан. Отсюда `--depth`
     и указание посредника у каждого вызова.
     """
-    if output_format not in PAGE_FORMATS:
-        typer.echo(
-            f"Неизвестный формат: {output_format}. Известные: {', '.join(PAGE_FORMATS)}.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
+    output_format = _format(output_format, PAGE_FORMATS)
     if depth < 0:
         raise typer.BadParameter("глубина не может быть отрицательной", param_hint="--depth")
 
@@ -929,6 +961,7 @@ def docs_status(
     Соблазн «заодно починить front matter» превращает информационную команду
     в изменяющую, и её перестают гонять в CI.
     """
+    output_format = _format(output_format, ("text", "json"))
     for name, values, allowed in (
         ("--action", action, AGENT_ACTIONS),
         ("--file-action", file_action, FILE_ACTIONS),
@@ -2627,6 +2660,7 @@ def anchors_list(
     типы, поэтому «не найден среди узлов» и «типа нет» — разные вещи, и различить
     их по манифесту нельзя.
     """
+    output_format = _format(output_format, ("text", "json"))
     anchors, errors = _load_anchors(
         manifest_path, _registries_path(registries, load_config(config), config), root
     )
@@ -2725,9 +2759,7 @@ def anchors_which(
     Ищутся и вложенные записи: команда чаще владеет шагом workflow, чем
     процессом целиком, а шаги на верхний уровень не поднимаются.
     """
-    if output_format not in ("text", "json"):
-        typer.echo(f"Неизвестный формат: {output_format}. Известны: text, json", err=True)
-        raise typer.Exit(code=2)
+    output_format = _format(output_format, ("text", "json"))
 
     anchors, errors = _load_anchors(manifest_path, registries, root)
     found = find_by_implementation(anchors, query)
@@ -2953,6 +2985,7 @@ def business_status(
     output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
 ) -> None:
     """Что делать с каждым бизнес-документом. Ничего не пишет."""
+    output_format = _format(output_format, ("text", "json"))
     loaded = _business_context(manifest_path, registries_file, root, config, business_root, None)
     selected = list(fail_on or [])
 

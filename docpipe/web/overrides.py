@@ -20,12 +20,20 @@
 """
 
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from docpipe.route import normalize_route
+from docpipe.ruleset import reject_unknown_keys
+
+# Допустимые ключи `pages.yaml`: верх файла и тело `pages:`. `add`, `remove`
+# и `features` наверху — плоская форма файла, а не опечатка. Ключ с опечаткой
+# (`remov:`) раньше не читался вовсе, и снятые страницы молча оставались
+# страницами.
+_FILE_KEYS: Final[frozenset[str]] = frozenset({"version", "pages", "add", "remove", "features"})
+_BODY_KEYS: Final[frozenset[str]] = frozenset({"add", "remove", "features"})
 
 # Источник, которым помечается синтетическая запись маршрута. Он же печатается
 # в обосновании страницы: «почему это страница» обязано отвечать «так решил
@@ -179,19 +187,42 @@ def load_overrides(path: Path) -> Overrides:
     Пустой файл — законное состояние (правила все удалили), отсутствующий файл
     вызывающий обязан не звать вовсе: «файла нет» и «файл пуст» различаются
     только на стороне вызывающего, и путать их нельзя.
+
+    Форм у файла две, и обе законны: с телом `pages:` и плоская
+    (`add`/`remove`/`features` наверху); `features` к тому же разрешены
+    в обоих местах. Строгая проверка ключей принимает обе формы, а смесь
+    отвергает: правило, записанное рядом с `pages:`, а не внутри него,
+    раньше молча не читалось — ровно та потеря решения человека, ради
+    которой файл обязан устаревать громко.
     """
     raw = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     if not isinstance(raw, dict):
         raise ValueError(f"{path}: ожидался словарь верхнего уровня")
+    reject_unknown_keys(raw, _FILE_KEYS, str(path))
 
     body = raw.get("pages", raw)
     if not isinstance(body, dict):
         raise ValueError(f"{path}: секция `pages` должна быть словарём")
 
-    features = raw.get("features") or body.get("features") or []
+    if body is not raw:
+        reject_unknown_keys(body, _BODY_KEYS, f"{path}: pages")
+        if outside := sorted(key for key in ("add", "remove") if key in raw):
+            raise ValueError(
+                f"{path}: {', '.join(f'`{key}`' for key in outside)} рядом с `pages:`,"
+                " а не внутри него, — такие правила не читаются; перенесите их в `pages:`"
+            )
+        if "features" in raw and "features" in body:
+            raise ValueError(
+                f"{path}: `features` объявлены и в `pages:`, и наверху — оставьте одно место"
+            )
+
+    # Список, у которого закомментированы все записи, YAML отдаёт как `None`.
+    # Умолчание здесь пустое, поэтому `None` и `[]` значат одно и то же — так же
+    # читают `rules` и `teams` у соседних наборов правил.
+    features = (raw.get("features") if "features" in raw else body.get("features")) or []
     return Overrides(
         version=str(raw.get("version", "1")),
-        add=[AddPage.model_validate(item) for item in body.get("add", [])],
-        remove=[RemovePage.model_validate(item) for item in body.get("remove", [])],
+        add=[AddPage.model_validate(item) for item in body.get("add") or []],
+        remove=[RemovePage.model_validate(item) for item in body.get("remove") or []],
         features=[Feature.model_validate(item) for item in features],
     )
