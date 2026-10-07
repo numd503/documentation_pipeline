@@ -33,7 +33,7 @@
 ```
 $WORK/docpipe/documentation_pipeline    клон этого репозитория: отсюда ставят
 $WORK/.uv/bin/docpipe                   запускалка (UV_TOOL_BIN_DIR)
-$WORK/.docpipe/cache/                   кэши разбора и движка (--cache-dir, умолчание)
+$WORK/.docpipe/cache/sbt.cms.cashflow/  кэши разбора и движка (--cache-dir, умолчание)
 $WORK/cfml/sbt.cms.cashflow             репозиторий АС CF
 └── docs/ml/docpipe/                    настройка (--config-dir), кода здесь нет
     ├── docpipe.yaml, rules.yaml
@@ -57,10 +57,23 @@ export PATH="$UV_TOOL_BIN_DIR:$PATH"
 cd $WORK/docpipe/documentation_pipeline
 ./deploy/install.sh --repo $WORK/cfml/sbt.cms.cashflow \
                     --config-dir docs/ml/docpipe \
+                    --bundle cashflow \
                     --index https://зеркало/repository/pypi/simple \
                     --python 3.12.13 \
                     --engine $WORK/.local/bin/codebase-memory-mcp
 ```
+
+**`--bundle cashflow` обязателен — и при установке, и при каждом обновлении.**
+С 08.10.2026 (S30 плана настройки) установщик по умолчанию кладёт нейтральный
+набор `generic`. Прежняя команда без флага на уже настроенном каталоге не
+затрёт ни одного yaml, но положит рядом `.new` нейтрального набора и заменит
+`README.md` каталога нейтральным; установщик скажет об этом в stderr,
+README вернёт `git checkout`.
+
+Умолчание `--cache-dir` с той же даты своё у репозитория:
+`$WORK/.docpipe/cache/sbt.cms.cashflow`, а не общий `$WORK/.docpipe/cache`.
+Уже лежащий `docpipe.yaml` хранит прежний путь — это законно, пока граф
+на машине собирают для одного репозитория; новый путь лежит в `docpipe.yaml.new`.
 
 Позиционный аргумент (`install.sh <репозиторий>`) установщик больше не принимает:
 он клал код в жёстко зашитый `docs/ml/docspipe`. Каталог настройки задаётся явно
@@ -708,8 +721,9 @@ jq -r '.nodes[].doc_path' artifacts/doc-tree.json | sort | uniq -d
 `enrolled` и правилами. У ABP 828 узлов дали 5,1 МБ — считайте по 6 КБ на узел.
 
 Кэш разбора лежит **вне репозитория**: в поставке `cache_dir` — абсолютный путь,
-который установщик подставил по `--cache-dir` (умолчание `$WORK/.docpipe/cache`,
-то есть `…/parse` для разбора и `…/engine` для движка графа). Гигабайту машинного
+который установщик подставил по `--cache-dir` (умолчание с S30 —
+`$WORK/.docpipe/cache/sbt.cms.cashflow`, до него — `$WORK/.docpipe/cache`;
+в обоих случаях `…/parse` для разбора и `…/engine` для движка графа). Гигабайту машинного
 кэша в дереве продукта делать нечего, а строка в `.gitignore` защищает от случайного
 коммита хуже, чем отсутствие файлов. Альтернативы прежние: `--no-cache` или свой путь.
 
@@ -973,9 +987,11 @@ docpipe docs owners $OUT --config $BUNDLE/docpipe.yaml --lint   # `--root` эт�
 
 Осталось:
 
-- [ ] инструмент переставлен по новой схеме: `install.sh --repo … --config-dir …`,
-      настройка перенесена из `docs/ml/docspipe/cashflow-docspipe/`, старая поставка
-      с `.venv` удалена (§0)
+- [ ] инструмент переставлен по новой схеме: `install.sh --repo … --config-dir …
+      --bundle cashflow`, настройка перенесена из `docs/ml/docspipe/cashflow-docspipe/`,
+      старая поставка с `.venv` удалена (§0)
+- [ ] в `.gigacode/settings.json` клона обе записи — `docpipe` и `docpipe-setup`,
+      рядом нет `settings.json.new` (§0)
 - [ ] `docpipe config check` из корня АС CF проходит без ненайденных входов, и у
       входов сработала ступень «рядом с конфигурацией», а не текущий каталог (§0)
 - [ ] в `exclude` файла `docpipe.yaml` добавлен `**/artifacts/**`, разница по `stats.files`

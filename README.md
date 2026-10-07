@@ -157,9 +157,11 @@ uv run docpipe --help
 
 На целевую машину инструмент ставится отдельно от настройки: `deploy/install.sh`
 делает `uv tool install` с версиями из `uv.lock`, а в репозиторий продукта
-кладёт только yaml и шаблоны. Агенту контура (gigacode, форк qwen code) он
-прописывает MCP-сервер графа в `.gigacode/settings.json` клона, рядом со скиллом
-разведки. Порядок и флаги — в [`deploy/README.md`](deploy/README.md).
+кладёт только yaml и шаблоны — по умолчанию нейтральный набор
+(`--bundle generic`), на АС CF — `--bundle cashflow`. Агенту контура (gigacode,
+форк qwen code) он прописывает два MCP-сервера — графа и настройки —
+в `.gigacode/settings.json` клона, рядом со скиллами, и сливает их с тем, что
+в файле уже лежит. Порядок и флаги — в [`deploy/README.md`](deploy/README.md).
 
 .NET SDK не требуется: C# разбирается через `tree-sitter`, без сборки проекта.
 Достаточно, чтобы исходники лежали на диске. Командам `graph *` нужен ещё
@@ -346,8 +348,8 @@ uv run docpipe schema --out schema/doc-tree.schema.json   # JSON Schema из м�
 Целевой путь — настройка с ассистентом (`purpose.md`); раздел ниже описывает
 те же шаги вручную и служит ассистенту картой. Настраивается **шесть** файлов
 YAML и каталог скелетов, и каждый отвечает на свой вопрос (полный набор
-лежит в поставке, `deploy/cashflow-docspipe/`; образцы — `*.example.yaml`
-в корне):
+лежит в поставке: нейтральный — `deploy/generic-docspipe/`, настроенный под
+АС CF — `deploy/cashflow-docspipe/`; образцы — `*.example.yaml` в корне):
 
 | Файл | Вопрос |
 |---|---|
@@ -952,7 +954,8 @@ deploy/                   раскладка на целевой машине: �
 ├── install.sh            uv tool install + настройка в <репозиторий>/<--config-dir>
 ├── uv.toml.example       зеркало пакетов и сертификаты для закрытого контура
 ├── OFFLINE.md            сборка окружения там, где зеркало отдаёт не всё
-└── cashflow-docspipe/    настройка под АС CF: шесть yaml и README
+├── generic-docspipe/     нейтральная настройка (--bundle generic, умолчание): шесть yaml и README
+└── cashflow-docspipe/    настройка под АС CF (--bundle cashflow): шесть yaml и README
 tools/
 ├── recon-frontend.sh     разведка фронтенда на боевом репозитории: только чтение
 └── migrate_rules.py      перенос плоского rules.yaml в секционный

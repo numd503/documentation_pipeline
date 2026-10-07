@@ -333,9 +333,14 @@ def test_missing_target_directory_is_not_a_problem(nested: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 BUNDLE_CONFIG = Path("deploy/cashflow-docspipe/docpipe.yaml")
+# Наборов два (S30), и плейсхолдеры у них в одних и тех же ключах: установщик
+# подставляет одно и то же, и ключ, забытый в одном наборе, остался бы
+# в установленном файле путём, который выглядит настоящим.
+BUNDLE_CONFIGS = [BUNDLE_CONFIG, Path("deploy/generic-docspipe/docpipe.yaml")]
 
 
-def test_raw_bundle_reports_every_placeholder() -> None:
+@pytest.mark.parametrize("bundle_config", BUNDLE_CONFIGS, ids=lambda path: path.parent.name)
+def test_raw_bundle_reports_every_placeholder(bundle_config: Path) -> None:
     """Файл поставки, позванный мимо установщика, — не «всё на месте».
 
     `@CONFIG_DIR@/artifacts/doc-tree.json` — законное значение цели записи:
@@ -344,9 +349,9 @@ def test_raw_bundle_reports_every_placeholder() -> None:
     Ключи перечислены явно: новый плейсхолдер в поставке обязан попасть
     в этот список осознанно.
     """
-    settings = load_config(BUNDLE_CONFIG)
+    settings = load_config(bundle_config)
 
-    report = check_config(settings, BUNDLE_CONFIG, Path("."), Path.cwd())
+    report = check_config(settings, bundle_config, Path("."), Path.cwd())
 
     placeholders = [item for item in report.problems if item.code == "placeholder-left"]
     assert [item.key for item in placeholders] == [

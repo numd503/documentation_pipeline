@@ -25,6 +25,7 @@ from tests.conftest import sectioned
 runner = CliRunner()
 
 BUNDLE = Path("deploy/cashflow-docspipe")
+GENERIC = Path("deploy/generic-docspipe")
 LIST = "src/app/routes/models/list/list.component.ListComponent"
 AUDIT = "src/app/shared/services/audit.service.AuditService"
 
@@ -506,23 +507,31 @@ def test_unknown_format_is_refused_before_any_work(arguments: list[str]) -> None
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("path", [Path("docpipe.example.yaml"), BUNDLE / "docpipe.yaml"])
+@pytest.mark.parametrize(
+    "path", [Path("docpipe.example.yaml"), BUNDLE / "docpipe.yaml", GENERIC / "docpipe.yaml"]
+)
 def test_shipped_configs_load(path: Path) -> None:
     load_config(path)
 
 
-@pytest.mark.parametrize("path", [Path("rules/rules.yaml"), BUNDLE / "rules.yaml"])
+@pytest.mark.parametrize(
+    "path", [Path("rules/rules.yaml"), BUNDLE / "rules.yaml", GENERIC / "rules.yaml"]
+)
 @pytest.mark.parametrize("section", RULE_SECTIONS)
 def test_shipped_rules_load(path: Path, section: str) -> None:
     load_ruleset(path, section)
 
 
-@pytest.mark.parametrize("path", [Path("ownership.example.yaml"), BUNDLE / "ownership.yaml"])
+@pytest.mark.parametrize(
+    "path", [Path("ownership.example.yaml"), BUNDLE / "ownership.yaml", GENERIC / "ownership.yaml"]
+)
 def test_shipped_ownership_loads(path: Path) -> None:
     load_ownership(path)
 
 
-@pytest.mark.parametrize("path", [Path("pages.example.yaml"), BUNDLE / "pages.yaml"])
+@pytest.mark.parametrize(
+    "path", [Path("pages.example.yaml"), BUNDLE / "pages.yaml", GENERIC / "pages.yaml"]
+)
 def test_shipped_pages_load(path: Path) -> None:
     load_overrides(path)
 

@@ -77,7 +77,7 @@
 |---|---|---|---|---|---|---|---|
 | `rules` | путь к файлу правил; `"rules/rules.yaml"` | `cli:scan`, `cli:symbols` (`--lang cs`), `setup/candidates:_scan` → `classify:load_ruleset` (секция `dotnet`) | вход | `config check`: `input-missing`; загрузка правил — отказ, код 2 | код (поставка кладёт `rules.yaml` рядом с настройкой) | файл бывает общим с `web.rules` — секцию выбирает команда, а не файл | — |
 | `out` | путь; `"artifacts/doc-tree.json"` | `cli:scan` (флаг `--out` важнее) | цель | `config check` показывает каталог; `placeholder-left` | код (установщик: `@CONFIG_DIR@/artifacts/…`) | было: ключ не читался, манифест уезжал в `artifacts/` текущего каталога — закрыто до плана. Читатели манифеста (`materialize`, `docs *`, `graph build --manifest`) берут путь аргументом, а не из `out` | — |
-| `cache_dir` | каталог; `".docpipe/cache"` | `cli:scan`, `cli:symbols`, `cli:web_scan`, `setup/candidates:_scan`, `setup/candidates:_web_scan` → `cache:ParseCache` (`parse.sqlite`, `parse-web.sqlite`) | `--root`; абсолютный выигрывает склейку | загрузка: `..` и `\` — отказ, абсолютный разрешён; `config check` показывает | код (установщик: `@CACHE_DIR@/parse`) | открыто: общий для нескольких репозиториев кэш (умолчание `--cache-dir` у всех одно) верен не во всём — запись ищется по паре «путь и хэш», полный прогон удаляет записи чужих путей (`prune`), разные `di_methods` очищают его целиком, а `--scope` берёт файлы вне скоупа по одному пути, без хэша, — из чужого репозитория с тем же относительным путём. `configuration.md` («делить безопасно») этого не оговаривает | — |
+| `cache_dir` | каталог; `".docpipe/cache"` | `cli:scan`, `cli:symbols`, `cli:web_scan`, `setup/candidates:_scan`, `setup/candidates:_web_scan` → `cache:ParseCache` (`parse.sqlite`, `parse-web.sqlite`) | `--root`; абсолютный выигрывает склейку | загрузка: `..` и `\` — отказ, абсолютный разрешён; `config check` показывает | код (установщик: `@CACHE_DIR@/parse`) | открыто: общий для нескольких репозиториев кэш верен не во всём — запись ищется по паре «путь и хэш», полный прогон удаляет записи чужих путей (`prune`), разные `di_methods` очищают его целиком, а `--scope` берёт файлы вне скоупа по одному пути, без хэша, — из чужого репозитория с тем же относительным путём. Было: умолчание `--cache-dir` одно на машину — с S30 своё у каждого репозитория; общим кэш остаётся при одном явном `--cache-dir` или одноимённых каталогах репозиториев (`configuration.md`, «Три базы отсчёта») | — |
 
 ### Шаг 2 и очередь
 
@@ -158,7 +158,7 @@
 | `graph.engine_sha256` | sha256; `""` — закреплённая в мосте | `cli:graph_build` | — | несовпадение — предупреждение, а не отказ; фактическая сумма — в паспорте индекса | код; своя сборка — человек по `graph info` | предупреждение живёт один прогон — ответ хранит паспорт (`graph info`) | — |
 | `graph.mode` | `fast`, `moderate` или `full`; `fast` | `cli:graph_build` → `graph/engine:Engine` | — | загрузка: одно из трёх | код | от режима зависит собственный список пропусков движка: в `fast` и `moderate` молча не разбираются `migrations`, `generated`, `docs`, `samples` и ещё десятки имён, а мост знает пять (бэклог) | — |
 | `graph.out` | путь; `"artifacts/graph.db"` | `cli:graph_build` (пишет); `cli:_open_index` (graph report, health, reaches, affects, path, resolve, eval, coverage, pr-check), `cli:graph_serve`, `cli:graph_info`, `cli:graph_entrypoints` | цель — и у читателей | `config check` показывает; `placeholder-left` | код (установщик) | MCP-сервер ищет индекс от своего `cwd` — его ставит установщик (корень продукта в `.gigacode/settings.json`) | — |
-| `graph.cache_dir` | каталог; `".docpipe/engine-cache"` | `cli:graph_build` → `graph/engine:Engine.index` — удаляет каталог перед каждой сборкой | текущий каталог; абсолютный разрешён | загрузка: `..`, `\`, `.` и пусто — отказ (S02) | код (установщик: `@CACHE_DIR@/engine`) | было: валидатора не было при удалении каталога целиком — закрыто S02. Общий `@CACHE_DIR@` двух репозиториев безопасен только последовательно: параллельные сборки удаляют кэш друг друга | — |
+| `graph.cache_dir` | каталог; `".docpipe/engine-cache"` | `cli:graph_build` → `graph/engine:Engine.index` — удаляет каталог перед каждой сборкой | текущий каталог; абсолютный разрешён | загрузка: `..`, `\`, `.` и пусто — отказ (S02) | код (установщик: `@CACHE_DIR@/engine`) | было: валидатора не было при удалении каталога целиком — закрыто S02. Было: общий `@CACHE_DIR@` двух репозиториев по умолчанию — параллельные сборки удаляли кэш друг друга; умолчание своё у репозитория с S30, открыто — при одном явном `--cache-dir` | — |
 
 ## `rules.yaml`
 
@@ -386,19 +386,23 @@ HTML-комментариями); front matter нет. `default.md` — скел
 ## Флаги и плейсхолдеры `install.sh`
 
 Установщик кладёт настройку в репозиторий продукта и подставляет
-плейсхолдеры в `docpipe.yaml` поставки (`deploy/cashflow-docspipe/`)
-один раз: уже лежащий файл не затирается, новая версия ложится рядом
-`.new`, о чём печатается строка в stderr.
+плейсхолдеры в `docpipe.yaml` набора (`deploy/generic-docspipe/` или
+`deploy/cashflow-docspipe/`, флаг `--bundle`) один раз: уже лежащий файл
+не затирается, новая версия ложится рядом `.new`, о чём печатается строка
+в stderr. Исключение — `.gigacode/settings.json` клона: в нём ставятся
+только записи `mcpServers.docpipe` и `mcpServers.docpipe-setup`, остальное
+сохраняется (S30).
 
 | Ключ | Тип и умолчание | Кто читает | База пути | Чем проверяется | Откуда значение | Что ломается молча | Находка |
 |---|---|---|---|---|---|---|---|
 | `--repo` | путь, обязателен | `deploy/install.sh` | текущий каталог установщика | каталога нет — код 1; нет ни `.git`, ни `.sln` — предупреждение | человек | — | — |
 | `--config-dir` | путь внутри `--repo`, обязателен | `deploy/install.sh` → `@CONFIG_DIR@` | от `--repo` | абсолютный или с `..` — код 1 | человек | повторная установка с другим значением не трогает лежащий `docpipe.yaml` — прежние пути остаются, новые лежат в `.new` | — |
-| `--cache-dir` | абсолютный путь; `$WORK/.docpipe/cache`, без `$WORK` — `~/.cache/docpipe` | `deploy/install.sh` → `@CACHE_DIR@` | абсолютный | относительный — код 1 | код | умолчание общее для всех репозиториев машины — см. `cache_dir` и `graph.cache_dir` | — |
+| `--bundle` | `generic` или `cashflow`; `generic` | `deploy/install.sh` → каталог набора `deploy/<набор>-docspipe/` | — | другое значение — код 2 | человек | обновление каталога, поставленного `cashflow`, без флага кладёт рядом `.new` нейтрального набора и заменяет README — установщик говорит об этом в stderr, код не меняет | — |
+| `--cache-dir` | абсолютный путь; `$WORK/.docpipe/cache/<имя каталога --repo>`, без `$WORK` — `~/.cache/docpipe/<имя каталога --repo>` | `deploy/install.sh` → `@CACHE_DIR@` | абсолютный | относительный — код 1 | код | было: умолчание общее для всех репозиториев машины — своё у каждого с S30. Открыто: два репозитория с одним именем каталога делят его по-прежнему, им флаг задают явно | — |
 | `--engine` | путь к бинарю движка 0.6.0; без флага — `""` | `deploy/install.sh` → `@ENGINE@` | записывается как есть | установщиком не проверяется; без флага `graph *` откажут с указанием | человек | относительный путь разрешится от каталога `graph build`, а не установщика | — |
 | `--index` | адрес зеркала пакетов | `deploy/install.sh` → `uv.toml` клона; `uv tool install --config-file`, только если в файле описан источник | — | — | человек | было: `uv tool` не читает `uv.toml` проекта, и установка уходила на pypi.org — закрыто до плана | — |
 | `--python` | путь или версия интерпретатора | `deploy/install.sh` → `uv tool install --python` | — | — | человек | скачивание интерпретатора запрещено намеренно | — |
-| `--no-tool` | флаг | `deploy/install.sh` | — | — | человек | без инструмента не пишется и запись MCP-сервера (`.gigacode/settings.json`) | — |
+| `--no-tool` | флаг | `deploy/install.sh` | — | — | человек | без инструмента не пишутся и записи MCP-серверов (`.gigacode/settings.json`); вручную — `deploy/OFFLINE.md` | — |
 | `--help` | флаг | `deploy/install.sh:usage` | — | — | — | — | — |
 | `@CONFIG_DIR@` | плейсхолдер в `out`, `worklist`, `docs_scan_exclude`, `business_root`, `web.out`, `web.link_out`, `graph.out` | `deploy/install.sh` (`sed`); `configcheck:_placeholders` | — | `config check`: `placeholder-left` (S08) | код | было: файл поставки, позванный мимо установщика, писал бы в каталог `@CONFIG_DIR@` текущего — закрыто S08 | — |
 | `@CACHE_DIR@` | плейсхолдер в `cache_dir`, `graph.cache_dir` | как `@CONFIG_DIR@` | — | `config check`: `placeholder-left` | код | как `@CONFIG_DIR@` | — |
