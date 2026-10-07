@@ -56,6 +56,7 @@ from docpipe.setup.context import InputError, SetupContext
 from docpipe.stats import STATE_TITLES
 from docpipe.step2 import Step2Error
 from docpipe.web.absorb import FEATURE_KIND, PAGE_KIND
+from docpipe.web.calls import builder_for, name_matches, wrapper_matches
 
 SCHEMA_VERSION: Final = "1.0"
 
@@ -653,6 +654,8 @@ def _calls(
                     )
                 )
 
+    _wrapper_decisions(ctx, match, draft)
+
     for name, count in sorted(without_rewrite.items()):
         draft.notes.append(
             Note(
@@ -664,6 +667,77 @@ def _calls(
                 ),
             )
         )
+
+
+def _wrapper_decisions(ctx: SetupContext, match: Callable[[str], bool], draft: _Draft) -> None:
+    """Записи `web.http_wrappers` и `web.url_builders`, через которые прошли вызовы под целью.
+
+    Запись находится тем же сравнением, что у прогона (`wrapper_matches`,
+    `builder_for`, `name_matches` для тела): «какая запись сделала этот
+    вызов» и «к чему запись применилась» обязаны отвечать одинаково.
+    Тело обёртки — вызов, которого нет ни в восстановленных, ни
+    в невосстановленных; без счётчика сумма под целью молча меньше.
+    Строка на запись одна (`_Decisions` сводит по записи), поэтому вызовы
+    через обёртку и её тела посчитаны в одной строке раздельно.
+    """
+    web, settings, config = ctx.web, ctx.settings, ctx.config_label
+    wrappers, builders = settings.web.http_wrappers, settings.web.url_builders
+    if not wrappers and not builders:
+        return
+
+    through: Counter[int] = Counter()
+    bodies: Counter[int] = Counter()
+    built: Counter[int] = Counter()
+    raws = [
+        *(item.raw for item in web.calls.resolved if match(item.raw.file)),
+        *(item for item in web.calls.unresolved if match(item.file)),
+    ]
+    for raw in raws:
+        receiver, _, method = raw.wrapper.rpartition(".")
+        for index, rule in enumerate(wrappers):
+            if raw.wrapper and wrapper_matches(rule, receiver, method):
+                through[index] += 1
+        callee = raw.address.callee if raw.address is not None else None
+        builder = builder_for(callee, builders) if raw.builder and callee is not None else None
+        if builder is not None:
+            built[builders.index(builder)] += 1
+
+    inside = [raw for raw in web.calls.inside_wrappers if match(raw.file)]
+    if inside:
+        draft.calls["inside_wrappers"] = len(inside)
+    for raw in inside:
+        parameter = raw.address.parameter if raw.address is not None else None
+        for index, rule in enumerate(wrappers):
+            if parameter is not None and name_matches(rule, parameter.function):
+                bodies[index] += 1
+
+    for index, rule in enumerate(wrappers):
+        if through[index] or bodies[index]:
+            draft.decisions.add(
+                DecisionRef(
+                    file=config,
+                    key="web.http_wrappers",
+                    value=rule.label,
+                    reason=rule.reason,
+                    effect=(
+                        f"вызовов через обёртку {through[index]}, тел обёртки"
+                        f" {bodies[index]}; адрес — аргумент {rule.url.label}"
+                    ),
+                    count=through[index] + bodies[index],
+                )
+            )
+    for index, builder in enumerate(builders):
+        if built[index]:
+            draft.decisions.add(
+                DecisionRef(
+                    file=config,
+                    key="web.url_builders",
+                    value=builder.label,
+                    reason=builder.reason,
+                    effect=f"адрес от построителя: путь — аргумент {builder.path.label}",
+                    count=built[index],
+                )
+            )
 
 
 def _documents(ctx: SetupContext, draft: _Draft) -> list[DocumentRef]:
@@ -986,6 +1060,7 @@ _CALL_TITLES: Final = {
     "resolved": "восстановлено",
     "unresolved": "не восстановлено",
     "registry_unresolved": "к реестру без различителя",
+    "inside_wrappers": "в телах обёрток",
 }
 _ENDPOINT_TITLES: Final = {"routed": "с маршрутом", "unrouted": "без маршрута"}
 

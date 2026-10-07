@@ -29,6 +29,7 @@ from docpipe.emit import ScanResult
 from docpipe.emit import run as run_scan
 from docpipe.materialize.ownership import Ownership, load_ownership
 from docpipe.step2 import Step2Error, Step2Inputs, prepare
+from docpipe.web.calls import WrapperConflict
 from docpipe.web.overrides import Overrides, configured_pages, load_page_overrides
 from docpipe.web.tree import WebScanResult
 from docpipe.web.tree import run as run_web_scan
@@ -161,6 +162,10 @@ class SetupContext:
             # «ошибкой конфигурации» он потерял бы трассировку. `ValidationError`
             # — подкласс `ValueError`, и без этой ветки его поймала бы следующая.
             raise
+        except WrapperConflict as exc:
+            # Вызов совпал с двумя записями `web.http_wrappers` — ошибка
+            # настройки, а не ручного состава страниц.
+            raise InputError(str(exc)) from exc
         except ValueError as exc:
             # Неоднозначное правило снятия — тот же отказ, что у `web scan`:
             # выбор наугад значил бы, что инструмент сам решает, какую страницу убрать.

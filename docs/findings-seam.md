@@ -212,6 +212,83 @@ http-wrappers` и `url-builders`.
 
 ---
 
+## Как вышло после S19
+
+Прогон 08.10.2026 без кэша (`--no-cache`, выходы в `/tmp`, клоны не тронуты),
+с теми же настройками и `exclude: ["**/*.spec.ts"]` (иначе первыми идут тесты,
+см. S18). Записи `web.http_wrappers` и `web.url_builders` — в разделе
+«Как воспроизвести»; `url_rewrite` нет ни у одного.
+
+| | squidex без записей | squidex с записями | abp без записей | abp с записями |
+|---|---|---|---|---|
+| вызовов восстановлено / не восстановлено / в телах обёрток | 2 / 79 / 0 | 105 / 70 / 4 | 0 / 1 / 0 | 120 / 2 / 0 |
+| связей `web link` (все `exact`) | 0 | 101 | 0 | 62 |
+| вызовов без эндпоинта | 2 | 4 | 0 | 58 (56 `cms-kit*`, 2 `api/abp/multi-tenancy` — бэк вне `roots`) |
+| эндпоинтов без вызывающего | 262 из 262 | 162 из 262 | 77 из 77 | 18 из 77 (`integration-api/*` 10) |
+| `http_calls` у `setup candidates http-wrappers` | 81 | 81 | 1 | 1 |
+
+**Оценка подтвердилась с запасом.** squidex: связались 101 из 105 вызовов
+со статическим путём против оценки «~87 из ~98»; abp: 62 из 62 в области
+`roots` против «60 из 62». `strip_prefix` не понадобился: после S17 префикс
+`api/` эндпоинты наследуют от базы. Эндпоинтов без вызывающего у squidex
+162 против оценки 157 из 254 — гипермедиа `apps/{}/…`, `content/{}`
+(публичный API) и страницы IdentityServer, решения секции `link` (S20).
+
+Через что связано на squidex: построитель напрямую — 72 (71 связано),
+`HTTP.getVersioned` + построитель — 16, `postVersioned` — 11 (10),
+`putVersioned` — 3, `upload` — 1, прямых литералов — 2. Невосстановленные 70:
+гипермедиа через построитель 67 (`requestVersioned` 47, `http.request` 16,
+`upload` 2, `putVersioned` 1, прямой `get` 1) — причина «значение переменной
+не восстановлено», выражение `link.href`, `via` — обёртка и построитель;
+`assets.service.ts:230` (`requestVersioned` с `const url` от шаблона
+с построителем внутри) — до S19 не виден вовсе, теперь в списке; ещё два —
+`const url` с шаблоном (`help.service.ts:42`, `stock-photo.service.ts:36`,
+оба на внешний хост). Тела обёрток — 4 (`get`/`post`/`put`/`deleteVersioned`);
+`patchVersioned` и `requestVersioned` зовут `http.request` и не видны и так.
+
+Четыре вызова squidex без эндпоинта — каждый своего рода:
+
+- **`GET api/apps/{}/schemas/{}/completion/preview-urls` — настоящая ошибка
+  squidex.** У `SchemasController.GetPreviewUrlsCompletion` маршрут
+  `…/completion/prview-urls` (опечатка в бэке), фронт зовёт `preview-urls`.
+  Шов нашёл дефект, ради которого и строится;
+- `POST api/content/{}/{}{}` (`contents.service.ts:163`) — две подстановки
+  в конце сегмента: `${schemaName}${StringHelper.buildQuery(…)}`. Хвост S16
+  срезается, только если перед ним литерал, поэтому получился сегмент `{}{}`,
+  а «почти» его не сопоставляет (`_fixed_segments` отбрасывает только `{}`);
+- `GET ''` (`asset-text-editor.component.ts:42`) — поле `@Input()`, см. «после S17»;
+- `squidex/sdk-fern/main/sdks.json` — внешний хост `raw.githubusercontent.com`
+  (S20, `external_targets`).
+
+abp: два невосстановленных — `DynamicFormService.getOptions(url, apiName)`
+(обёртка второго уровня: `restService.request({ url })` с `url`-параметром,
+ловушка S19 — решение `unresolvable`, S20) и `ui-localization.service.ts:53`
+(прямой `get` с адресом из данных).
+
+Попутно:
+
+- **вызов, которому передают сам `HttpClient`, — теперь факт и без адреса.**
+  Без этого объявленная обёртка не увидела бы `assets.service.ts:230`;
+  на squidex такой факт один, на abp ни одного: `injector.get(HttpClient)`
+  передаёт класс, а не клиента, и имя с заглавной фактом не считается.
+  Число кандидатов (`http-wrappers`) от этого не меняется — группа требует
+  позиции адреса;
+- **`const` с шаблоном не вычисляется** (`` const url = `https://…/${page}.md` ``):
+  S16 разрешает `const` только с литералом или вызовом. На squidex два места,
+  оба — внешние адреса, поэтому связей это не стоит; в бэклог;
+- **тело обёртки узнаётся по имени функции без получателя**: у
+  `export module HTTP { export function getVersioned(…) }` получателя нет,
+  а у метода класса получатель на месте вызова — имя поля (`rest`), а не класса.
+  Одноимённая функция в другом классе с адресом в том же параметре уйдёт
+  в `calls_inside_wrappers` тоже; на squidex и abp таких нет.
+
+На фикстуре с записями из спецификации S19 (и записью `requestVersioned`):
+восстановлено 4 → 9, не восстановлено 9 → 3, в телах обёрток 0 → 4; связей
+1 → 6 (`AppsController`: `GET api/apps` ×2, `POST api/apps`, `GET api/apps/{}`,
+`PUT api/apps/{}`); без записей числа S18 те же (`tests/test_http_wrappers.py`).
+
+---
+
 ## Что известно об АС CF
 
 Подробно — в [`findings-cashflow-frontend.md`](findings-cashflow-frontend.md).
@@ -302,6 +379,25 @@ uv run docpipe scan     --root $EX/abp/abp --config $OUT/abp.yaml --out $OUT/abp
 uv run docpipe web scan --root $EX/abp/abp --config $OUT/abp.yaml --out $OUT/abp.web.json --no-cache
 uv run docpipe web link $OUT/abp.json $OUT/abp.web.json --config $OUT/abp.yaml \
     --out $OUT/abp.link.json
+```
+
+Записи S19 — дописать в секцию `web` (squidex, `squidex-rules.yaml`):
+
+```yaml
+  http_wrappers:
+    - {receiver: HTTP, method_regex: "(get|post|put|patch|delete)Versioned", url: {arg: 1}, http_method: {from_name: true}}
+    - {receiver: HTTP, method: requestVersioned, url: {arg: 2}, http_method: {arg: 1}}
+    - {receiver: HTTP, method: upload, url: {arg: 2}, http_method: {arg: 1}}
+    - {receiver: http, method: request, url: {arg: 1}, http_method: {arg: 0}}
+  url_builders:
+    - {receiver: apiUrl, method: buildUrl, path: {arg: 0}}
+```
+
+и abp (`abp-rules.yaml`):
+
+```yaml
+  http_wrappers:
+    - {receiver: restService, method: request, url: {arg: 0, field: url}, http_method: {arg: 0, field: method}}
 ```
 
 Ожидаемое до S16: squidex — «Вызовов: восстановлено 3, не восстановлено 78»,

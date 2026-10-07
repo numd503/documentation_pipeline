@@ -7,6 +7,7 @@
 
 import json
 import posixpath
+import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -236,6 +237,181 @@ class RegistryCallConfig(BaseModel):
     reason: str = ""
 
 
+# --------------------------------------------------------------------------------------
+# Обёртки HTTP и построители адреса (S19)
+# --------------------------------------------------------------------------------------
+#
+# Вызов `HTTP.getVersioned(this.http, url)` или `this.rest.request({ method, url })`
+# глагола `HttpClient` не имеет, и разбор находит его только фактом
+# (`web/calls.py`, `CandidateCall`). Обёртку по имени не распознать — у squidex
+# `get<T>(path, default)` читает состояние без всякого HTTP, — поэтому в разбор
+# она входит записью человека, а не догадкой. Применяет записи интерпретация
+# (`web/calls.build_calls`), не извлечение: смена настройки меняет ключи,
+# не заставляя перечитывать исходники.
+
+# Глаголы, которые принимает `http_method.fixed` и значение метода из аргумента.
+# Своя копия, а не `web.calls.HTTP_METHODS`: тот модуль сам читает эту
+# конфигурацию, и импорт оттуда замкнул бы круг.
+WRAPPER_VERBS: tuple[str, ...] = ("DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT")
+
+
+class ArgRef(BaseModel):
+    """Где у вызова адрес (или путь построителя): номер аргумента и поле объекта.
+
+    `arg` — позиция среди аргументов без комментариев, с нуля: у
+    `HTTP.getVersioned(this.http, url)` адрес — `1`, первым идёт сам
+    `HttpClient`. `field` — поле объектного литерала в этом аргументе
+    (`this.rest.request({ url })` — `arg: 0, field: url`); пусто — сам аргумент.
+    Та же запись, что позиция у `setup candidates http-wrappers` (`1`, `0.url`).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    arg: int = Field(ge=0)
+    field: str = ""
+
+    @property
+    def label(self) -> str:
+        """`1`, `0.url` — как позиция в отчёте кандидатов."""
+        return f"{self.arg}.{self.field}" if self.field else str(self.arg)
+
+
+class MethodRef(BaseModel):
+    """Откуда у вызова обёртки HTTP-метод — ровно один способ из трёх.
+
+    `arg` (и `field`) — из аргумента: `requestVersioned(this.http, 'PUT', url)` —
+    `arg: 1`, `rest.request({ method: 'POST' })` — `arg: 0, field: method`;
+    `fixed` — один метод на всю обёртку; `from_name` — ведущий глагол имени
+    метода: `getVersioned` → `GET`. Способов два — какой задуман, инструмент
+    знать не может, и правило приоритета спрятало бы ошибку записи.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    arg: int | None = Field(default=None, ge=0)
+    field: str = ""
+    fixed: str = ""
+    from_name: bool = False
+
+    @model_validator(mode="after")
+    def _one_way(self) -> "MethodRef":
+        ways = [
+            name
+            for name, given in (
+                ("arg", self.arg is not None),
+                ("fixed", bool(self.fixed)),
+                ("from_name", self.from_name),
+            )
+            if given
+        ]
+        if len(ways) != 1:
+            shown = ", ".join(ways) if ways else "ни одного"
+            raise ValueError(
+                "http_method: способ задать метод ровно один из `arg`, `fixed`, `from_name`;"
+                f" дано: {shown}"
+            )
+        if self.field and self.arg is None:
+            raise ValueError("http_method: `field` — поле аргумента, без `arg` его не прочесть")
+        if self.fixed and self.fixed.upper() not in WRAPPER_VERBS:
+            raise ValueError(
+                f"http_method.fixed: {self.fixed!r} — не метод HTTP;"
+                f" допустимы: {', '.join(WRAPPER_VERBS)}"
+            )
+        return self
+
+
+def _receiver(value: str, key: str) -> str:
+    """Получатель записи: непустой; сравнивается по последнему сегменту без регистра."""
+    if not value.strip():
+        raise ValueError(f"{key}: `receiver` пуст — обёртка без получателя ни с чем не совпадёт")
+    return value
+
+
+class HttpWrapper(_Decision):
+    """Обёртка над `HttpClient`: где у её вызова адрес и откуда метод.
+
+    `receiver` — получатель как в коде, сравнивается по последнему сегменту
+    без регистра (`HTTP`, `rest`, `this.rest` — `rest`); имя метода — `method`
+    точно или `method_regex` целиком (`re.fullmatch`, как `name_regex`
+    в правилах), ровно одно из двух. Вызов, совпавший с записью, становится
+    вызовом с адресом из `url` и методом из `http_method`; тело обёртки —
+    вызов `HttpClient` в функции с этим именем, адрес которого и есть её
+    параметр `url`, — в невосстановленные не идёт (`calls_inside_wrappers`).
+    """
+
+    receiver: str
+    method: str = ""
+    method_regex: str = ""
+    url: ArgRef
+    http_method: MethodRef
+    reason: str = ""
+
+    @field_validator("receiver")
+    @classmethod
+    def _check_receiver(cls, value: str) -> str:
+        return _receiver(value, "web.http_wrappers")
+
+    @model_validator(mode="after")
+    def _one_name(self) -> "HttpWrapper":
+        if bool(self.method) == bool(self.method_regex):
+            raise ValueError(
+                f"web.http_wrappers: у обёртки {self.receiver!r} ровно одно из `method`"
+                " и `method_regex`" + ("; дано оба" if self.method else "; не дано ни одного")
+            )
+        if self.method_regex:
+            try:
+                re.compile(self.method_regex)
+            except re.error as exc:
+                raise ValueError(
+                    f"web.http_wrappers: `method_regex` {self.method_regex!r}"
+                    f" не компилируется: {exc}"
+                ) from exc
+        return self
+
+    @property
+    def label(self) -> str:
+        """`HTTP.getVersioned` или `HTTP./^(get|post)Versioned$/` — как запись в сообщениях."""
+        return f"{self.receiver}.{self.method or '/' + self.method_regex + '/'}"
+
+
+class UrlBuilder(_Decision):
+    """Построитель адреса: `const url = this.apiUrl.buildUrl('/api/apps')`, затем `get(url)`.
+
+    Адрес вызова, у которого он — значение вызова этого построителя, берётся
+    из аргумента `path` построителя. Получатель — как у `HttpWrapper`.
+    """
+
+    receiver: str
+    method: str
+    path: ArgRef
+    reason: str = ""
+
+    @field_validator("receiver")
+    @classmethod
+    def _check_receiver(cls, value: str) -> str:
+        return _receiver(value, "web.url_builders")
+
+    @property
+    def label(self) -> str:
+        return f"{self.receiver}.{self.method}"
+
+
+def receiver_key(receiver: str) -> str:
+    """Получатель для сравнения: последний сегмент в нижнем регистре (`this.rest` → `rest`)."""
+    return receiver.rsplit(".", 1)[-1].lower()
+
+
+def _refuse_repeats(key: str, pairs: list[tuple[str, str]]) -> None:
+    repeated = sorted(
+        f"{receiver}.{method}" for (receiver, method), n in Counter(pairs).items() if n > 1
+    )
+    if repeated:
+        raise ValueError(
+            f"{key}: вызов назван больше одного раза: {', '.join(repeated)};"
+            " запись на вызов одна — оставьте одну"
+        )
+
+
 class WebConfig(BaseModel):
     """Секция `web` в `docpipe.yaml`: шаг разбора фронтенда.
 
@@ -274,6 +450,36 @@ class WebConfig(BaseModel):
     # `_check_url_rewrite`.
     url_rewrite: list[UrlRewrite] = Field(default_factory=list)
     registry_calls: list[RegistryCallConfig] = Field(default_factory=list)
+
+    # Обёртки над `HttpClient` и построители адреса (S19). Пустые — умолчание:
+    # имена у каждого репозитория свои, и угаданная обёртка превратила бы
+    # в вызов то, что HTTP не делает. Находки — `setup candidates http-wrappers`
+    # и `url-builders`.
+    http_wrappers: list[HttpWrapper] = Field(default_factory=list)
+    url_builders: list[UrlBuilder] = Field(default_factory=list)
+
+    @field_validator("http_wrappers")
+    @classmethod
+    def _check_http_wrappers(cls, value: list[HttpWrapper]) -> list[HttpWrapper]:
+        """Обёртка с точным `method` названа один раз — как модуль у `url_rewrite`.
+
+        Две записи на один вызов с разными `url` дали бы ключ по той, что
+        прочтётся первой, а вторая молча не действовала бы. Пересечение
+        регулярок здесь не проверить — его ловит прогон (`WrapperConflict`).
+        """
+        _refuse_repeats(
+            "web.http_wrappers",
+            [(receiver_key(item.receiver), item.method) for item in value if item.method],
+        )
+        return value
+
+    @field_validator("url_builders")
+    @classmethod
+    def _check_url_builders(cls, value: list[UrlBuilder]) -> list[UrlBuilder]:
+        _refuse_repeats(
+            "web.url_builders", [(receiver_key(item.receiver), item.method) for item in value]
+        )
+        return value
 
     @field_validator("roots")
     @classmethod

@@ -21,7 +21,7 @@ from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from docpipe.config import DocpipeConfig
+from docpipe.config import DocpipeConfig, HttpWrapper, UrlBuilder
 from docpipe.dotnet.di import is_standard_method
 from docpipe.dotnet.facts import bare_type
 from docpipe.emit import ScanResult, dispatch_name, dispatch_names, split_type_arguments
@@ -46,9 +46,11 @@ from docpipe.web.calls import (
     RegistryCall,
     ResolvedCall,
     address_positions,
+    builder_for,
     discriminator_of,
     query_parameters,
     registry_rules,
+    wrapper_matches,
 )
 from docpipe.web.overrides import Overrides
 from docpipe.web.pages import index_by_fqn
@@ -1086,7 +1088,8 @@ WRAPPER_LIMITS: Final = (
     "`https://`; объект с полем `url`; значение построителя адреса (см. `url-builders`)",
     "вызов обёртки с адресом-параметром функции или выражением (`link.href` напрямую, "
     "без построителя) кандидатом не становится: на адрес он не похож, и в `calls` "
-    "группы такие вызовы не входят",
+    "группы такие вызовы не входят; объявленная обёртка его видит, если аргументом "
+    "передан сам `HttpClient` (`this.http`)",
     "группа, результат которой идёт адресом в другой вызов, — построитель адреса: "
     "она в `url-builders`, а здесь названа в `builders`",
 )
@@ -1140,8 +1143,10 @@ class HttpWrapperCandidate(_Base):
     первого; `[позиция, вызовов]` от частых к редким. Номер обязателен:
     у `getVersioned` первым идёт сам `HttpClient`.
 
-    `configured` — обёртка уже объявлена; ключа `web.http_wrappers` до S19
-    нет, и отметка до неё всегда `false`.
+    `configured` — группа совпала с записью `web.http_wrappers` (тем же
+    сравнением, что у прогона: получатель — последний сегмент без регистра,
+    метод — `method` точно или `method_regex` целиком). Вызовы такой группы
+    прогон уже видит: восстановленными, с `via`, или в `unresolved_calls`.
     """
 
     receiver: str
@@ -1156,8 +1161,10 @@ class HttpWrapperCandidate(_Base):
 class HttpWrapperCandidates(_Base):
     """Отчёт `setup candidates http-wrappers`.
 
-    `http_calls` — вызовов `HttpClient`, которые прогон видит (восстановленных
-    и нет), `wrapper_calls` — вызовов-кандидатов во всех группах списка:
+    `http_calls` — вызовов `HttpClient`, которые прогон видит (восстановленных,
+    нет и в телах объявленных обёрток), без вызовов через обёртки: число
+    не растёт от того, что обёртку объявили. `wrapper_calls` — вызовов-кандидатов
+    во всех группах списка:
     без пары «видно / не видно» число кандидатов не с чем сравнить.
     `builders` — группы, отнесённые к построителям адреса (их результат —
     адрес другого вызова), чтобы их отсутствие в списке не читалось как
@@ -1199,6 +1206,7 @@ def http_wrapper_candidates(
     builder_uses: list[BuilderUse],
     calls: CallScan,
     *,
+    wrappers: list[HttpWrapper] | None = None,
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
 ) -> HttpWrapperCandidates:
@@ -1223,15 +1231,20 @@ def http_wrapper_candidates(
                 calls=len(items),
                 positions=_positions([positions for _, positions in items]),
                 files=len({call.file for call, _ in items}),
-                configured=False,
+                configured=any(wrapper_matches(rule, receiver, method) for rule in wrappers or ()),
                 examples=[f"{path}:{line}" for path, line in located[:_EXAMPLES]],
             )
         )
 
     found.sort(key=lambda c: (-c.calls, c.receiver, c.method))
     seen = {(call.receiver, call.method) for call in candidate_calls}
+    # Вызов через объявленную обёртку — уже вызов прогона, но не вызов
+    # `HttpClient`: без вычета `http_calls` рос бы от объявления обёртки.
+    through = sum(1 for item in calls.resolved if item.raw.wrapper) + sum(
+        1 for item in calls.unresolved if item.wrapper
+    )
     return HttpWrapperCandidates(
-        http_calls=len(calls.calls) + len(calls.unresolved),
+        http_calls=len(calls.calls) + len(calls.unresolved) + len(calls.inside_wrappers) - through,
         wrapper_calls=sum(item.calls for item in found),
         builders=sorted(_qualified(*group) for group in builders & seen),
         total=len(found),
@@ -1291,8 +1304,8 @@ class UrlBuilderCandidate(_Base):
     (`[позиция, адресов]`): у гипермедиа (`buildUrl(link.href)`) такого
     аргумента нет, и `uses` больше суммы позиций.
 
-    `configured` — построитель уже объявлен; ключа `web.url_builders` до S19
-    нет, и отметка до неё всегда `false`.
+    `configured` — построитель совпал с записью `web.url_builders`
+    (получатель — последний сегмент без регистра, метод — точно).
     """
 
     receiver: str
@@ -1319,6 +1332,7 @@ def url_builder_candidates(
     candidate_calls: list[CandidateCall],
     builder_uses: list[BuilderUse],
     *,
+    builders: list[UrlBuilder] | None = None,
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
 ) -> UrlBuilderCandidates:
@@ -1330,16 +1344,16 @@ def url_builder_candidates(
     у `http-wrappers`, — иначе две сводки одного прогона разошлись бы
     в числе одних и тех же вызовов. Порядок — `(-uses, receiver, method)`.
     """
-    builders = _builder_groups(builder_uses)
+    groups = _builder_groups(builder_uses)
     # (файл, строка, обёртка или "", аргумент-адрес)
     uses: defaultdict[_Group, list[tuple[str, int, str, ArgFact]]] = defaultdict(list)
     for use in builder_uses:
         if not use.through:
             uses[(use.receiver, use.method)].append((use.file, use.line, "", use.arg))
-    for group, calls in _wrapper_groups(candidate_calls, builders).items():
+    for group, calls in _wrapper_groups(candidate_calls, groups).items():
         for call, _ in calls:
             for arg in call.args:
-                if arg.callee is not None and arg.callee in builders:
+                if arg.callee is not None and arg.callee in groups:
                     uses[arg.callee].append((call.file, call.line, _qualified(*group), arg))
 
     found: list[UrlBuilderCandidate] = []
@@ -1354,7 +1368,7 @@ def url_builder_candidates(
                 through=_top(Counter(through for _, _, through, _ in built if through), _EXAMPLES),
                 positions=_positions([address_positions(arg.args) for _, _, _, arg in built]),
                 files=len({path for path, _, _, _ in built}),
-                configured=False,
+                configured=builder_for((receiver, method), builders or ()) is not None,
                 examples=[f"{path}:{line}" for path, line in located[:_EXAMPLES]],
             )
         )
@@ -1435,13 +1449,24 @@ def _features(inputs: SetupContext, limit: int, offset: int) -> CandidateReport:
 def _http_wrappers(inputs: SetupContext, limit: int, offset: int) -> CandidateReport:
     web = inputs.web
     return http_wrapper_candidates(
-        web.candidate_calls, web.builder_uses, web.calls, limit=limit, offset=offset
+        web.candidate_calls,
+        web.builder_uses,
+        web.calls,
+        wrappers=inputs.settings.web.http_wrappers,
+        limit=limit,
+        offset=offset,
     )
 
 
 def _url_builders(inputs: SetupContext, limit: int, offset: int) -> CandidateReport:
     web = inputs.web
-    return url_builder_candidates(web.candidate_calls, web.builder_uses, limit=limit, offset=offset)
+    return url_builder_candidates(
+        web.candidate_calls,
+        web.builder_uses,
+        builders=inputs.settings.web.url_builders,
+        limit=limit,
+        offset=offset,
+    )
 
 
 _KINDS: Final[dict[str, Callable[[SetupContext, int, int], CandidateReport]]] = {

@@ -10360,3 +10360,54 @@ ruff и mypy чисты, 2567 passed.
 записи чужого репозитория с тем же относительным путём.
 
 **Проверка:** команда S09 — 26 passed.
+
+---
+
+## S19 — `web.http_wrappers` и `web.url_builders` (08.10.2026)
+
+**Создано:** `tests/test_http_wrappers.py` (63). **Изменено:** `docpipe/config.py` (`ArgRef`,
+`MethodRef`, `HttpWrapper`, `UrlBuilder`, `receiver_key`), `docpipe/web/calls.py`
+(применение в `build_calls`, `WrapperConflict`, `inside_wrapper`, `ParameterRef`),
+`docpipe/web/tree.py` (`calls_inside_wrappers` в сидкаре), `docpipe/model.py`
+(`WebCall.via`, `UnresolvedCall.via`, версия 2.4), `docpipe/setup/candidates.py`
+(настоящий `configured`), `docpipe/setup/explain.py`, `docpipe/cli.py`, `docpipe/setup/context.py`,
+`schema/doc-tree.schema.json`, `tests/golden/doc-tree.json` (версия), тесты версий,
+`docs/web.md` («Обёртки и построители»), `docs/configuration.md`, `docs/setup-map.md`,
+`docs/findings-seam.md` («Как вышло после S19»), `docs/manifest.md`, `docs/setup.md`,
+`docs/backlog.md`.
+
+Вызов-кандидат S18, совпавший с записью обёртки, в `build_calls` становится вызовом
+с адресом из `url` и методом из `http_method`; адрес от построителя берёт путь из его
+аргумента; тело обёртки (функция с её именем, адрес — тот же параметр) уходит из
+`unresolved_calls` в `calls_inside_wrappers`. Извлечение от настройки по-прежнему
+не зависит.
+
+| | SeamWorkspace с правилами | squidex | abp |
+|---|---|---|---|
+| восстановлено | 4 → 9 | 2 → 105 | 0 → 120 |
+| связано | 1 → 6 (`AppsController`) | **101 из 105** (оценка плана ~87 из ~98) | **62 из 62** в `roots` (оценка 60) |
+| эндпоинтов без вызывающего | — | 162 из 262 | 18 из 77 |
+
+`strip_prefix` на squidex не понадобился — префикс баз пришёл из S17. Четыре вызова
+squidex без эндпоинта: **опечатка в самом squidex** (бэк `…/completion/prview-urls`,
+фронт `preview-urls`), `POST api/content/{}/{}{}` (две подстановки подряд), `GET ''`
+от поля `@Input()` (в бэклоге), внешний `raw.githubusercontent.com` (S20).
+
+**Отклонения и находки.**
+- `UnresolvedCall.via` сверх спецификации: невосстановленный вызов через обёртку лежит
+  в `unresolved_calls` с `via`.
+- Факт-кандидат пишется и тогда, когда аргументом передан сам `HttpClient` (`this.http`) —
+  ловушка S18; имя с заглавной (`injector.get(HttpClient)`) — класс, не экземпляр.
+- Тело обёртки сверяется по имени функции **и** номеру параметра (`ParameterRef`):
+  `REASON_PARAMETER` не говорил, чьей функции параметр.
+- Две записи на одну пару «получатель + метод» — отказ загрузки; пересечение регулярок
+  на одном вызове — `WrapperConflict`, код 2. `WrapperConflict` — подкласс `ValueError`,
+  а три места переводили любой `ValueError` прогона в «ошибку ручного состава страниц» —
+  его ветка стоит раньше.
+- `http_calls` у кандидатов не растёт от объявления обёртки (считает тела, не вызовы через
+  обёртку).
+- В бэклог: `const` с шаблоном не вычисляется (2 места на squidex), `{}{}` от двух
+  подстановок в конце сегмента, построитель внутри шаблона.
+
+**Проверка:** команда S19 — 104 passed; клоны в `~/docspipe-examples` не тронуты
+(прогоны без кэша).

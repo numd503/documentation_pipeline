@@ -211,8 +211,8 @@ def test_old_manifest_without_the_field_reads_with_an_empty_list() -> None:
 
 
 def test_manifest_version_is_bumped_for_the_new_field() -> None:
-    # S18: 2.2 → 2.3 (правило 7 плана).
-    assert SCHEMA_VERSION == "2.3"
+    # S18: 2.2 → 2.3 (правило 7 плана); S19: 2.3 → 2.4 (`via`).
+    assert SCHEMA_VERSION == "2.4"
 
 
 def test_web_scan_writes_the_list_into_the_manifest_file(tmp_path: Path) -> None:
@@ -235,7 +235,7 @@ def test_web_scan_writes_the_list_into_the_manifest_file(tmp_path: Path) -> None
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "2.3"
+    assert payload["schema_version"] == SCHEMA_VERSION
     assert len(payload["unresolved_calls"]) == 9
     assert {item["reason"] for item in payload["unresolved_calls"]} >= {
         BUILDER_REASON,

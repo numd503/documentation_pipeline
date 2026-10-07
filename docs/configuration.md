@@ -22,7 +22,7 @@
 | **входы**: текущий каталог, затем каталог `docpipe.yaml` | `rules`, `web.rules`, `web.pages`, `templates`, `ownership`, `registries`, `arch`, `arch_adapters[].options.spec` (адаптер `registries`) |
 | **цели записи**: только текущий каталог | `out`, `worklist`, `web.out`, `web.link_out`, `graph.out`, `graph.cache_dir` |
 | **бинарь движка**: только текущий каталог, `~` разворачивается | `graph.engine_path` (второй ступени нет: мост запускает и сверяет чек-сумму ровно по этому пути) |
-| не пути: глобы и значения | `enrolled`, `not_enrolled`, `exclude`, `domains`, `doc_layout`, `docs_scan_exclude`, `di_methods`, `dispatch_interfaces`, `web.url_rewrite`, `web.registry_calls` |
+| не пути: глобы и значения | `enrolled`, `not_enrolled`, `exclude`, `domains`, `doc_layout`, `docs_scan_exclude`, `di_methods`, `dispatch_interfaces`, `web.url_rewrite`, `web.registry_calls`, `web.http_wrappers`, `web.url_builders` |
 
 Репо-относительные ключи проверяются валидатором: абсолютный путь, `..`
 и `\` отвергаются при загрузке. Причина у `docs_root`, `modules_dir`
@@ -77,14 +77,16 @@ enrolled:
 умолчание (оно названо в сообщении). Правило действует для всех ключей-списков
 верхнего уровня (`roots`, `enrolled`, `not_enrolled`, `exclude`, `docs_scan_exclude`,
 `dispatch_interfaces`, `di_methods`, `arch_adapters`) и секции `web`
-(`roots`, `url_rewrite`, `registry_calls`); перечень строится по модели,
+(`roots`, `url_rewrite`, `registry_calls`, `http_wrappers`, `url_builders`);
+перечень строится по модели,
 так что новый ключ-список попадает под него сам. Словарь без записей
 (`domains:`, `web:`, `graph:` с одними комментариями) по-прежнему значит
 умолчание: у словарей оно совпадает с пустым значением.
 
 **Повтор — отказ.** Два `arch_adapters` с одним `id` неразличимы в счётчиках
 и ошибках сборки; два `web.url_rewrite` одного модуля раньше молча давали
-первую запись, а правка во второй не применялась никогда.
+первую запись, а правка во второй не применялась никогда. Так же — две записи
+`web.http_wrappers` (с `method`) или `web.url_builders` на один вызов.
 
 Настройка, которая загружалась до этого, может теперь получить отказ —
 это и есть цель: она содержала опечатку или пустой список, читавшийся
@@ -124,7 +126,7 @@ web:
 | `exclude` | `"glob"` | `glob`, `reason` |
 | `di_methods`, `dispatch_interfaces` | `"Имя"` | `name`, `reason` |
 | `web.roots` | `"путь"` | `path`, `reason` |
-| `web.url_rewrite[]`, `web.registry_calls[]` | — | поле `reason` рядом с прежними |
+| `web.url_rewrite[]`, `web.registry_calls[]`, `web.http_wrappers[]`, `web.url_builders[]` | — | поле `reason` рядом с прежними |
 
 `reason` у всех, кроме `not_enrolled`, необязателен. Форма выбирается по виду
 записи: словарь — вторая, иначе — короткая; опечатка в ключе записи
@@ -292,6 +294,8 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 | `web.link_out` | | | ✓ | | | | | | | |
 | `web.url_rewrite` | | ✓ | ✓ | | | | | | | |
 | `web.registry_calls` | | ✓ | | | | | | | | |
+| `web.http_wrappers` | | ✓ | | | | | | | | |
+| `web.url_builders` | | ✓ | | | | | | | | |
 
 ✓ — читается и влияет на результат; ○ — читается мягко: неготовый бизнес-слой
 не роняет шаг 2, раздел «Бизнес-контекст» просто не собирается. Мягко — не
@@ -304,12 +308,15 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 разбирает фронт: обходит `web.roots` с отсевом `exclude`, кэширует разбор
 в `cache_dir`, собирает `doc_path` из `docs_root` + `web.modules_dir` (пустой —
 `modules_dir`) по `doc_layout` и **уже здесь** переписывает адреса вызовов
-по `web.url_rewrite` и различает обращения к реестру по `web.registry_calls`.
+по `web.url_rewrite` и различает обращения к реестру по `web.registry_calls`;
+здесь же вызовы через обёртки становятся вызовами (`web.http_wrappers`),
+а адрес от построителя получает путь (`web.url_builders`).
 `web link` сводит два готовых манифеста и из настройки читает только
 `web.link_out` и **имена модулей** `web.url_rewrite` — чтобы назвать модули
 без записи. Отсюда ловушка: правка префикса в `url_rewrite` без повторного
 `web scan` не меняет ни одной связи, исчезает только строка «модуль
-не настроен» — и правка выглядит сделанной.
+не настроен» — и правка выглядит сделанной. То же с `http_wrappers`
+и `url_builders`: их `web link` не читает вовсе.
 
 **`enrolled` и `domains` на шаг `web` не действуют.** Каждый модуль фронта
 `enrolled: true` и без домена (`web/modules.py`, `_build`), поэтому
@@ -326,7 +333,9 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 `web.pages`). Оба прогона виды берут у `SetupContext`
 (`docpipe/setup/context.py`), как и `setup explain` ниже. `features` по `features` из `pages.yaml` помечает уже
 объявленные (`declared`). `registry-calls` читает `web.registry_calls`
-ещё раз, тем же словарём правил, что прогон; на вызовы ручной состав
+ещё раз, тем же словарём правил, что прогон; `http-wrappers` и `url-builders` —
+`web.http_wrappers` и `web.url_builders`, тем же сравнением, что прогон,
+чтобы пометить уже объявленные (`configured`); на вызовы ручной состав
 не влияет, но названный и ненайденный `web.pages` роняет и этот вид —
 как `web scan`.
 
@@ -336,7 +345,8 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 шага 2 с ключами столбца `materialize`, — и только те, что нужны
 коду под целью. Сверх того он читает **причины** записей (`exclude`,
 `enrolled`, `not_enrolled`, `di_methods`, `dispatch_interfaces`,
-`web.roots`, `web.url_rewrite`, `web.registry_calls`; у ключей со второй
+`web.roots`, `web.url_rewrite`, `web.registry_calls`, `web.http_wrappers`,
+`web.url_builders`; у ключей со второй
 формой — через свойства `*_entries`, а не сырые поля) и печатает их рядом
 с решением.
 
@@ -435,6 +445,43 @@ di_methods: ["AddSingletonAs", "AddTransientAs", "AddScopedAs"]
 двух раз, с долей вызовов на тех же получателях, что у стандартных
 регистраций. Обёртку отличает от `AddField` на `schema` и `AddDays`
 на дате именно это пересечение, а не имя; решение остаётся за человеком.
+
+## Обёртки над `HttpClient`: `web.http_wrappers` и `web.url_builders`
+
+Вызов через самодельную обёртку (`HTTP.getVersioned(this.http, url)`,
+`this.rest.request({ method, url })`) глагола `HttpClient` не имеет, и без
+записи прогон его не видит; адрес от построителя (`const url =
+this.apiUrl.buildUrl('/api/apps')`) виден, но не восстановлен. Обёртку
+по имени не распознать, поэтому умолчание пустое, а запись пишет человек
+(или агент с его подтверждением) по находкам `setup candidates http-wrappers`
+и `url-builders`:
+
+```yaml
+web:
+  http_wrappers:
+    - receiver: HTTP
+      method_regex: "^(get|post|put|delete)Versioned$"
+      url: {arg: 1}
+      http_method: {from_name: true}
+      reason: "обёртка над HttpClient с версией"
+  url_builders:
+    - receiver: apiUrl
+      method: buildUrl
+      path: {arg: 0}
+```
+
+Что значит каждое поле и что делает прогон — в [`web.md`](web.md), раздел
+«Обёртки и построители». Проверки загрузки: у обёртки ровно одно из `method`
+и `method_regex`, регулярка компилируется, у `http_method` ровно один способ
+(`arg`, `fixed`, `from_name`), `field` — только с `arg`, `fixed` — метод
+HTTP, номер аргумента не отрицателен; две записи на один вызов (тот же
+получатель по последнему сегменту без регистра и тот же `method`) — отказ,
+как повтор модуля у `url_rewrite`. Пересечение регулярок видно только на
+вызове: такой вызов — отказ прогона с кодом 2 и обеими записями.
+
+Записи в ключ кэша разбора не входят и не должны: извлечение от них не
+зависит по построению, применяет их интерпретация (`build_calls`). Старый
+`docpipe` отвергнет оба ключа (`extra="forbid"`).
 
 ## Диспетчеризация по типу запроса: `dispatch_interfaces`
 
@@ -563,6 +610,8 @@ uv run python tools/migrate_rules.py --dotnet rules.yaml --out rules.yaml
 | `out`, `link_out` | куда писать манифест фронта и отчёт связи |
 | `url_rewrite` | что делает с URL прокси модуля: `pathRewrite` из `proxy.conf` |
 | `registry_calls` | маршруты платформы, где смысл вызова определяет параметр, а не маршрут |
+| `http_wrappers` | обёртки над `HttpClient`: где у вызова адрес и откуда метод |
+| `url_builders` | построители адреса: в каком аргументе путь |
 
 **Пустое правило `url_rewrite` и отсутствие записи — разные вещи.** Первое значит
 «проверено, преобразования нет», второе — «модуль не настроен», и `web link`

@@ -241,19 +241,28 @@ def _calls_by_file(
     Третье значение — невосстановленные вызовы для манифеста, с модулем
     и членом: модуль известен только здесь, а отчёт связи по нему находит
     фронт без `url_rewrite`, у которого не восстановлен ни один вызов.
+
+    Вызовы-кандидаты модуля идут в ту же интерпретацию: совпавшие
+    с `web.http_wrappers` становятся вызовами модуля и получают его
+    `url_rewrite` (S19). Обёртка, объявленная в одном фронте, вызывается
+    из другого так же — записи общие на прогон.
     """
     by_module: dict[str, list[RawCall]] = {}
+    candidates_by_module: dict[str, list[CandidateCall]] = {}
     module_of_file = map_files_to_modules([item.result.path for item in parsed], modules)
     for item in parsed:
         key = module_of_file.get(item.result.path)
         if key is not None:
             by_module.setdefault(key, []).extend(item.calls)
+            candidates_by_module.setdefault(key, []).extend(item.candidates)
 
     registry = registry_calls(config)
+    wrappers, builders = config.web.http_wrappers, config.web.url_builders
     calls: list[WebCall] = []
     unresolved: list[RawCall] = []
     registry_unresolved: list[WebCall] = []
     resolved: list[ResolvedCall] = []
+    inside_wrappers: list[RawCall] = []
     unresolved_calls: list[UnresolvedCall] = []
 
     for module in modules:
@@ -262,6 +271,9 @@ def _calls_by_file(
             rewrite=_rewrite_for(module, config),
             registry=registry,
             module=module.module.name,
+            candidates=candidates_by_module.get(module.key, []) if wrappers else (),
+            wrappers=wrappers,
+            builders=builders,
         )
 
         def with_member(call: WebCall) -> WebCall:
@@ -283,6 +295,7 @@ def _calls_by_file(
             for item, call in zip(scan.resolved, attributed, strict=True)
         )
         unresolved.extend(scan.unresolved)
+        inside_wrappers.extend(scan.inside_wrappers)
         unresolved_calls.extend(
             UnresolvedCall(
                 file=item.file,
@@ -292,6 +305,7 @@ def _calls_by_file(
                 expression=item.expression,
                 module=module.module.name,
                 member=ranges.of(item.file, item.line),
+                via=item.via,
             )
             for item in scan.unresolved
         )
@@ -310,6 +324,7 @@ def _calls_by_file(
             unresolved=unresolved,
             registry_unresolved=registry_unresolved,
             resolved=resolved,
+            inside_wrappers=inside_wrappers,
         ),
         grouped,
         sorted(
@@ -1165,6 +1180,11 @@ def run(
             "registry_unresolved": len(calls.registry_unresolved),
             # Вызовы вне диапазона любого узла: розданы всем узлам своего файла.
             "calls_unattributed": calls_unattributed,
+            # Тела объявленных обёрток (S19): вызов `HttpClient` с адресом-
+            # параметром в функции с именем обёртки. В `unresolved_calls` их нет —
+            # вызов продукта восстановлен там, где обёртку зовут, — и без числа
+            # «восстановлено + не восстановлено» перестало бы сходиться.
+            "calls_inside_wrappers": len(calls.inside_wrappers),
             "routes": len(routes.entries),
             "routes_unresolved": routes.unresolved,
             # Три числа вместо одного: ребро найдено, получатель внешний

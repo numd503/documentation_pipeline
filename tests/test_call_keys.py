@@ -616,13 +616,14 @@ def _manifest_json(version: str) -> str:
 def test_tool_writes_its_own_version() -> None:
     # S17: 2.1 → 2.2 (`Endpoint.unresolved`, флаги выражений у `Attribute`).
     # S18: 2.2 → 2.3 (`Manifest.unresolved_calls`).
-    assert SCHEMA_VERSION == "2.3"
+    # S19: 2.3 → 2.4 (`WebCall.via`, `UnresolvedCall.via`).
+    assert SCHEMA_VERSION == "2.4"
     assert Manifest(ruleset_version="1", parser=ParserVersions(tree_sitter="0")).schema_version == (
-        "2.3"
+        "2.4"
     )
 
 
-@pytest.mark.parametrize("version", ["2.0", "2.1", "2.2", "2.3"])
+@pytest.mark.parametrize("version", ["2.0", "2.1", "2.2", "2.3", "2.4"])
 def test_every_minor_of_its_major_up_to_its_own_is_read(version: str) -> None:
     """Манифест 2.0 читается и сохраняет свою версию: она про файл, а не про читателя."""
     assert Manifest.model_validate_json(_manifest_json(version)).schema_version == version
@@ -657,9 +658,9 @@ def test_manifest_2_0_without_host_reads_with_empty_host() -> None:
 @pytest.mark.parametrize(
     ("version", "message"),
     [
-        # S18: свой инструмент — 2.3, ближайшая чужая минорная — 2.4.
-        ("2.4", "манифест версии 2.4 новее инструмента (2.3): обновите docpipe"),
-        ("3.0", "манифест версии 3.0 новее инструмента (2.3): обновите docpipe"),
+        # S19: свой инструмент — 2.4, ближайшая чужая минорная — 2.5.
+        ("2.5", "манифест версии 2.5 новее инструмента (2.4): обновите docpipe"),
+        ("3.0", "манифест версии 3.0 новее инструмента (2.4): обновите docpipe"),
         ("1.9", "манифест версии 1.9 устарел"),
         ("2", "версия манифеста «2» не распознана"),
         ("2.x", "версия манифеста «2.x» не распознана"),
@@ -674,8 +675,8 @@ def test_foreign_version_is_refused_with_a_reason(version: str, message: str) ->
 
 
 def test_newer_manifest_gives_one_reason_not_a_list_of_extra_fields() -> None:
-    """Новое поле 2.4 на каждом узле дало бы сотню «Extra inputs» вокруг причины."""
-    manifest = json.loads(_manifest_json("2.4"))
+    """Новое поле 2.5 на каждом узле дало бы сотню «Extra inputs» вокруг причины."""
+    manifest = json.loads(_manifest_json("2.5"))
     manifest["future_field"] = []
     with pytest.raises(ValidationError) as caught:
         Manifest.model_validate_json(json.dumps(manifest))
@@ -690,4 +691,4 @@ def test_cli_refuses_a_newer_manifest_with_the_reason(tmp_path: Path) -> None:
     result = runner.invoke(app, ["stats", str(path)])
 
     assert result.exit_code == 2
-    assert "манифест версии 3.0 новее инструмента (2.3): обновите docpipe" in result.output
+    assert "манифест версии 3.0 новее инструмента (2.4): обновите docpipe" in result.output

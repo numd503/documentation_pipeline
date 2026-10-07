@@ -55,8 +55,8 @@ uv run docpipe setup candidates url-builders --root . --config docpipe.yaml
 | `dispatch-interfaces` | `dispatch_interfaces` | S12 |
 | `registry-calls` | `web.registry_calls` | S13 |
 | `features` | `features` в `pages.yaml` (`web.pages`) | S14 |
-| `http-wrappers` | `web.http_wrappers` (ключ появится в S19) | S18 |
-| `url-builders` | `web.url_builders` (ключ появится в S19) | S18 |
+| `http-wrappers` | `web.http_wrappers` (S19) | S18 |
+| `url-builders` | `web.url_builders` (S19) | S18 |
 
 ### `di-methods`
 
@@ -345,8 +345,10 @@ web:
 Вызовы фронта, которых прогон **не видит вовсе**: вызов члена, у которого нет
 глагола `HttpClient`, а аргумент похож на адрес, — `HTTP.getVersioned(this.http, url)`
 (squidex), `this.restService.request({ method: 'GET', url: '/api/…' })` (abp).
-Их нет ни в `web_calls`, ни в `unresolved_calls` манифеста, и без этой сводки
-они не попадают ни в один счётчик.
+Пока обёртка не объявлена в `web.http_wrappers`, их нет ни в `web_calls`,
+ни в `unresolved_calls` манифеста, и без этой сводки они не попадают ни в один
+счётчик. Как записать найденную обёртку — [`web.md`](web.md), раздел «Обёртки
+и построители».
 
 Прогон — шаг `web` тем же путём, что `web scan`: `SetupContext.web`, общий
 с `registry-calls`, `features`, `url-builders` и `setup explain`.
@@ -378,11 +380,13 @@ web:
 | `calls` | вызовов группы с адресом хотя бы в одной позиции |
 | `positions` | где адрес: `[позиция, вызовов]`; `1` — второй позиционный аргумент, `0.url` — поле `url` первого |
 | `files` | в скольких файлах |
-| `configured` | обёртка уже объявлена; ключа `web.http_wrappers` до S19 нет, и отметка до неё всегда `false` |
+| `configured` | группа совпала с записью `web.http_wrappers` — тем же сравнением, что у прогона (получатель — последний сегмент без регистра, метод — точно или `method_regex` целиком); вызовы такой группы прогон уже видит |
 | `examples` | до трёх `файл:строка` |
 
 Над списком — база: `http_calls` (вызовов `HttpClient`, которые прогон видит,
-восстановленных и нет) и `wrapper_calls` (вызовов во всех группах списка).
+восстановленных, нет и в телах объявленных обёрток; вызовы через обёртки сюда
+не входят, и число от объявления не меняется) и `wrapper_calls` (вызовов во всех
+группах списка).
 `builders` — группы, отнесённые к построителям; `limits` — чего отбор не видит.
 
 Как читать:
@@ -404,6 +408,8 @@ web:
 - **Не видны** вызовы обёртки, у которых адрес — параметр функции или
   выражение без построителя (`link.href` прямо), и шаблон с построителем внутри
   (`` `${this.apiUrl.buildUrl(link.href)}${query}` ``): на адрес они не похожи.
+  Объявленная обёртка видит их невосстановленными, если аргументом передан сам
+  `HttpClient` (`this.http`): факт о таком вызове пишется и без адреса (S19).
 
 На фикстуре `SeamWorkspace` — три кандидата: `HTTP.getVersioned` (`1`),
 `HTTP.requestVersioned` (`2`), `rest.request` (`0.url`); построитель
@@ -434,7 +440,7 @@ this.apiUrl.buildUrl('/api/apps')`, затем `this.http.get(url)` или
 | `through` | у вызовов-кандидатов в обёртки: `[обёртка, адресов]`, три частых |
 | `positions` | аргументы построителя, похожие на адрес: `[позиция, адресов]`; у гипермедиа (`buildUrl(link.href)`) такого аргумента нет, и `uses` больше суммы |
 | `files` | в скольких файлах |
-| `configured` | построитель уже объявлен; ключа `web.url_builders` до S19 нет, отметка всегда `false` |
+| `configured` | построитель совпал с записью `web.url_builders` (получатель — последний сегмент без регистра, метод — точно) |
 | `examples` | до трёх `файл:строка` внешних вызовов |
 
 На фикстуре `SeamWorkspace` — `apiUrl.buildUrl`: 2 адреса, оба у `HttpClient`,
@@ -475,7 +481,7 @@ uv run docpipe setup explain "**/Migrations/**" --root . --limit 0
 | `symbol_rows` | строки `symbols --format json` (S07), первые `--limit`; всего — сумма `symbols` |
 | `pages` | страницы и разделы, в документ которых попадает код: `{id, title}` |
 | `page_overrides` | записи `pages.yaml`, касающиеся кода: `add`, `remove`, `features` |
-| `calls` | вызовы фронта: `resolved`, `unresolved`, `registry_unresolved` (подмножество `resolved`) |
+| `calls` | вызовы фронта: `resolved`, `unresolved`, `registry_unresolved` (подмножество `resolved`); `inside_wrappers` — тела объявленных обёрток, только если они есть под целью |
 | `unresolved_reasons` | причины невосстановленных вызовов: `[причина, число]`, от частых |
 | `endpoints` | эндпоинты .NET: `routed` (маршрут собран, идёт в связь) и `unrouted` (маршрут пуст и в связь не идёт: конвенциональное действие или аргумент-выражение, не разрешённое в литерал, — `Endpoint.unresolved`, S17) |
 | `documents`, `documents_total` | документы узлов: `doc_path`, `status`, `file_action`, `node` — по плану шага 2 в памяти |
@@ -500,6 +506,8 @@ uv run docpipe setup explain "**/Migrations/**" --root . --limit 0
 | `dispatch_interfaces` | `docpipe.yaml` | имя интерфейса | обработчиков |
 | `web.url_rewrite` | `docpipe.yaml` | модуль фронта | восстановленных вызовов |
 | `web.registry_calls` | `docpipe.yaml` | маршрут | вызовов |
+| `web.http_wrappers` | `docpipe.yaml` | `получатель.method` или `получатель./method_regex/` | вызовов через обёртку и её тел (в `effect` — раздельно) |
+| `web.url_builders` | `docpipe.yaml` | `получатель.method` | адресов, построенных им |
 | `add`, `remove`, `features` | `pages.yaml` | компонент, `/маршрут`, имя раздела | страниц или узлов |
 | `rules` | `ownership.yaml` | `id` правила-победителя | узлов |
 

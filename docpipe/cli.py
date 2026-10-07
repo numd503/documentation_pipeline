@@ -146,6 +146,7 @@ from docpipe.stats import (
     validate_manifest,
 )
 from docpipe.step2 import Step2Error, Step2Inputs, check_teams, load_manifest, prepare
+from docpipe.web.calls import WrapperConflict
 from docpipe.web.link import CATEGORIES as LINK_CATEGORIES
 from docpipe.web.link import build_report as build_link_report
 from docpipe.web.link import format_report as format_link_report
@@ -632,6 +633,9 @@ def symbols(
     else:
         try:
             web = run_web_scan(root, settings, ruleset, cache_dir, overrides)
+        except WrapperConflict as exc:
+            typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
         except ValueError as exc:
             # Неоднозначное правило снятия — тот же отказ, что у `web scan`.
             typer.echo(f"Ошибка в ручном составе страниц: {exc}", err=True)
@@ -819,6 +823,11 @@ def web_scan(
 
     try:
         result = run_web_scan(root, settings, ruleset, cache_dir, overrides)
+    except WrapperConflict as exc:
+        # Вызов совпал с двумя записями `web.http_wrappers`: какая задумана,
+        # решает человек, а не порядок в файле.
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
     except ValueError as exc:
         # Неоднозначное правило снятия. Выбор наугад здесь означал бы, что
         # инструмент сам решает, какую страницу убрать из документации.
@@ -880,6 +889,13 @@ def web_scan(
         typer.echo(
             f"Вызовов вне диапазона узлов: {stats['calls_unattributed']} — "
             "приписаны всем узлам своего файла (calls_unattributed в сидкаре)."
+        )
+    if stats.get("calls_inside_wrappers", 0):
+        # Без строки сумма «восстановлено + не восстановлено» молча меньше,
+        # чем вызовов в коде: тела обёрток не идут ни туда, ни туда.
+        typer.echo(
+            f"Вызовов в телах объявленных обёрток: {stats['calls_inside_wrappers']} — "
+            "в unresolved_calls не идут (calls_inside_wrappers в сидкаре)."
         )
     typer.echo(
         f"Шаблонов прочитано: {stats.get('templates', 0)}; из разметки зовут "

@@ -94,10 +94,10 @@ def test_manifest_round_trip_through_json() -> None:
 def test_schema_version_defaults_and_is_pinned() -> None:
     """Чужая версия схемы должна отвергаться явно, а не разбираться молча.
 
-    Пишем 2.3, читаем 2.x не новее своей (S16, правило 7 плана настройки;
-    2.2 — S17, 2.3 — S18); подробно — `tests/test_call_keys.py`.
+    Пишем 2.4, читаем 2.x не новее своей (S16, правило 7 плана настройки;
+    2.2 — S17, 2.3 — S18, 2.4 — S19); подробно — `tests/test_call_keys.py`.
     """
-    assert _minimal_manifest().schema_version == "2.3"
+    assert _minimal_manifest().schema_version == "2.4"
     payload = _minimal_manifest().model_dump()
     payload["schema_version"] = "1.1"
     with pytest.raises(ValidationError):
