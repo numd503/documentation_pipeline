@@ -158,7 +158,7 @@ uv run docpipe --help
 На целевую машину инструмент ставится отдельно от настройки: `deploy/install.sh`
 делает `uv tool install` с версиями из `uv.lock`, а в репозиторий продукта
 кладёт только yaml и шаблоны. Агенту контура (gigacode, форк qwen code) он
-прописывает MCP-сервер графа в `.qwen/settings.json` клона, рядом со скиллом
+прописывает MCP-сервер графа в `.gigacode/settings.json` клона, рядом со скиллом
 разведки. Порядок и флаги — в [`deploy/README.md`](deploy/README.md).
 
 .NET SDK не требуется: C# разбирается через `tree-sitter`, без сборки проекта.
@@ -852,7 +852,7 @@ ownership.example.yaml    правила владения — кому прин�
 registries.example.yaml   реестры точек входа АС CF — тоже данные
 pages.example.yaml        ручной состав страниц фронта
 arch-registry.example.yaml  образец нормализованного реестра
-.qwen/skills/recon/       скилл разведки поверх `docpipe recon` (gigacode / qwen code;
+.gigacode/skills/recon/   скилл разведки поверх `docpipe recon` (агент контура gigacode;
                           для Claude Code — ссылка .claude/skills/recon)
 deploy/                   раскладка на целевой машине: инструмент отдельно, настройка отдельно
 ├── install.sh            uv tool install + настройка в <репозиторий>/<--config-dir>
