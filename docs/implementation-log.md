@@ -10104,3 +10104,27 @@ git отказал целиком, ничего не добавив, а выво
 
 **Проверка:** команда S17 — 76 passed; повторный `scan`/`web link` — байт в байт;
 полная — ruff и mypy чисты.
+
+---
+
+## S07 — `symbols`: причина, страница, правило-победитель, `--path` (07.10.2026)
+
+**Создано:** `tests/test_symbols_json.py` (25). **Изменено:** `docpipe/classify.py`
+(`Classification.winner`, `compare=False`), `docpipe/stats.py` (`Decision.winner_rule`,
+`absorbed_page_refs`), `docpipe/explain.py` (`select(..., path=)`, модель `SymbolsReport`),
+`docpipe/cli.py` (`symbols --path`), `README.md` (шаг 1а), `docs/web.md`.
+
+`symbols --path`: файл или каталог от `--root` — по равенству или по префиксу с `/`;
+со знаками `*?[` — глоб через `matches_glob`, как у предиката `path_glob` (тест сверяет оба
+на пяти шаблонах). В JSON-строке символа — `winner_rule`, `exclusion {id, reason}`,
+`page {id, title}`; JSON собран моделью `SymbolsReport` (`schema_version` 1.0) — её строки
+берут S23 и S27; прежние ключи сохранены. Текстовая строка решения называет победителя:
+«… по ignite.service (совпали также: service)».
+
+**Отклонения и находки.** Хвостовой `/` в `--path` отрезается — иначе `Services/` молча
+не находил ничего. Каталог сравнивается префиксом вместе с `/`: `src/App` не захватывает
+`src/AppTests/…`. Страница фронта в `symbols` — `kind: component`: страницей её делает
+повышение по таблице роутов, объясняет это `web pages`. У отсеянного символа `winner_rule`
+пуст, его решение — `exclusion.id`: охват в S24 считать по двум полям раздельно.
+
+**Проверка:** команда S07 — 112 passed; `test_classify.py:74` без правки.

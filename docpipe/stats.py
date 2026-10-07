@@ -110,24 +110,43 @@ class Decision:
     # неотличимо от «документируем где-то там».
     page: str = ""
 
+    # Правило, давшее вид (`Classification.winner`). У отсеянного пусто:
+    # его решение — `exclusion`, и смешивать две секции в одном поле значило
+    # бы считать охват отсева и классификации одним числом.
+    winner_rule: str | None = None
+
 
 def documented_base_types(nodes: list[DocNode]) -> set[str]:
     """FQN всех базовых типов документируемых узлов — вход для `interface_covered`."""
     return {fqn for node in nodes if node.symbol for fqn in node.symbol.base_type_closure}
 
 
-def absorbed_pages(nodes: list[DocNode]) -> dict[str, str]:
-    """FQN -> заголовок страницы, поглотившей узел. Вход для `page_covered`.
+def absorbed_page_refs(nodes: list[DocNode]) -> dict[str, tuple[str, str]]:
+    """FQN -> `(id, заголовок)` страницы, поглотившей узел.
+
+    Заголовок — для человека, `id` — для того, кто пойдёт дальше по манифесту:
+    заголовок — имя класса, и уникальным он не обязан быть (одноимённые
+    компоненты в разных модулях). Страница, которой в манифесте нет,
+    подписывается своим `id`: пустой заголовок читался бы как «страницы нет».
 
     Считается по манифесту, а не по правилам: поглощение — свойство графа
     вызовов, и правило о нём ничего не знает.
     """
     titles = {node.id: node.title for node in nodes}
     return {
-        node.symbol.fqn: titles.get(node.absorbed_by, node.absorbed_by)
+        node.symbol.fqn: (node.absorbed_by, titles.get(node.absorbed_by, node.absorbed_by))
         for node in nodes
         if node.symbol and node.absorbed_by
     }
+
+
+def absorbed_pages(nodes: list[DocNode]) -> dict[str, str]:
+    """FQN -> заголовок страницы, поглотившей узел. Вход для `page_covered`.
+
+    Производная от `absorbed_page_refs`, а не вторая реализация: заголовок
+    в отчёте и пара в выборке символов обязаны называть одну страницу.
+    """
+    return {fqn: title for fqn, (_, title) in absorbed_page_refs(nodes).items()}
 
 
 def decide(
@@ -156,6 +175,7 @@ def decide(
             kind=classification.kind,
             matched_rules=classification.matched_rules,
             page=page,
+            winner_rule=classification.winner,
         )
 
     if symbol.type_kind == "interface" and symbol.fqn in documented_bases:

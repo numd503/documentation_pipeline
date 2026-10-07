@@ -11,15 +11,19 @@
 """
 
 from dataclasses import dataclass
+from typing import Final, Literal
+
+from pydantic import BaseModel, ConfigDict
 
 from docpipe.classify import Ruleset
 from docpipe.discovery import matches_glob
 from docpipe.hashing import stable_json_dumps
 from docpipe.model import DocNode, Symbol
 from docpipe.stats import (
+    PAGE_COVERED,
     STATE_TITLES,
     Decision,
-    absorbed_pages,
+    absorbed_page_refs,
     decide,
     documented_base_types,
     plural,
@@ -32,6 +36,10 @@ ANY = "any"
 # список членов крупного типа вытесняет с экрана всё остальное.
 _MEMBERS = 8
 
+# Символы, по которым значение `--path` считается глобом, — те же, что
+# у `fnmatch`. Без них значение — файл или каталог.
+_GLOB_CHARS: Final = "*?["
+
 
 @dataclass(frozen=True)
 class Row:
@@ -39,6 +47,11 @@ class Row:
 
     symbol: Symbol
     decision: Decision
+
+    # `(id, заголовок)` страницы, внутри документа которой описан символ.
+    # Только у `page_covered`. `Decision.page` хранит один заголовок, а по
+    # заголовку узел в манифесте не найти: он не уникален.
+    page: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +75,30 @@ def _matches_module(symbol: Symbol, pattern: str) -> bool:
     return pattern in symbol.module
 
 
+def _matches_path(symbol: Symbol, path: str) -> bool:
+    """Совпал ли с `--path` хотя бы один источник символа.
+
+    «Хотя бы один» — как у предиката `path_glob`: `partial class` из двух
+    файлов попадает в выборку каталога, где лежит любая его часть, и одной
+    строкой, а не двумя.
+
+    Без символов глоба значение — файл или каталог. Префикс берётся вместе
+    с разделителем: голая строка дала бы `src/App` → `src/AppTests/…`.
+    С символами глоба — `matches_glob`, тот же, что у `path_glob`, со всеми
+    его свойствами (`*` проходит через `/`): ответ на «попадает ли файл
+    под глоб» в инструменте один.
+    """
+    if any(char in path for char in _GLOB_CHARS):
+        return any(matches_glob(source.path, path) for source in symbol.sources)
+    # Хвостовой `/` — обычная запись каталога. Без нормализации `Services/`
+    # молча не совпал бы ни с чем: префикс превратился бы в `Services//`.
+    directory = path.rstrip("/") or path
+    return any(
+        source.path == directory or source.path.startswith(directory + "/")
+        for source in symbol.sources
+    )
+
+
 def select(
     index: dict[str, Symbol],
     nodes: list[DocNode],
@@ -71,6 +108,7 @@ def select(
     state: str = "undecided",
     module: str = "",
     namespace: str = "",
+    path: str = "",
     rule: str = "",
     kind: str = "",
     limit: int = 0,
@@ -81,7 +119,8 @@ def select(
     выборка расходились бы в числах, и доверять было бы нельзя ни одному.
     """
     documented_bases = documented_base_types(nodes)
-    absorbed = absorbed_pages(nodes)
+    pages = absorbed_page_refs(nodes)
+    absorbed = {fqn: title for fqn, (_, title) in pages.items()}
 
     rows: list[Row] = []
     for symbol in index.values():
@@ -92,17 +131,20 @@ def select(
             continue
         if namespace and not symbol.namespace.startswith(namespace):
             continue
+        if path and not _matches_path(symbol, path):
+            continue
         if kind and decision.kind != kind:
             continue
         if rule and rule not in _rules_of(decision):
             continue
-        rows.append(Row(symbol=symbol, decision=decision))
+        page = pages.get(symbol.fqn) if decision.state == PAGE_COVERED else None
+        rows.append(Row(symbol=symbol, decision=decision, page=page))
 
     rows.sort(key=lambda row: row.symbol.fqn)
     return Selection(
         rows=rows[:limit] if limit else rows,
         total=len(rows),
-        description=_description(state, module, namespace, rule, kind),
+        description=_description(state, module, namespace, path, rule, kind),
     )
 
 
@@ -118,7 +160,7 @@ def _rules_of(decision: Decision) -> list[str]:
     return ids
 
 
-def _description(state: str, module: str, namespace: str, rule: str, kind: str) -> str:
+def _description(state: str, module: str, namespace: str, path: str, rule: str, kind: str) -> str:
     """Строка фильтров для заголовка: вывод должен объяснять сам себя."""
     parts = [STATE_TITLES.get(state, state) if state != ANY else "все состояния"]
     parts += [
@@ -126,6 +168,7 @@ def _description(state: str, module: str, namespace: str, rule: str, kind: str) 
         for label, value in (
             ("модуль", module),
             ("namespace", namespace),
+            ("путь", path),
             ("правило", rule),
             ("вид", kind),
         )
@@ -168,9 +211,12 @@ def _decision_line(decision: Decision) -> str:
             f"{STATE_TITLES[decision.state]}: {decision.exclusion.id} — {decision.exclusion.reason}"
         )
     if decision.kind is not None:
-        return (
-            f"{STATE_TITLES[decision.state]}: {decision.kind} ({', '.join(decision.matched_rules)})"
-        )
+        # Победитель — отдельно от остальных совпавших: по одному списку
+        # не видно, какое правило дало вид, а вопрос «почему выиграло не то»
+        # задают именно здесь.
+        others = [rule for rule in decision.matched_rules if rule != decision.winner_rule]
+        tail = f" (совпали также: {', '.join(others)})" if others else ""
+        return f"{STATE_TITLES[decision.state]}: {decision.kind} по {decision.winner_rule}{tail}"
     return STATE_TITLES[decision.state]
 
 
@@ -207,33 +253,105 @@ def format_selection(selection: Selection) -> str:
     return "\n".join(blocks)
 
 
+# --------------------------------------------------------------------------------------
+# Отчёт структурой: `symbols --format json`
+# --------------------------------------------------------------------------------------
+
+SYMBOLS_SCHEMA_VERSION: Final = "1.0"
+
+
+class _Report(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class ExclusionRef(_Report):
+    """Решение «не документируем», отсеявшее символ: какое правило и почему."""
+
+    id: str
+    reason: str
+
+
+class PageRef(_Report):
+    """Страница, внутри документа которой описан символ. `id` — узел манифеста."""
+
+    id: str
+    title: str
+
+
+class SymbolRow(_Report):
+    """Символ и решение о нём — строка `symbols --format json`.
+
+    `rules` — все причастные правила (совпавшие классификации и отсев);
+    `winner_rule` — то, что дало вид. Охват правила считается по победам:
+    по `rules` правило, совпадающее со всем и нигде не выигрывающее,
+    выглядело бы самым нагруженным.
+    """
+
+    fqn: str
+    name: str
+    type_kind: str
+    namespace: str
+    module: str
+    modifiers: list[str]
+    base_types_raw: list[str]
+    base_type_closure: list[str]
+    attributes: list[str]
+    public_members: list[str]
+    sources: list[str]
+    state: str
+    kind: str | None
+    rules: list[str]
+    winner_rule: str | None
+    exclusion: ExclusionRef | None
+    page: PageRef | None
+
+
+class SymbolsReport(_Report):
+    """Выборка символов структурой. `total` — сколько нашлось до `limit`, `shown` — после."""
+
+    schema_version: Literal["1.0"] = SYMBOLS_SCHEMA_VERSION
+    total: int
+    shown: int
+    filters: str
+    symbols: list[SymbolRow]
+
+
+def _symbol_row(row: Row) -> SymbolRow:
+    symbol, decision, exclusion = row.symbol, row.decision, row.decision.exclusion
+    return SymbolRow(
+        fqn=symbol.fqn,
+        name=symbol.name,
+        type_kind=symbol.type_kind,
+        namespace=symbol.namespace,
+        module=symbol.module,
+        modifiers=symbol.modifiers,
+        base_types_raw=symbol.base_types_raw,
+        base_type_closure=symbol.base_type_closure,
+        attributes=[attribute.name for attribute in symbol.attributes],
+        public_members=[member.name for member in symbol.members if "public" in member.modifiers],
+        sources=[source.path for source in symbol.sources],
+        state=decision.state,
+        kind=decision.kind,
+        rules=_rules_of(decision),
+        winner_rule=decision.winner_rule,
+        exclusion=(ExclusionRef(id=exclusion.id, reason=exclusion.reason) if exclusion else None),
+        page=PageRef(id=row.page[0], title=row.page[1]) if row.page else None,
+    )
+
+
+def build_symbols_report(selection: Selection) -> SymbolsReport:
+    """Выборка моделью. Её же позовёт инструмент сервера настройки (S27).
+
+    Строки уже упорядочены `select` по FQN, и порядок здесь не меняется.
+    """
+    return SymbolsReport(
+        total=selection.total,
+        shown=len(selection.rows),
+        filters=selection.description,
+        symbols=[_symbol_row(row) for row in selection.rows],
+    )
+
+
 def selection_json(selection: Selection) -> str:
     """То же машинно: чтобы выборку можно было прогнать через jq или скрипт."""
-    return stable_json_dumps(
-        {
-            "total": selection.total,
-            "shown": len(selection.rows),
-            "filters": selection.description,
-            "symbols": [
-                {
-                    "fqn": row.symbol.fqn,
-                    "name": row.symbol.name,
-                    "type_kind": row.symbol.type_kind,
-                    "namespace": row.symbol.namespace,
-                    "module": row.symbol.module,
-                    "modifiers": row.symbol.modifiers,
-                    "base_types_raw": row.symbol.base_types_raw,
-                    "base_type_closure": row.symbol.base_type_closure,
-                    "attributes": [a.name for a in row.symbol.attributes],
-                    "public_members": [
-                        m.name for m in row.symbol.members if "public" in m.modifiers
-                    ],
-                    "sources": [s.path for s in row.symbol.sources],
-                    "state": row.decision.state,
-                    "kind": row.decision.kind,
-                    "rules": _rules_of(row.decision),
-                }
-                for row in selection.rows
-            ],
-        }
-    )
+    return stable_json_dumps(build_symbols_report(selection).model_dump(mode="json"))

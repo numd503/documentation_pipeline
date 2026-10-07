@@ -488,8 +488,32 @@ Sbt.Cashflow.Grid.…AutoConclusionService.StandardProcessingFactory
 публичные члены, путь. Дальше — либо правило классификации, либо отсев с причиной.
 
 Фильтры: `--state` (по умолчанию `undecided`, ещё `not_documented`, `documented`,
-`not_enrolled`, `interface_covered`, `page_covered`, `any`), `--module`, `--namespace`, `--rule`,
-`--kind`, `--limit`, `--format json`.
+`not_enrolled`, `interface_covered`, `page_covered`, `any`), `--module`, `--namespace`,
+`--path`, `--rule`, `--kind`, `--limit`, `--format text|json`.
+
+`--path` отвечает на вопрос «что решено о символах этого каталога». Значение —
+файл или каталог от `--root`: совпадение по равенству или по префиксу с `/`
+(`Services` не захватит `ServicesTests`, хвостовой `/` допустим). Со знаками
+`*`, `?` или `[` значение — глоб, и понимается **так же, как предикат
+`path_glob`**: `*` проходит через `/` (`src/*Service.cs` ловит файлы на любой
+глубине), на Windows без учёта регистра. Так выборкой можно проверить шаблон
+перед тем, как перенести его в правило. Символ проходит, если совпал хотя бы
+один его файл: `partial class` из двух файлов — одна строка.
+
+`--format json` отвечает и на вопрос «почему этот символ так решён»
+(`schema_version` `1.0`). Кроме полей символа и прежних `state`, `kind`,
+`rules` (все причастные правила, из обеих секций), в строке три поля
+решения, у которых `null` значит «не применимо»:
+
+| Поле | Когда заполнено | Что в нём |
+|---|---|---|
+| `winner_rule` | `documented`, `page_covered` | правило, давшее вид; в `rules` оно среди всех совпавших |
+| `exclusion` | `not_documented` | `{id, reason}` правила отсева, победившего по `priority` |
+| `page` | `page_covered` | `{id, title}`: `id` — узел страницы в манифесте фронта |
+
+```bash
+uv run docpipe symbols --root . --path src/Sample.Pricing.Api/Services --state any --format json
+```
 
 И обратная проверка — что новое правило поймало то, что задумано:
 
@@ -500,6 +524,8 @@ uv run docpipe symbols --root . --state not_documented --rule generated.schemas
 
 `--rule` работает для обеих секций, и на классифицированных показывает правила,
 которые совпали, но **не** победили: так видно, почему выиграло не то, что ожидалось.
+Строка решения называет победителя отдельно — `документируем: ignite_service
+по ignite.service (совпали также: service)`.
 
 ### Шаг 1б. Записать решения «не документируем»
 

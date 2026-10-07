@@ -42,6 +42,16 @@ class Classification:
     template: str
     matched_rules: list[str]
 
+    # Правило, давшее вид, — тот же `pick_winner`, что выбрал `kind`. Охват
+    # правила (S24, S25) считается по победам, а не по совпадениям: правило,
+    # которое совпадает со всем, но нигде не выигрывает, ничего не решает,
+    # а по `matched_rules` оно выглядело бы самым нагруженным.
+    #
+    # `compare=False`: победитель выводится из `matched_rules` и приоритетов,
+    # нового факта о символе он не несёт, и равенство двух классификаций
+    # от него зависеть не должно.
+    winner: str | None = field(default=None, compare=False)
+
 
 @dataclass(frozen=True)
 class ExcludeRule:
@@ -496,4 +506,5 @@ def classify(symbol: Symbol, ruleset: Ruleset) -> Classification | None:
         kind=winner.kind,
         template=winner.template,
         matched_rules=sorted(rule.id for rule in matched),
+        winner=winner.id,
     )

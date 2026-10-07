@@ -562,6 +562,16 @@ def symbols(
         str, typer.Option("--module", help="Подстрока пути .csproj; с `*` — глоб, как в enrolled.")
     ] = "",
     namespace: Annotated[str, typer.Option("--namespace", help="Начало namespace.")] = "",
+    path: Annotated[
+        str,
+        typer.Option(
+            "--path",
+            help=(
+                "Файл или каталог от --root; с `*?[` — глоб, как в path_glob. "
+                "Символ проходит, если совпал хотя бы один его файл."
+            ),
+        ),
+    ] = "",
     rule: Annotated[
         str, typer.Option("--rule", help="Только символы, к которым причастно это правило.")
     ] = "",
@@ -581,7 +591,8 @@ def symbols(
 
     Инструмент отладки набора правил на конкретном проекте. `--stats` отвечает
     «сколько», эта команда — «что именно и по чему для него писать предикат»:
-    печатает замыкание наследования, атрибуты, публичные члены и путь.
+    печатает замыкание наследования, атрибуты, публичные члены и путь, а
+    в JSON — ещё правило-победитель, отсев с причиной и страницу.
 
     Ничего не пишет. Прогон идёт через кэш, поэтому повторный вызов на том же
     репозитории обходится дёшево — так и рассчитано, её зовут в цикле.
@@ -641,14 +652,16 @@ def symbols(
         state=state,
         module=module,
         namespace=namespace,
+        path=path,
         rule=rule,
         kind=kind,
         limit=limit,
     )
 
-    typer.echo(
-        selection_json(selection) if output_format == "json" else format_selection(selection)
-    )
+    # `rstrip`: `stable_json_dumps` кончается переводом строки, и `echo`
+    # добавлял второй — вывод кончался пустой строкой (общее правило 3).
+    text = selection_json(selection) if output_format == "json" else format_selection(selection)
+    typer.echo(text.rstrip("\n"))
 
 
 @app.command()
