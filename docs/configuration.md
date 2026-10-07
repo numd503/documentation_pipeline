@@ -148,8 +148,8 @@ web:
 Отсюда: `not_enrolled` не вырезает кусок из `enrolled`, а дополняет его —
 при `enrolled: ["src/**"]` запись `not_enrolled: [samples/**]` законна,
 а `src/Samples/**` — отказ; сузьте `enrolled`. Проверка идёт до разбора
-файлов, поэтому стоит секунды. Отвечают на противоречие `scan`, `symbols`
-и `setup candidates`.
+файлов, поэтому стоит секунды. Отвечают на противоречие `scan`, `symbols`,
+`setup candidates` и `setup explain`.
 
 **Умолчание `["**"]` решением не считается.** Без ключа `enrolled` каждый
 модуль включён, а `not_enrolled` вырезает из этого «всего» без противоречия.
@@ -315,13 +315,24 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 `docpipe setup candidates` колонкой не выделен: виды `di-methods`
 и `dispatch-interfaces` зовут прогон шага 1 и читают ровно ключи столбца
 `scan`, а `di_methods` и `dispatch_interfaces` — ещё раз, чтобы пометить
-уже перечисленные (`configured`). Виды `features` и `registry-calls` зовут
-один прогон шага `web` тем же путём, что `web scan` (секция `web`, включая
-`web.pages`). `features` по `features` из `pages.yaml` помечает уже
+уже перечисленные (`configured`). Виды `features`, `registry-calls`,
+`http-wrappers` и `url-builders` зовут один прогон шага `web` тем же путём, что `web scan` (секция `web`, включая
+`web.pages`). Оба прогона виды берут у `SetupContext`
+(`docpipe/setup/context.py`), как и `setup explain` ниже. `features` по `features` из `pages.yaml` помечает уже
 объявленные (`declared`). `registry-calls` читает `web.registry_calls`
 ещё раз, тем же словарём правил, что прогон; на вызовы ручной состав
 не влияет, но названный и ненайденный `web.pages` роняет и этот вид —
 как `web scan`.
+
+`docpipe setup explain` тоже колонкой не выделен: прогоны он берёт
+у `SetupContext` (`docpipe/setup/context.py`) — шаг 1 с ключами столбца
+`scan`, шаг `web` с ключами секции `web` (вместе с `web.pages`), план
+шага 2 с ключами столбца `materialize`, — и только те, что нужны
+коду под целью. Сверх того он читает **причины** записей (`exclude`,
+`enrolled`, `not_enrolled`, `di_methods`, `dispatch_interfaces`,
+`web.roots`, `web.url_rewrite`, `web.registry_calls`; у ключей со второй
+формой — через свойства `*_entries`, а не сырые поля) и печатает их рядом
+с решением.
 
 Секцию `graph` (`engine_path`, `engine_sha256`, `mode`, `out`, `cache_dir`)
 читает только `docpipe graph *`: ни одна команда шага 1, шага 2 или бизнес-слоя
@@ -482,9 +493,11 @@ docs/front/...     фронт,  единица документации — ст
 `resolve_input` — `web scan` отказывает с кодом 2 и перечисляет оба
 проверенных пути. Раньше ключ без файла молча давал пустые правила.
 
-Читают ключ все прогоны фронта: `web scan`, `symbols --lang ts`
-и `setup candidates` видов `features` и `registry-calls` — одним загрузчиком
-(`web/overrides.load_page_overrides`). `symbols` до этого шёл без правил
+Читают ключ все прогоны фронта: `web scan`, `symbols --lang ts`,
+`setup candidates` видов `features` и `registry-calls` и `setup explain` —
+одним загрузчиком (`web/overrides.load_page_overrides`; путь ключа
+разрешает `configured_pages`, и тот же путь `setup explain` называет
+файлом решения). Команды `setup` получают его через `SetupContext`. `symbols` до этого шёл без правил
 `pages.yaml` и считал страницы по одной таблице роутов — снятая руками
 страница продолжала делить сервисы с соседними, и состояние `page_covered`
 расходилось с манифестом фронта. Кандидаты в разделы без файла не узнали бы
@@ -498,12 +511,12 @@ docs/front/...     фронт,  единица документации — ст
 ```yaml
 version: "1"
 
-dotnet:            # читают scan, symbols, setup candidates
+dotnet:            # читают scan, symbols, setup candidates, setup explain
   ruleset_version: "…"
   exclude: {…}
   rules: […]
 
-web:               # читают web scan, symbols --lang ts
+web:               # читают web scan, symbols --lang ts, setup candidates, setup explain
   ruleset_version: "…"
   exclude: {…}
   rules: […]
@@ -526,9 +539,9 @@ uv run python tools/migrate_rules.py --dotnet rules.yaml --out rules.yaml
 `version` живёт снаружи секций: это свойство формата файла, а не набора.
 `ruleset_version` — внутри каждой, он уходит в манифест и в `business_hash`.
 
-**Секцию `web` файла правил читают `web scan`, `symbols --lang ts` и `setup candidates`
-(`features`, `registry-calls`)** — последние разбирают фронт заново тем же путём,
-что `web scan`, и потому читают
+**Секцию `web` файла правил читают `web scan`, `symbols --lang ts`, `setup candidates`
+(`features`, `registry-calls`) и `setup explain`** — команды `setup` разбирают фронт
+заново тем же путём, что `web scan`, и потому читают
 `web.rules`, `web.roots` и `web.pages`. `validate` не читает ни конфигурации,
 ни правил: он проверяет готовый манифест. `web link` правил тоже не читает,
 а из секции `web` конфигурации берёт только `link_out` и имена модулей

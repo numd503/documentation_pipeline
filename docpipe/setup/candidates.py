@@ -17,17 +17,14 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Final, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict
 
-from docpipe.classify import load_ruleset
-from docpipe.config import DocpipeConfig, ScopeConflict, resolve_input
+from docpipe.config import DocpipeConfig
 from docpipe.dotnet.di import is_standard_method
 from docpipe.dotnet.facts import bare_type
 from docpipe.emit import ScanResult, dispatch_name, dispatch_names, split_type_arguments
-from docpipe.emit import run as run_scan
 from docpipe.hashing import stable_json_dumps
 from docpipe.model import (
     Construction,
@@ -38,6 +35,7 @@ from docpipe.model import (
     SourceSpan,
     Symbol,
 )
+from docpipe.setup.context import InputError, SetupContext
 from docpipe.web.absorb import FEATURE_KIND, PAGE_KIND, reachable_from
 from docpipe.web.calls import (
     ArgFact,
@@ -52,10 +50,9 @@ from docpipe.web.calls import (
     query_parameters,
     registry_rules,
 )
-from docpipe.web.overrides import Overrides, load_page_overrides
+from docpipe.web.overrides import Overrides
 from docpipe.web.pages import index_by_fqn
-from docpipe.web.tree import WebScanResult, registry_calls
-from docpipe.web.tree import run as run_web_scan
+from docpipe.web.tree import registry_calls
 
 # Длина страницы по умолчанию. Агент контура обрезает вывод инструмента,
 # и «таких нет» без `total` неотличимо от «не показали» (правило 5 плана).
@@ -98,15 +95,6 @@ _PAGES_SHOWN: Final = 10
 
 class _Base(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
-
-
-class InputError(Exception):
-    """Вход прогона негоден: неизвестный вид, отрицательные `limit`/`offset`, файл правил.
-
-    Отдельный класс, а не `ValueError`: CLI отвечает на него кодом 2
-    с сообщением, а любое другое исключение — это сбой, и прятать его
-    под «ошибкой конфигурации» значит потерять трассировку.
-    """
 
 
 # --------------------------------------------------------------------------------------
@@ -1413,100 +1401,50 @@ type CandidateReport = (
 )
 
 
-@dataclass(frozen=True)
-class CandidateInputs:
-    """Что нужно любому виду: корень, настройка и откуда она прочитана.
-
-    `config` — путь к `docpipe.yaml`: от его каталога разрешаются входы
-    (`resolve_input`), и без него сервер настройки нашёл бы другой набор
-    правил, чем CLI, позванный из того же каталога.
-    """
-
-    root: Path
-    settings: DocpipeConfig
-    config: Path | None = None
-    use_cache: bool = True
+# Прежнее имя входа кандидатов. Прогоны собирает `SetupContext` (S23):
+# у кандидатов была своя сборка шага 1, и вторая команда `setup` завела бы
+# третью — ровно так однажды разошлись три копии `_prepare`.
+CandidateInputs = SetupContext
 
 
-def _scan(inputs: CandidateInputs) -> ScanResult:
-    """Прогон шага 1 тем же путём, что у `scan`: те же правила, тот же кэш."""
-    try:
-        ruleset = load_ruleset(resolve_input(inputs.settings.rules, inputs.config), "dotnet")
-    except (OSError, ValueError) as exc:
-        raise InputError(f"набор правил не читается: {exc}") from exc
-    cache_dir = inputs.root / inputs.settings.cache_dir if inputs.use_cache else None
-    try:
-        return run_scan(inputs.root, inputs.settings, ruleset, cache_dir)
-    except ScopeConflict as exc:
-        # Противоречие `enrolled`/`not_enrolled` — ошибка настройки, как и у `scan`.
-        raise InputError(str(exc)) from exc
+def _di_methods(inputs: SetupContext, limit: int, offset: int) -> CandidateReport:
+    return di_method_candidates(inputs.scan, inputs.settings, limit=limit, offset=offset)
 
 
-def _di_methods(inputs: CandidateInputs, limit: int, offset: int) -> CandidateReport:
-    return di_method_candidates(_scan(inputs), inputs.settings, limit=limit, offset=offset)
+def _dispatch_interfaces(inputs: SetupContext, limit: int, offset: int) -> CandidateReport:
+    return dispatch_candidates(inputs.scan, inputs.settings, limit=limit, offset=offset)
 
 
-def _dispatch_interfaces(inputs: CandidateInputs, limit: int, offset: int) -> CandidateReport:
-    return dispatch_candidates(_scan(inputs), inputs.settings, limit=limit, offset=offset)
+# Все виды фронта берут прогон `web` у контекста — тот же, что у `web scan`:
+# правила фронта, `pages.yaml` (`web.pages`), кэш; прогон один на все виды.
+# Виду `features` нужен и ручной состав: без объявленных разделов отметка
+# `declared` не значила бы ничего. Видам вызовов (`registry-calls`,
+# `http-wrappers`, `url-builders`) он не нужен — на вызовы не влияет, — но
+# и не мешает: без `web.pages` правила пустые, а битый названный файл — та же
+# ошибка настройки, на которой упал бы `web scan`.
 
 
-def _web_scan(inputs: CandidateInputs) -> tuple[WebScanResult, Overrides]:
-    """Прогон шага `web` тем же путём, что у `web scan`: правила, `pages.yaml`, кэш.
-
-    Один на все виды фронта. `pages.yaml` читается тем же `load_page_overrides`:
-    без объявленных разделов отметка `declared` у `features` не значила бы
-    ничего, а названный и ненайденный файл — отказ, как у `web scan`, а не
-    пустые правила. Видам вызовов (`registry-calls`, `http-wrappers`,
-    `url-builders`) ручной состав не нужен — на вызовы он не влияет, — но
-    и не мешает: без `web.pages` правила пустые, а битый названный файл —
-    та же ошибка настройки, на которой упал бы `web scan`.
-    """
-    try:
-        ruleset = load_ruleset(resolve_input(inputs.settings.web.rules, inputs.config), "web")
-    except (OSError, ValueError) as exc:
-        raise InputError(f"набор правил фронта не читается: {exc}") from exc
-    try:
-        overrides = load_page_overrides(None, inputs.settings, inputs.config)
-    except (OSError, ValueError) as exc:
-        raise InputError(f"ручной состав страниц не читается: {exc}") from exc
-    cache_dir = inputs.root / inputs.settings.cache_dir if inputs.use_cache else None
-    try:
-        return run_web_scan(inputs.root, inputs.settings, ruleset, cache_dir, overrides), overrides
-    except ValidationError:
-        # Модель, не собравшаяся внутри прогона, — сбой, а не вход: под
-        # «ошибкой конфигурации» он потерял бы трассировку.
-        raise
-    except ValueError as exc:
-        # Неоднозначное правило снятия — тот же отказ, что у `web scan`:
-        # выбор наугад значил бы, что инструмент сам решает, какую страницу убрать.
-        raise InputError(f"ошибка в ручном составе страниц: {exc}") from exc
+def _registry_calls(inputs: SetupContext, limit: int, offset: int) -> CandidateReport:
+    return registry_call_candidates(inputs.web.calls, inputs.settings, limit=limit, offset=offset)
 
 
-def _registry_calls(inputs: CandidateInputs, limit: int, offset: int) -> CandidateReport:
-    result, _ = _web_scan(inputs)
-    return registry_call_candidates(result.calls, inputs.settings, limit=limit, offset=offset)
+def _features(inputs: SetupContext, limit: int, offset: int) -> CandidateReport:
+    return feature_candidates(inputs.web.manifest, inputs.overrides, limit=limit, offset=offset)
 
 
-def _features(inputs: CandidateInputs, limit: int, offset: int) -> CandidateReport:
-    result, overrides = _web_scan(inputs)
-    return feature_candidates(result.manifest, overrides, limit=limit, offset=offset)
-
-
-def _http_wrappers(inputs: CandidateInputs, limit: int, offset: int) -> CandidateReport:
-    result, _ = _web_scan(inputs)
+def _http_wrappers(inputs: SetupContext, limit: int, offset: int) -> CandidateReport:
+    web = inputs.web
     return http_wrapper_candidates(
-        result.candidate_calls, result.builder_uses, result.calls, limit=limit, offset=offset
+        web.candidate_calls, web.builder_uses, web.calls, limit=limit, offset=offset
     )
 
 
-def _url_builders(inputs: CandidateInputs, limit: int, offset: int) -> CandidateReport:
-    result, _ = _web_scan(inputs)
-    return url_builder_candidates(
-        result.candidate_calls, result.builder_uses, limit=limit, offset=offset
-    )
+def _url_builders(inputs: SetupContext, limit: int, offset: int) -> CandidateReport:
+    web = inputs.web
+    return url_builder_candidates(web.candidate_calls, web.builder_uses, limit=limit, offset=offset)
 
 
-_KINDS: Final[dict[str, Callable[[CandidateInputs, int, int], CandidateReport]]] = {
+_KINDS: Final[dict[str, Callable[[SetupContext, int, int], CandidateReport]]] = {
     "di-methods": _di_methods,
     "dispatch-interfaces": _dispatch_interfaces,
     "features": _features,
@@ -1519,7 +1457,7 @@ KINDS: Final[tuple[str, ...]] = tuple(sorted(_KINDS))
 
 
 def candidates(
-    kind: str, inputs: CandidateInputs, *, limit: int = DEFAULT_LIMIT, offset: int = 0
+    kind: str, inputs: SetupContext, *, limit: int = DEFAULT_LIMIT, offset: int = 0
 ) -> CandidateReport:
     """Кандидаты одного вида. Неизвестный вид и отрицательная страница — `InputError`."""
     build = _KINDS.get(kind)

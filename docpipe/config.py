@@ -175,6 +175,10 @@ def _names(items: Sequence[str | NamedDecision]) -> list[str]:
     return [item if isinstance(item, str) else item.name for item in items]
 
 
+def _entries(items: Sequence[str | NamedDecision]) -> list[NamedDecision]:
+    return [NamedDecision(name=item) if isinstance(item, str) else item for item in items]
+
+
 def _cache_path(value: str, field: str) -> str:
     """Каталог кэша: абсолютный путь разрешён, относительный — без `..` и `\\`.
 
@@ -283,6 +287,11 @@ class WebConfig(BaseModel):
     def root_paths(self) -> list[str]:
         """Корни обхода фронта строками, в порядке файла."""
         return [item if isinstance(item, str) else item.path for item in self.roots]
+
+    @property
+    def root_entries(self) -> list[RootEntry]:
+        """Корни обхода фронта записями с причиной; короткая форма — запись без причины."""
+        return [RootEntry(path=item) if isinstance(item, str) else item for item in self.roots]
 
     @field_validator("url_rewrite")
     @classmethod
@@ -571,6 +580,31 @@ class DocpipeConfig(BaseModel):
     def dispatch_interface_names(self) -> list[str]:
         return _names(self.dispatch_interfaces)
 
+    # Те же ключи записями с причиной — для тех, кто показывает решение
+    # человеку (`setup explain`, дальше `setup status`): им нужна причина,
+    # а прочитать её мимо свойства не даёт тест-сторож. Короткая форма — запись
+    # с пустой причиной, порядок — порядок файла.
+
+    @property
+    def enrolled_entries(self) -> list[Enrolled]:
+        return [Enrolled(glob=item) if isinstance(item, str) else item for item in self.enrolled]
+
+    @property
+    def not_enrolled_entries(self) -> list[NotEnrolled]:
+        return list(self.not_enrolled)
+
+    @property
+    def exclude_entries(self) -> list[ExcludeEntry]:
+        return [ExcludeEntry(glob=item) if isinstance(item, str) else item for item in self.exclude]
+
+    @property
+    def di_method_entries(self) -> list[NamedDecision]:
+        return _entries(self.di_methods)
+
+    @property
+    def dispatch_interface_entries(self) -> list[NamedDecision]:
+        return _entries(self.dispatch_interfaces)
+
     @property
     def enrolled_is_explicit(self) -> bool:
         """`enrolled` задан, а не взят по умолчанию `["**"]`.
@@ -665,6 +699,27 @@ def scope_of(project_file: str, settings: DocpipeConfig) -> Scope:
             raise ScopeConflict([ScopeClash(project_file, taken, dropped)])
         return "not_enrolled"
     return "enrolled" if taken else "undecided"
+
+
+def scope_entry(project_file: str, settings: DocpipeConfig) -> Enrolled | NotEnrolled | None:
+    """Запись, решившая область модуля: первая совпавшая в порядке файла.
+
+    `None` — модуль `undecided`, решения нет. Решение выводится из `scope_of`,
+    а не считается заново: ответ «в области ли модуль» и ответ «кто так
+    решил» обязаны совпадать, и противоречие списков даёт здесь тот же
+    `ScopeConflict`. При умолчании `enrolled` запись — `**` без причины;
+    отличить умолчание от решения человека — `enrolled_is_explicit`.
+    """
+    scope = scope_of(project_file, settings)
+    if scope == "not_enrolled":
+        return next(
+            item for item in settings.not_enrolled_entries if matches_glob(project_file, item.glob)
+        )
+    if scope == "enrolled":
+        return next(
+            item for item in settings.enrolled_entries if matches_glob(project_file, item.glob)
+        )
+    return None
 
 
 def candidate_inputs(value: str | Path, config: Path | None) -> list[Path]:

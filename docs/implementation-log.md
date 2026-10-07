@@ -10295,3 +10295,40 @@ Golden и прежние тесты без изменений.
 
 **Проверка:** `grep tools/recon.py docpipe/` пуст; после сведения с S13/S14/S17/S22 —
 ruff и mypy чисты, 2567 passed.
+
+---
+
+## S23 — «что решено об этом коде» (`setup explain`) (08.10.2026)
+
+**Создано:** `docpipe/setup/context.py`, `docpipe/setup/explain.py`, `tests/test_setup_explain.py` (37).
+**Изменено:** `docpipe/cli.py`, `docpipe/config.py` (свойства `*_entries`, `web.root_entries`,
+`scope_entry`), `docpipe/discovery.py` (`file_field`), `docpipe/explain.py` (`path_matches`,
+`is_glob` публичные), `docpipe/setup/candidates.py`, `docpipe/web/overrides.py`
+(`configured_pages`), `docs/setup.md`, `docs/module-review.md`, `docs/configuration.md`.
+
+`docpipe setup explain PATH` — файл, каталог или глоб от `--root`. Ответ: доходит ли обход
+(`excluded_by`, `roots`, `web_roots`); модули и их область с решившей записью; символы
+по состояниям и строки S07; страницы и `pages.yaml`; вызовы фронта и эндпоинты; документы
+по плану шага 2 в памяти; владельцы — и `decisions`: все записи настройки, решившие судьбу
+этого кода, с файлом, причиной, эффектом и охватом. `SetupContext` — единственное место,
+где команды `setup` собирают прогоны (ленивые `scan`, `web`, `plan`/`web_plan`, `ownership`);
+на него переведены все четыре вида `setup candidates`, `link` добавит S21.
+
+**Отклонения и находки.**
+- Причину не прочитать мимо тест-сторожа S22: нормализованные свойства отдают строки —
+  отсюда `*_entries` и `scope_entry` (выводится из `scope_of`, второго подсчёта нет);
+  они же нужны S24 для `without_reason`.
+- `discover` отбрасывает отсечённые файлы — файлы цели считает свой обход на общем
+  `file_field`.
+- С `obj/…/x.g.cs` совпадают два встроенных шаблона — в `decisions` оба, `excluded_by` —
+  накрывший больше.
+- Код .NET не ждёт шаг `web`: отказ `pages.yaml` иначе ронял бы ответ о каталоге .NET;
+  explain зовёт только нужные прогоны (тест по `vars(context)`).
+- `roots`/`web_roots` — списками: цель шире одной записи накрыта несколькими.
+- При сведении с S13/S14 загрузчик `pages.yaml` остался один (`load_page_overrides` поверх
+  `configured_pages`); возвращена ветка `except ValidationError: raise`, потерянная S23 —
+  иначе сбой модели уходил бы кодом 2 как «ошибка конфигурации». Сводка `module-review.md`
+  разошлась ещё после S08 (`explain.py` в «развивается») — поправлена: 81 / 24 / 0 / 1 / 0.
+
+**Проверка:** команда S23 — 37 passed; после сведения — `test_setup_explain` и все
+`test_setup_candidates_*` 130 passed, полная — 2604 passed.

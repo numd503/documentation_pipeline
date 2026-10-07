@@ -39,6 +39,25 @@ _WEB_PROJECT_FILE_NAMES: frozenset[str] = frozenset(
 )
 
 
+# Поля `Discovered`, которые читает шаг `web`; остальные — шаг 1. Нужно тому,
+# кто спрашивает «чей это файл» мимо обхода (`setup explain`): своя копия
+# списка расширений разошлась бы с обходом на первом новом расширении.
+WEB_FIELDS: frozenset[str] = frozenset({"ts_files", "html_files", "web_project_files"})
+
+
+def file_field(filename: str) -> str | None:
+    """Поле `Discovered`, в которое попадает файл с этим именем; `None` — обходу не нужен.
+
+    Одна функция на обход и на тех, кто считает файлы мимо него: ответ
+    «исходник ли это» в инструменте обязан быть один.
+    """
+    suffix = Path(filename).suffix
+    field = next((f for f, exts in _EXTENSIONS.items() if suffix in exts), None)
+    if field is None and filename in _WEB_PROJECT_FILE_NAMES:
+        field = "web_project_files"
+    return field
+
+
 @dataclass(frozen=True)
 class Discovered:
     """Найденные файлы. Пути репо-относительные POSIX, каждый список отсортирован."""
@@ -155,10 +174,7 @@ def discover(
         )
 
         for filename in sorted(filenames):
-            suffix = Path(filename).suffix
-            field = next((f for f, exts in _EXTENSIONS.items() if suffix in exts), None)
-            if field is None and filename in _WEB_PROJECT_FILE_NAMES:
-                field = "web_project_files"
+            field = file_field(filename)
             if field is None:
                 continue
 

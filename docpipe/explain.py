@@ -88,15 +88,27 @@ def _matches_path(symbol: Symbol, path: str) -> bool:
     его свойствами (`*` проходит через `/`): ответ на «попадает ли файл
     под глоб» в инструменте один.
     """
-    if any(char in path for char in _GLOB_CHARS):
-        return any(matches_glob(source.path, path) for source in symbol.sources)
+    return any(path_matches(source.path, path) for source in symbol.sources)
+
+
+def is_glob(value: str) -> bool:
+    """Глоб ли значение `--path`: есть символы `fnmatch`. Иначе — файл или каталог."""
+    return any(char in value for char in _GLOB_CHARS)
+
+
+def path_matches(path: str, target: str) -> bool:
+    """Попадает ли репо-относительный путь под `target` — файл, каталог или глоб.
+
+    Один ответ для `symbols --path` и `setup explain`: агент проверяет
+    каталог одной командой и переносит его в другую, и разные правила
+    совпадения дали бы ему два разных набора файлов.
+    """
+    if is_glob(target):
+        return matches_glob(path, target)
     # Хвостовой `/` — обычная запись каталога. Без нормализации `Services/`
     # молча не совпал бы ни с чем: префикс превратился бы в `Services//`.
-    directory = path.rstrip("/") or path
-    return any(
-        source.path == directory or source.path.startswith(directory + "/")
-        for source in symbol.sources
-    )
+    directory = target.rstrip("/") or target
+    return path == directory or path.startswith(directory + "/")
 
 
 def select(

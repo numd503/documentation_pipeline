@@ -126,13 +126,10 @@ from docpipe.registry.anchors import (
 )
 from docpipe.setup.candidates import DEFAULT_LIMIT as SETUP_LIMIT
 from docpipe.setup.candidates import KINDS as CANDIDATE_KINDS
-from docpipe.setup.candidates import (
-    CandidateInputs,
-    InputError,
-    candidates,
-    candidates_json,
-    format_candidates,
-)
+from docpipe.setup.candidates import candidates, candidates_json, format_candidates
+from docpipe.setup.context import InputError, SetupContext
+from docpipe.setup.explain import explain_json, explain_path
+from docpipe.setup.explain import format_explain as format_path_explain
 from docpipe.stats import (
     STATE_TITLES,
     TOP,
@@ -3507,22 +3504,63 @@ def setup_candidates(
     if not root.is_dir():
         raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
 
+    # Ловится только `InputError`: сбой разбора под вывеской «ошибка
+    # конфигурации» потерял бы трассировку. Код 2 — только для входа.
     try:
-        settings = load_config(config)
-    except (OSError, ValueError) as exc:
-        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
-        raise typer.Exit(code=2) from exc
-    # Прогон — вне `except (OSError, ValueError)`: сбой разбора под вывеской
-    # «ошибка конфигурации» потерял бы трассировку. Код 2 — только для входа.
-    try:
-        report = candidates(
-            kind, CandidateInputs(root, settings, config), limit=limit, offset=offset
-        )
+        report = candidates(kind, SetupContext.build(root, config), limit=limit, offset=offset)
     except InputError as exc:
         typer.echo(f"Ошибка конфигурации: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
     text = candidates_json(report) if output_format == "json" else format_candidates(report)
+    typer.echo(text.rstrip("\n"))
+
+
+@setup_app.command("explain")
+def setup_explain(
+    path: Annotated[
+        str,
+        typer.Argument(help="Файл, каталог или глоб от --root; `.` — весь репозиторий."),
+    ],
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория с исходниками.")] = Path(
+        "."
+    ),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
+    limit: Annotated[
+        int, typer.Option("--limit", help="Сколько строк символов и документов; 0 — все.")
+    ] = SETUP_LIMIT,
+    no_cache: Annotated[
+        bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
+    ] = False,
+) -> None:
+    """Что решено об этом коде: входит ли он в область и какие решения о нём приняты.
+
+    Отвечает, доходит ли до кода обход (`exclude`, `roots`, `web.roots`),
+    в каких он модулях и как решена их область (`enrolled`/`not_enrolled`),
+    что решено о символах, страницах, вызовах и документах — и главное,
+    списком `decisions`: какие записи настройки, с какими причинами
+    и в каком файле решили судьбу этого кода. По нему видно, что править.
+
+    Прогоны — в памяти, по текущей настройке; манифест с диска не читается.
+    Файлов не пишет, кроме кэша разбора, как `scan`.
+    """
+    output_format = _format(output_format, ("text", "json"))
+    if limit < 0:
+        raise typer.BadParameter("не бывает отрицательным", param_hint="--limit")
+    if not root.is_dir():
+        raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
+
+    try:
+        context = SetupContext.build(root, config, use_cache=not no_cache)
+        report = explain_path(context, path, limit=limit)
+    except InputError as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    text = explain_json(report) if output_format == "json" else format_path_explain(report)
     typer.echo(text.rstrip("\n"))
 
 

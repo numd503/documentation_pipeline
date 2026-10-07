@@ -229,28 +229,23 @@ def load_overrides(path: Path) -> Overrides:
     )
 
 
-def load_page_overrides(
-    pages: Path | None, settings: DocpipeConfig, config: Path | None
-) -> Overrides:
-    """Ручной состав страниц прогона: флаг `--pages` или ключ `web.pages`.
+def configured_pages(settings: DocpipeConfig, config: Path | None) -> Path | None:
+    """Файл `web.pages`, разрешённый как вход. Ключ пуст — `None`, и это не отказ.
 
-    Ключ пуст — пустые правила, а не отказ. Репозиторий, где обход находит
-    страницы сам, ничего не дописывает руками, и требовать от него файл
-    значило бы делать настройку обязательной там, где она не нужна. Но
-    **названный** файл обязан существовать — и флагом, и ключом: молча
-    проигнорировать его значит потерять решения человека. Ключ раньше так
-    и игнорировался — файла по разрешённому пути нет, и прогон шёл
-    с пустыми правилами.
+    Репозиторий, где обход находит страницы сам, ничего не дописывает руками,
+    и требовать от него файл значило бы делать настройку обязательной там,
+    где она не нужна. Но **названный** файл обязан существовать: молча
+    проигнорировать его значит потерять решения человека — ключ раньше так
+    и игнорировался, файла по разрешённому пути нет, и прогон шёл с пустыми
+    правилами.
 
-    Зовут её все прогоны фронта (`web scan`, `symbols --lang ts`,
-    `setup candidates features`), поэтому она здесь, а не в CLI: два
-    прогона, читающие состав страниц по-разному, считали бы страницы
-    по-разному, а кандидат в раздел не узнал бы об объявленном.
+    Одна функция на все прогоны фронта (`web scan`, `symbols --lang ts`,
+    команды `setup`): два прогона, читающие состав страниц по-разному,
+    считали бы страницы по-разному, а кандидат в раздел не узнал бы
+    об объявленном.
     """
-    if pages is not None:
-        return load_overrides(pages)
     if not settings.web.pages:
-        return Overrides()
+        return None
     candidates = candidate_inputs(settings.web.pages, config)
     found = next((path for path in candidates if path.is_file()), None)
     if found is None:
@@ -258,4 +253,24 @@ def load_page_overrides(
         raise FileNotFoundError(
             f"`web.pages`: файл {settings.web.pages!r} не найден; искали: {tried}"
         )
-    return load_overrides(found)
+    return found
+
+
+def load_page_overrides(
+    pages: Path | None, settings: DocpipeConfig, config: Path | None
+) -> Overrides:
+    """Ручной состав страниц прогона: флаг `--pages` важнее ключа `web.pages`.
+
+    Ключ пуст — пустые правила, а не отказ; названный и не найденный файл —
+    отказ (`configured_pages`). Названный флагом файл обязан существовать
+    так же: молча проигнорировать его значит потерять решения человека.
+
+    Путь ключа разрешает только `configured_pages`, а читает файл только
+    `load_overrides`: загрузчик `pages.yaml` один у `web scan`,
+    `symbols --lang ts` и у `SetupContext`, через который его получают
+    команды `setup`.
+    """
+    if pages is not None:
+        return load_overrides(pages)
+    found = configured_pages(settings, config)
+    return load_overrides(found) if found is not None else Overrides()

@@ -1,6 +1,6 @@
 # Настройка с ассистентом: план (S01–S32)
 
-> **Статус: в работе** (план от 07.10.2026): ✅ S01, S02, S03, S04, S05, S06, S07, S08, S10, S11, S12, S13, S14, S15, S16, S17, S18, S22, S26.
+> **Статус: в работе** (план от 07.10.2026): ✅ S01, S02, S03, S04, S05, S06, S07, S08, S10, S11, S12, S13, S14, S15, S16, S17, S18, S22, S23, S26.
 > [`setup-assistant-analysis.md`](setup-assistant-analysis.md); цель —
 > [`purpose.md`](../purpose.md), раздел «Настройка с ассистентом». При споре
 > плана с `purpose.md` прав `purpose.md`; при расхождении плана с кодом
@@ -217,7 +217,7 @@ T04–T20). Тест фикстуры проверяет наличие **кон
 | S21 | Сводка шва кластерами (`setup link`) | S18, S20 | M |
 | **D** | **Решения и состояние** | | |
 | S22 | ✅ Вторая форма с причиной; `not_enrolled` | S02 | L |
-| S23 | «Что решено об этом коде» (`setup explain`) | S07, S22 | M |
+| S23 | ✅ «Что решено об этом коде» (`setup explain`) | S07, S22 | M |
 | S24 | Необъяснённое в области (`setup status`) | S04–S06, S21, S22 | L |
 | S25 | Ревью: новое и прежние решения (`setup review`) | S24 | M |
 | **E** | **Сервер** | | |
@@ -1440,7 +1440,9 @@ http_method, where, name)`; `values` — до десяти по имени. Ру
 не читал; при сведении с S14 вспомогательный прогон фронта `_web_scan`
 стал один на `features` и `registry-calls` и читает `pages.yaml` тем же
 `load_page_overrides`, — названный и ненайденный файл роняет теперь и этот
-вид, как `web scan`. `_registry_calls` в `web/tree.py` стал публичным
+вид, как `web scan`. S23 заменила `_web_scan` прогоном контекста
+(`SetupContext.web` и `SetupContext.overrides`), поведение вида то же.
+`_registry_calls` в `web/tree.py` стал публичным
 `registry_calls`, разбор query — `calls.query_parameters` (через неё же
 `_query_value`).
 
@@ -2168,8 +2170,9 @@ uv run pytest tests/test_link_decisions.py tests/test_web_link.py -q
 **Цель:** агент получает несвязанное кластерами с подсказкой правила,
 которое их свяжет, — и проверяет правило прогоном, а не перебором.
 
-**Изменить:** `docpipe/web/link.py`, `docpipe/cli.py`
-**Создать:** `docpipe/setup/context.py`, `docpipe/setup/link.py`, `tests/test_setup_link.py`
+**Изменить:** `docpipe/web/link.py`, `docpipe/cli.py`, `docpipe/setup/context.py`
+(заведён S23 без `link` — место отмечено комментарием)
+**Создать:** `docpipe/setup/link.py`, `tests/test_setup_link.py`
 
 **Спецификация**
 
@@ -2347,7 +2350,7 @@ uv run pytest tests/test_config_reasons.py tests/test_tree.py tests/test_scoped.
 
 ---
 
-## S23 — «что решено об этом коде» (`setup explain`)
+## S23 — «что решено об этом коде» (`setup explain`) ✅
 
 **Цель:** вход «расширение области» (Р-6, п. 5): человек называет код,
 агент показывает, входит ли он в область и **какие правила и с какими
@@ -2396,6 +2399,68 @@ class PathExplain:
 > **Ловушка. Встроенный отсев** (`DEFAULT_EXCLUDE`, `emit.py:59-71`) причины
 > не имеет — `DecisionRef` с `file: "встроенный отсев"`. Иначе `obj/` выглядит
 > решением, которого человек не принимал.
+
+> **Ловушка. Причину решения мимо свойства не прочитать.** Тест-сторож S22
+> запрещает `settings.exclude`, `settings.enrolled` и соседей вне `config.py`,
+> а нормализованные свойства отдают одни строки. Причины читаются новыми
+> свойствами `*_entries` (`enrolled_entries`, `not_enrolled_entries`,
+> `exclude_entries`, `di_method_entries`, `dispatch_interface_entries`,
+> `web.root_entries`): короткая форма — запись с пустой причиной. Решившая
+> область запись — `config.scope_entry`, производная от `scope_of`, а не
+> второй подсчёт. Эти же свойства нужны S24 (`without_reason`).
+
+> **Ловушка. `discover` отбрасывает отсечённое**, поэтому файлы цели считает
+> свой обход — без отсева и без отсечения каталогов; «исходник ли это»
+> отвечает общий `discovery.file_field`, а не копия списка расширений.
+> С одним файлом совпадают и два встроенных шаблона (`obj/…/x.g.cs` —
+> `**/obj/**` и `**/*.g.cs`): в `decisions` оба, у каждого свой счёт,
+> а `excluded_by` — накрывший больше файлов, при равенстве — встроенный
+> раньше настройки, в порядке записи. Повтор шаблона в одном файле — одна
+> запись, иначе файл посчитался бы дважды.
+
+> **Ловушка. Шаг `web` не нужен коду .NET.** Прогоны контекста ленивые,
+> и `explain_path` зовёт только нужные: нет исходников .NET под целью —
+> шаг 1 не идёт, нет исходников фронта — не идёт шаг `web`, цель отсечена
+> или вне корней — ни одного. Иначе отказ шага `web` (неоднозначное снятие
+> в `pages.yaml`) ронял бы ответ о каталоге .NET. Шаг 2 — по плану на
+> каждый манифест (`ctx.plan`, `ctx.web_plan`), документы отбираются
+> по `node_id`, поэтому «сироты» чужого манифеста в ответ не попадают.
+
+**Отклонения реализации (S23, 08.10).** `setup/context.py` заведён здесь,
+а не в S21 (S21 ещё не сделана): `scan`, `web`, `plan`, `web_plan`,
+`ownership`; `link` добавит S21. Туда же переехал `InputError`,
+а `setup candidates` перешёл на контекст без смены поведения
+(`CandidateInputs` — имя `SetupContext`). Разрешение `web.pages` вынесено
+в `web.overrides.configured_pages`: ответ «какой `pages.yaml`» обязан быть
+один у `web scan` и у контекста. При сведении с S13–S14 (там загрузчик
+уже переехал из CLI в `web.overrides.load_page_overrides`, а оба вида
+фронта ходили через свой `_web_scan` в `candidates.py`) загрузчик остался
+один: `load_page_overrides` разрешает ключ через `configured_pages`,
+контекст берёт путь у `configured_pages` (`pages_file` — его называет
+`explain` в решениях) и правила у `load_page_overrides`, а виды
+`features` и `registry-calls` перешли на `ctx.web` и `ctx.overrides`.
+При сведении с S18 (виды `http-wrappers` и `url-builders` звали тот же
+`_web_scan`) `_web_scan` не возвращён: оба вида берут `ctx.web`
+(`candidate_calls`, `builder_uses`, `calls`), поведение то же.
+
+> **Ловушка. `ValidationError` pydantic — подкласс `ValueError`.** Прогон
+> шага `web` переводит `ValueError` в `InputError` (неоднозначное снятие
+> в `pages.yaml` — ошибка настройки), и без отдельной ветки
+> `except ValidationError: raise` перед ней модель, не собравшаяся внутри
+> прогона, ушла бы кодом 2 под «ошибкой конфигурации» без трассировки.
+> Ветка была в `_web_scan` кандидатов (S13–S14) и при переезде
+> в `SetupContext.web` сохранена.
+
+Модель против спецификации: `root`/`web_root` → `roots`/`web_roots`
+(списки: цель шире одной записи — `.` при `roots: [backend]` — накрыта несколькими,
+и `None` читался бы как «не накрыта»); у `DecisionRef` добавлены `effect`
+(что запись сделала: «вид service», «команда core» — по `id` правила
+не видно) и `count` (охват записи в цели); `pages` — `{id, title}`
+(`explain.PageRef`); `documents` — записи `{doc_path, status, file_action,
+node}` вместо кортежей; добавлены `documents_total`, `unresolved_reasons`
+и `notes` (`code`, `message`). `calls` — без категорий связи (`linked`,
+`almost`, «без эндпоинта»): их источник — `ctx.link` (S21). У команды
+есть `--no-cache`, как у `symbols`.
 
 **Критерии приёмки** (`SampleSolution`, `SeamWorkspace`)
 - `src/Sample.Pricing.Api/obj` — `excluded_by` встроенным отсевом, остальное пусто;
