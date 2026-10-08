@@ -1,7 +1,7 @@
 # Команды `docpipe setup`: справочник
 
 Команды для настройки `docpipe` на репозиторий с ассистентом. Обоснования —
-в [`setup-implementation-plan.md`](setup-implementation-plan.md) (S01–S32),
+в [`setup-implementation-plan.md`](setup-implementation-plan.md) (S01–S36),
 ключи конфигурации — в [`configuration.md`](configuration.md). Здесь — что
 команды делают, что печатают и как читать ответ. Справочник дополняет каждая
 задача плана, которая добавляет команду или вид кандидатов.
