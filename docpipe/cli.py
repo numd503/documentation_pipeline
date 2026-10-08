@@ -130,6 +130,14 @@ from docpipe.setup.candidates import candidates, candidates_json, format_candida
 from docpipe.setup.context import InputError, SetupContext
 from docpipe.setup.explain import explain_json, explain_path
 from docpipe.setup.explain import format_explain as format_path_explain
+from docpipe.setup.link import BY_KEYS as LINK_BY_KEYS
+from docpipe.setup.link import CATEGORIES as LINK_CLUSTER_CATEGORIES
+from docpipe.setup.link import (
+    DEFAULT_CATEGORY,
+    format_link_clusters,
+    link_clusters,
+    link_clusters_json,
+)
 from docpipe.stats import (
     STATE_TITLES,
     TOP,
@@ -3578,6 +3586,78 @@ def setup_explain(
         raise typer.Exit(code=2) from exc
 
     text = explain_json(report) if output_format == "json" else format_path_explain(report)
+    typer.echo(text.rstrip("\n"))
+
+
+@setup_app.command("link")
+def setup_link(
+    category: Annotated[
+        str,
+        typer.Option("--category", help=f"Категория шва: {', '.join(LINK_CLUSTER_CATEGORIES)}."),
+    ] = DEFAULT_CATEGORY,
+    by: Annotated[
+        str | None,
+        typer.Option(
+            "--by",
+            help="Ключ кластера: module, prefix, file, controller, reason, host, decision "
+            "(у категории — свои; по умолчанию первый из них).",
+        ),
+    ] = None,
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория с исходниками.")] = Path(
+        "."
+    ),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
+    limit: Annotated[
+        int, typer.Option("--limit", help="Сколько кластеров показать; 0 — все.")
+    ] = SETUP_LIMIT,
+    offset: Annotated[int, typer.Option("--offset", help="Сколько пропустить с начала.")] = 0,
+    no_cache: Annotated[
+        bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
+    ] = False,
+) -> None:
+    """Сводка шва фронт↔.NET кластерами: что не связалось, где и чем это связать.
+
+    Категория отчёта связи (`web link`) — группами по ключу: сколько мест,
+    до трёх примеров `файл:строка` с маршрутом или выражением. Место —
+    `(файл, строка)`: вызов, приписанный двум узлам файла, считается раз.
+
+    У вызовов без эндпоинта по модулю (`--by module`, умолчание) — подсказка
+    записи `web.url_rewrite`: пара `strip_prefix`/`add_prefix`, при которой
+    точно связывается больше вызовов кластера, чем развязывается связанных,
+    и оба числа. Проверка — тот же прогон: записать правило и позвать снова.
+
+    Прогоны — в памяти, по текущей настройке, как у `setup explain`;
+    манифесты с диска не читаются. Файлов не пишет, кроме кэша разбора.
+    """
+    if category not in LINK_BY_KEYS:
+        raise typer.BadParameter(
+            f"{category!r}; известны: {', '.join(LINK_CLUSTER_CATEGORIES)}",
+            param_hint="--category",
+        )
+    if by is not None and by not in LINK_BY_KEYS[category]:
+        raise typer.BadParameter(
+            f"{by!r}; у {category} допустимы: {', '.join(LINK_BY_KEYS[category])}",
+            param_hint="--by",
+        )
+    output_format = _format(output_format, ("text", "json"))
+    if limit < 0:
+        raise typer.BadParameter("не бывает отрицательным", param_hint="--limit")
+    if offset < 0:
+        raise typer.BadParameter("не бывает отрицательным", param_hint="--offset")
+    if not root.is_dir():
+        raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
+
+    try:
+        context = SetupContext.build(root, config, use_cache=not no_cache)
+        report = link_clusters(context, category=category, by=by, limit=limit, offset=offset)
+    except InputError as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    text = link_clusters_json(report) if output_format == "json" else format_link_clusters(report)
     typer.echo(text.rstrip("\n"))
 
 

@@ -10481,3 +10481,44 @@ squidex без эндпоинта: **опечатка в самом squidex** (�
   с эндпоинтом из одних параметров, остаётся ложной связью.
 
 **Проверка:** команда S20 — 65 passed.
+
+---
+
+## S21 — сводка шва кластерами (`setup link`) (08.10.2026)
+
+**Создано:** `docpipe/setup/link.py` (`link_clusters`, `clusters_of`, `suggest_rewrite`),
+`tests/test_setup_link.py` (31). **Изменено:** `docpipe/web/link.py` (`LinkReport` 1.4;
+`backend_keys`, `exact_keys` публичные), `docpipe/cli.py` (`setup link`), тесты версий,
+`docs/setup.md`, `docs/web.md`, `docs/module-review.md`, `docs/setup-map.md`,
+`docs/findings-seam.md`.
+
+`docpipe setup link --category --by --limit --offset --format`: несвязанное и решённое
+кластерами — по модулю, префиксу, файлу, контроллеру, причине, хосту, решению; повторы —
+по `(file, line)`. Для `calls_without_endpoint` по модулю — подсказка `url_rewrite`
+(`suggested_rewrite` с `would_link` и `would_unlink`). Источник — `SetupContext.link` (S20);
+«свяжется ли» проверяется публичными `backend_keys`/`exact_keys` сведения — копии
+сопоставления нет. `LinkReport` 1.4: у `CallRef` — `module`, `confidence`, `member`, `via`;
+у `EndpointRef` — `module`, `file`, `line`; список `calls_unresolved`.
+
+**Числа.** Копия squidex с `PrefixApi = ""` (бэк за прокси, срезающим `/api`): 104 вызова без
+эндпоинта, подсказка `{module: squidex, strip_prefix: api}` — свяжет 99, развяжет 0; прогон
+с записанным правилом — ровно 99. На настоящих squidex и abp подсказки нет: остаток
+не префиксный (опечатка бэка, `{}{}`, `GET ''`, внешний хост; у abp бэк `cms-kit` вне `roots`).
+Кластеры: squidex — гипермедиа одной группой из 70, эндпоинты без вызывающего — 20 групп
+(`api/apps` 79, `identity-server/account` 25); abp — `integration-api/*` отдельным кластером
+(ровно запись для `link.external_callers`). Ответ по контроллерам squidex, страница 20 — 16 КБ.
+
+**Отклонения и находки.**
+- Пара выбирается по чистому выигрышу `would_link − would_unlink`, а не «больше всего
+  в кластере»: по букве выиграла бы пара, которая связывает 5 и ломает уже связанный.
+- **Пустой маршрут выбирал подсказку:** на squidex без правил единственной подсказкой было
+  `add_prefix: api` ради `GET ''` (поле `@Input()`) → ложная связь с корнем API
+  `UsersController.GetUserResources`. Маршруты без литерального сегмента в выбор пары
+  не входят (а `would_link` их считает — совпадает с прогоном).
+- Модулю с непустым `url_rewrite` подсказки нет: ключи уже переписаны, сырой адрес
+  не хранится, и пара поверх стала бы композицией двух правил.
+- `url_rewrite` переписывает и абсолютные адреса: маска `external_targets` по маршруту,
+  записанная до правила, молча перестаёт совпадать; маска по хосту — нет.
+- Эндпоинт — запись, а не строка: `AcceptVerbs("GET","POST")` — два эндпоинта.
+
+**Проверка:** команда S21 — проходит; два прогона — байт в байт.

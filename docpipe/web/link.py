@@ -27,13 +27,14 @@
 любой метод, и сопоставляется с вызовом любого метода: и точно, и «почти».
 """
 
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from docpipe.config import DocpipeConfig, LinkConfig
-from docpipe.model import DocNode, Manifest, UnresolvedCall
+from docpipe.model import Confidence, DocNode, Endpoint, Manifest, UnresolvedCall
 from docpipe.route import RouteKey, almost_equal, route_key
 
 MatchKind = Literal["exact", "almost"]
@@ -73,12 +74,18 @@ class _Base(BaseModel):
 
 
 class Link(_Base):
-    """Вызов фронта и эндпоинты бэкенда, в которые он попадает."""
+    """Вызов фронта и эндпоинты бэкенда, в которые он попадает.
+
+    `module` — модуль фронта вызывающего (`DocNode.module`): по нему сводка
+    шва (`setup link`) группирует «почти» совпавшие, а подсказка правила
+    префикса считает, какие связи модуля правило развязало бы.
+    """
 
     http_method: str
     route: str
     discriminator: str = ""
     caller: str  # id узла фронта
+    module: str
     file: str
     line: int
     endpoints: list[str] = Field(default_factory=list)  # id узлов бэкенда
@@ -93,24 +100,43 @@ class CallRef(_Base):
     неотличим от вызова своего бэка с тем же путём: на squidex
     `raw.githubusercontent.com` числился «без эндпоинта» внутри своего бэка,
     и правило `link.external_targets` по нему не написать, не открыв код.
+
+    `module`, `confidence`, `member` и `via` — те же поля вызова (`WebCall`
+    и модуль его узла), по которым сводка шва (S21) группирует несвязанное
+    и пишет правило: модуль — ключ `web.url_rewrite`, `via` — через какую
+    обёртку или построитель адрес восстановлен. Без них правило префикса
+    не написать, не открыв манифест фронта.
     """
 
     http_method: str
     route: str
     discriminator: str = ""
     caller: str
+    module: str
     file: str
     line: int
     host: str = ""
+    confidence: Confidence
+    member: str = ""
+    via: str = ""
 
 
 class EndpointRef(_Base):
-    """Эндпоинт, которого никто не зовёт из этого фронта."""
+    """Эндпоинт, которого никто не зовёт из этого фронта.
+
+    `module` — модуль .NET узла, `file` и `line` — где объявлено действие:
+    файл — тот `SourceSpan` узла, в диапазон которого попала строка
+    `Endpoint.line` (у `partial`-контроллера файлов несколько), иначе первый.
+    Без места «эндпоинт без вызывающего» не открыть, не зная FQN.
+    """
 
     http_method: str
     route: str
     node: str
     member: str
+    module: str
+    file: str
+    line: int
 
 
 class LinkDecision(_Base):
@@ -186,11 +212,21 @@ class LinkReport(_Base):
     # 1.3 — решения секции `link`: `external_targets`, `external_callers`,
     # `declared_unresolvable` и их счётчики; `counts.calls_unresolved` —
     # только невосстановленные без решения; `host` у `CallRef` (S20).
-    schema_version: Literal["1.3"] = "1.3"
+    # 1.4 — поля для сводки шва (S21): `module`, `confidence`, `member`, `via`
+    # у `CallRef`; `module`, `file`, `line` у `EndpointRef`; `module` у `Link`;
+    # список `calls_unresolved` — те невосстановленные, которые считает
+    # `counts.calls_unresolved`.
+    schema_version: Literal["1.4"] = "1.4"
     links: list[Link] = Field(default_factory=list)
     calls_without_endpoint: list[CallRef] = Field(default_factory=list)
     endpoints_without_caller: list[EndpointRef] = Field(default_factory=list)
     duplicate_endpoints: list[DuplicateEndpoint] = Field(default_factory=list)
+
+    # Невосстановленные вызовы манифеста фронта без решения `link.unresolvable`:
+    # записи `Manifest.unresolved_calls` как есть. Список, а не только число:
+    # сводка шва группирует их по причине, и вторая копия разбиения «решено /
+    # не решено» в ней разошлась бы с этой на первой же правке `_declared`.
+    calls_unresolved: list[UnresolvedCall] = Field(default_factory=list)
 
     # Решения человека о концах без пары (секция `link`).
     external_targets: list[ExternalCall] = Field(default_factory=list)
@@ -205,8 +241,22 @@ class LinkReport(_Base):
     counts: dict[str, int] = Field(default_factory=dict)
 
 
-def _backend_keys(manifest: Manifest) -> dict[RouteKey, list[EndpointRef]]:
-    """Ключ -> эндпоинты бэкенда, его объявляющие."""
+def _endpoint_file(node: DocNode, endpoint: Endpoint) -> str:
+    """Файл действия: span узла, в диапазон которого попала строка, иначе первый."""
+    sources = node.symbol.sources if node.symbol is not None else []
+    for span in sources:
+        if span.start <= endpoint.line <= span.end:
+            return span.path
+    return sources[0].path if sources else ""
+
+
+def backend_keys(manifest: Manifest) -> dict[RouteKey, list[EndpointRef]]:
+    """Ключ -> эндпоинты бэкенда, его объявляющие.
+
+    Публичная, потому что по тем же ключам подсказка правила префикса
+    (`setup/link.py`) проверяет, свяжется ли вызов: свой индекс там
+    разошёлся бы с этим на первом же эндпоинте `*`.
+    """
     found: dict[RouteKey, list[EndpointRef]] = {}
     for node in manifest.nodes:
         for endpoint in node.endpoints:
@@ -222,6 +272,9 @@ def _backend_keys(manifest: Manifest) -> dict[RouteKey, list[EndpointRef]]:
                     route=key.route,
                     node=node.id,
                     member=endpoint.member,
+                    module=node.module,
+                    file=_endpoint_file(node, endpoint),
+                    line=endpoint.line,
                 )
             )
     return found
@@ -288,8 +341,12 @@ def _conventional(manifest: Manifest) -> list[str]:
     )
 
 
-def _exact(keys: dict[RouteKey, list[EndpointRef]], lookup: RouteKey) -> list[RouteKey]:
-    """Ключи бэкенда, совпавшие с вызовом точно: свой метод и `*`."""
+def exact_keys(keys: Mapping[RouteKey, object], lookup: RouteKey) -> list[RouteKey]:
+    """Ключи бэкенда, совпавшие с вызовом точно: свой метод и `*`.
+
+    Публичная по той же причине, что `backend_keys`: «свяжется ли точно»
+    у подсказки правила префикса — это ровно эта проверка, а не её копия.
+    """
     candidates = [lookup, replace(lookup, http_method=ANY_METHOD)]
     return [key for key in candidates if key in keys]
 
@@ -322,20 +379,26 @@ def _decision(index: int, rule: str, reason: str) -> LinkDecision:
     return LinkDecision(index=index, rule=rule, reason=reason)
 
 
-def _declared(web: Manifest, link: LinkConfig) -> tuple[list[DeclaredUnresolvable], int]:
-    """Невосстановленные вызовы с решением `link.unresolvable` и число оставшихся без него."""
+def _declared(
+    web: Manifest, link: LinkConfig
+) -> tuple[list[DeclaredUnresolvable], list[UnresolvedCall]]:
+    """Невосстановленные вызовы с решением `link.unresolvable` и оставшиеся без него."""
     declared: list[DeclaredUnresolvable] = []
+    undecided: list[UnresolvedCall] = []
     for item in web.unresolved_calls:
         found = link.unresolvable_for(item.file)
-        if found is not None:
-            index, rule = found
-            declared.append(
-                DeclaredUnresolvable(
-                    **item.model_dump(), decision=_decision(index, rule.label, rule.reason)
-                )
+        if found is None:
+            undecided.append(item)
+            continue
+        index, rule = found
+        declared.append(
+            DeclaredUnresolvable(
+                **item.model_dump(), decision=_decision(index, rule.label, rule.reason)
             )
+        )
     declared.sort(key=lambda item: (item.file, item.line, item.http_method, item.expression))
-    return declared, len(web.unresolved_calls) - len(declared)
+    undecided.sort(key=lambda item: (item.file, item.line, item.http_method, item.expression))
+    return declared, undecided
 
 
 def build_report(
@@ -352,7 +415,7 @@ def build_report(
     зовут её, чтобы ключ, учтённый в одном месте, не забыли в другом.
     """
     link = link if link is not None else LinkConfig()
-    keys = _backend_keys(backend)
+    keys = backend_keys(backend)
 
     links: list[Link] = []
     orphans: list[CallRef] = []
@@ -362,7 +425,7 @@ def build_report(
     for node in web.nodes:
         for call in node.web_calls:
             lookup = RouteKey(http_method=call.key.http_method, route=call.key.route)
-            exact = _exact(keys, lookup)
+            exact = exact_keys(keys, lookup)
             if exact:
                 used.update(exact)
                 links.append(
@@ -371,6 +434,7 @@ def build_report(
                         route=lookup.route,
                         discriminator=call.key.discriminator,
                         caller=node.id,
+                        module=node.module,
                         file=call.file,
                         line=call.line,
                         endpoints=sorted({item.node for key in exact for item in keys[key]}),
@@ -391,6 +455,7 @@ def build_report(
                         route=lookup.route,
                         discriminator=call.key.discriminator,
                         caller=node.id,
+                        module=node.module,
                         file=call.file,
                         line=call.line,
                         endpoints=sorted({item.node for key in near for item in keys[key]}),
@@ -404,9 +469,13 @@ def build_report(
                 route=lookup.route,
                 discriminator=call.key.discriminator,
                 caller=node.id,
+                module=node.module,
                 file=call.file,
                 line=call.line,
                 host=call.host,
+                confidence=call.confidence,
+                member=call.member,
+                via=call.via,
             )
             target = link.target_for(call.host, lookup.route)
             if target is None:
@@ -441,7 +510,7 @@ def build_report(
         )
     uncalled.sort(key=lambda item: (item.route, item.http_method, item.node))
     callers.sort(key=lambda item: (item.route, item.http_method, item.node))
-    declared, unresolved_left = _declared(web, link)
+    declared, undecided = _declared(web, link)
     duplicates = sorted(
         (
             DuplicateEndpoint(
@@ -470,6 +539,7 @@ def build_report(
         external_targets=external,
         external_callers=callers,
         declared_unresolvable=declared,
+        calls_unresolved=undecided,
         unconfigured_modules=_unconfigured(web, configured_modules or set()),
         conventional_controllers=_conventional(backend),
         unresolved_endpoints=unresolved,
@@ -484,7 +554,7 @@ def build_report(
             # Без числа рядом «вызовов фронта 4» читалось бы как «всего четыре».
             # Только те, о которых решения нет: объявленные невосстановимыми
             # считает `declared_unresolvable`, и вместе их — `unresolved_calls`.
-            "calls_unresolved": unresolved_left,
+            "calls_unresolved": len(undecided),
             "endpoints_total": sum(len(items) for items in keys.values()),
             "endpoints_unresolved": len(unresolved),
             "external_targets": len(external),

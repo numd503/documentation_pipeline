@@ -289,6 +289,33 @@ abp: два невосстановленных — `DynamicFormService.getOption
 
 ---
 
+## Сводка кластерами и подсказка префикса (S21)
+
+Прогон 08.10.2026 `docpipe setup link` (`--no-cache`, клоны не тронуты), настройки
+раздела «после S19». Подсказка записи `web.url_rewrite` — у вызовов без эндпоинта
+по модулю ([`setup.md`](setup.md#setup-link)).
+
+| Прогон | вызовов без эндпоинта | подсказка |
+|---|---|---|
+| squidex с записями S19 | 4 (один модуль) | нет: четыре вызова выше — каждый своего рода, префикс ни при чём |
+| squidex без записей | 2 | нет; без отсева маршрутов без литерала была бы `add_prefix: api` ради `GET ''` → корень API `GET api` (`UsersController.GetUserResources`, `[Route("")]`) |
+| копия squidex, `Constants.PrefixApi = ""` | 104 | `strip_prefix: api` — свяжет 99, развяжет 0; прогон с записью — 99, остаток 5 |
+| abp с `restService.request` | 58 (`cms-kit` 56, `core` 2) | нет: бэк вне `roots` |
+
+Кластеры, которые раньше приходилось собирать руками: на squidex `calls_unresolved`
+по причине — одна группа из 70 (гипермедиа `link.href`, причина «значение переменной
+не восстановлено»), по файлу — 19, первым `schemas.service.ts` (19); эндпоинты без
+вызывающего по префиксу — 20 групп: `api/apps` 79, `identity-server/account` 25,
+`api/content` 24. На abp `integration-api/*` — 10 эндпоинтов в двух группах
+(`integration-api/identity` 9): ровно запись `link.external_callers`. Ответ squidex
+по эндпоинтам с `--by controller` и страницей 20 — 16 КБ JSON.
+
+Копия squidex без префикса связала 100 вызовов, а не 101, как с префиксом: корень
+API (`buildUrl('api')`) после `strip_prefix: api` — `GET ''`, а эндпоинт с пустым
+маршрутом в ключи связи не входит (пустой ключ склеил бы все неразрешённые).
+
+---
+
 ## Что известно об АС CF
 
 Подробно — в [`findings-cashflow-frontend.md`](findings-cashflow-frontend.md).

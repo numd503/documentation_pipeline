@@ -434,7 +434,7 @@ def test_web_link_reads_the_section_from_the_config(
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "1.3"
+    assert payload["schema_version"] == "1.4"
     assert payload["counts"] == decided.counts
     assert [item["decision"]["rule"] for item in payload["declared_unresolvable"]] == [
         "**/links.service.ts"

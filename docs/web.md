@@ -389,13 +389,25 @@ docpipe web pages artifacts/doc-tree.web.json [--depth 3] [--not-pages]
 и с `GET api/x`, и с `* api/x`, связывается с обоими; дублем такая пара
 не считается — ASP.NET выберет действие с методом.
 
-Формат `web-link.json` — `schema_version: "1.3"`: в 1.1 добавлены
+Формат `web-link.json` — `schema_version: "1.4"`: в 1.1 добавлены
 `unresolved_endpoints` и `counts.endpoints_unresolved` (S17), в 1.2 —
 `counts.calls_unresolved`, и `unconfigured_modules` видит модули только
 с невосстановленными вызовами (S18), в 1.3 — решения секции `link`
 (`external_targets`, `external_callers`, `declared_unresolvable` и их счётчики),
 `host` у вызова без эндпоинта, а `counts.calls_unresolved` — только
-невосстановленные без решения (S20).
+невосстановленные без решения (S20), в 1.4 — поля для сводки шва (S21):
+
+| Запись | Новые поля |
+|---|---|
+| вызов без эндпоинта (`calls_without_endpoint[]`, `external_targets[]`) | `module` — модуль фронта узла-вызывающего (ключ `web.url_rewrite`), `confidence`, `member`, `via` — как у `WebCall` |
+| эндпоинт (`endpoints_without_caller[]`, `external_callers[]`) | `module` — модуль .NET, `file` и `line` — где объявлено действие (файл — span узла, в диапазон которого попала строка; у `partial`-контроллера их несколько) |
+| связь (`links[]`) | `module` — модуль фронта вызывающего |
+| `calls_unresolved[]` | новый список: записи `Manifest.unresolved_calls` без решения `link.unresolvable` — те, что считает `counts.calls_unresolved` |
+
+Поштучный отчёт для настройки неудобен — на squidex до настройки это
+262 эндпоинта без вызывающего. Та же категория кластерами (по модулю,
+префиксу, файлу, узлу, причине, хосту, решению) и с подсказкой записи
+`web.url_rewrite` — `docpipe setup link` ([`setup.md`](setup.md#setup-link)).
 
 ```bash
 uv run docpipe web link A.json B.json --fail-on duplicate_endpoints
