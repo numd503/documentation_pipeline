@@ -752,8 +752,9 @@ uv run docpipe setup status --root . --config docpipe.yaml --fail-on-unexplained
 ### Коды находок
 
 `FINDING_CODES` в `docpipe/setup/status.py`; их читают каталог вопросов
-интервью (S28) и колонка «Находка» карты [`setup-map.md`](setup-map.md)
-(тест не пускает туда код вне таблицы).
+интервью [`setup-interview.md`](setup-interview.md) (S28: раздел на каждый
+код — что спросить и куда ляжет ответ) и колонка «Находка» карты
+[`setup-map.md`](setup-map.md) (тест не пускает туда код вне таблицы).
 
 | Код | Категория | Источник | Срез кластеров | Где решение |
 |---|---|---|---|---|
