@@ -39,6 +39,7 @@ from docpipe.setup.review import (
     build_review,
     format_review,
     has_changes,
+    is_refusal,
     review_json,
 )
 from docpipe.setup.status import build_status, decision_id, status_detail
@@ -85,6 +86,16 @@ export class ReportsService {
   monthly(): Observable<unknown> {
     return this.http.get('api/reports/monthly');
   }
+}
+"""
+
+# Новый класс .NET, которого правило отсева отчётов (`Reports.*`) не берёт.
+DIGEST: Final = "backend/Seam.Api/Services/DigestService.cs"
+DIGEST_CODE: Final = """namespace Seam.Api.Services;
+
+public sealed class DigestService
+{
+    public string Build() => "digest";
 }
 """
 
@@ -298,9 +309,10 @@ def test_new_exclusion_rule_that_took_new_code_is_applied_with_reason(tmp_path: 
         [CONTROLLER],
         1,
     )
-    # Сверху — решение, забравшее больше всего нового кода.
-    counts = [item.count for item in report.applied]
-    assert counts == sorted(counts, reverse=True)
+    # Сверху — записи «не берём», внутри обеих групп — по числу нового кода.
+    assert report.applied[0].id == rule_id
+    order = [(not is_refusal(item.key), -item.count) for item in report.applied]
+    assert order == sorted(order)
     assert "Настройка изменена и не закоммичена" in format_review(report)
 
     # Правило закоммичено — база сдвинулась, и тот же код уже не новый;
@@ -311,6 +323,71 @@ def test_new_exclusion_rule_that_took_new_code_is_applied_with_reason(tmp_path: 
     explicit = review(root, since=first)
     assert (explicit.base, explicit.since) == (first, first)
     assert rule_id in {item.id for item in explicit.applied}
+
+
+def test_refusal_that_took_new_code_comes_before_bigger_positive_decisions(tmp_path: Path) -> None:
+    """Запись «не берём» в `applied` — первой, даже когда у корней новых файлов больше.
+
+    Прогон S31 на squidex после S33: отсев `data.contracts`, забравший новый
+    DTO (1 файл), стоял седьмым — за `roots`, правилами владения и `web.roots`
+    (по 2 файла), а фаза 90 велит показывать его первым. Страница `applied`
+    (`offset`, бюджет сервера) срезала бы его раньше корней.
+    """
+    root = workspace(tmp_path / "repo")
+    add_reports(root)
+    # Второй новый файл .NET, которого правило отсева отчётов не берёт: у корня — 2.
+    write(root, DIGEST, DIGEST_CODE)
+    commit(root, "новый код")
+    edit_rules(root, REPORTS_RULE)
+
+    report = review(root)
+    rule_id = decision_id(rules_label(root), "dotnet.exclude", "reports.internal")
+    roots = decision_id(config_label(root), "roots", "backend")
+    applied = {item.id: item for item in report.applied}
+    assert (applied[rule_id].count, applied[roots].count) == (1, 2)
+    assert [item.id for item in report.applied][:1] == [rule_id]
+    assert [is_refusal(item.key) for item in report.applied] == [True] + [False] * (
+        len(report.applied) - 1
+    )
+    positive = [item.count for item in report.applied[1:]]
+    assert positive == sorted(positive, reverse=True)
+    # Текст печатает в том же порядке: первая строка раздела — отсев.
+    text = format_review(report)
+    section = text.split("Решения, применившиеся к новому коду:\n", 1)[1]
+    assert section.startswith(f"  {rule_id} — 1")
+
+
+def test_refusal_keys_cover_every_negative_record_of_the_coverage() -> None:
+    """Записи «не берём»: отсев, область, «не обёртка», `remove`, секция `link`; прочие — нет."""
+    for key in (
+        "exclude",
+        "not_enrolled",
+        "dotnet.exclude",
+        "web.exclude",
+        "web.not_wrappers",
+        "remove",
+        "link.unresolvable",
+        "link.external_targets",
+        "link.external_callers",
+    ):
+        assert is_refusal(key), key
+    for key in (
+        "roots",
+        "enrolled",
+        "web.roots",
+        "dotnet.rules",
+        "web.rules",
+        "di_methods",
+        "dispatch_interfaces",
+        "web.url_rewrite",
+        "web.http_wrappers",
+        "web.url_builders",
+        "web.registry_calls",
+        "add",
+        "features",
+        "rules",
+    ):
+        assert not is_refusal(key), key
 
 
 def test_removed_module_with_url_rewrite_is_a_dead_decision(tmp_path: Path) -> None:

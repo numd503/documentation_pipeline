@@ -15,6 +15,7 @@
 
 - `applied` — решения с охватом в новых файлах: разбивка «файл → сколько
   решено» того же подсчёта, что у `setup status` (`status_detail`);
+  записи «не берём» — первыми;
 - `new_findings` — находки `setup status`, у которых есть места в новых
   файлах, с этими местами;
 - `dead_decisions` — решения без охвата во всём репозитории: `url_rewrite`
@@ -77,6 +78,17 @@ EXCLUSION_KEYS: Final[dict[str, Literal["dotnet", "web"]]] = {
 }
 KEEP_KEYS: Final[dict[str, str]] = {key: f"{key}.rules[].unused_reason" for key in EXCLUSION_KEYS}
 
+# Ключи охвата записей «не берём», кроме секции `link` (`is_refusal`): отсев
+# файлов и символов, модули вне области, «это не обёртка», `remove` страниц.
+# В `applied` они идут первыми: правило отсева, молча забравшее новый код, —
+# то, ради чего ревью и нужно (S25), а по одному числу оно уходило за корни
+# и правила владения, у которых новых файлов больше всех. Прогон S31 на
+# squidex после S33: `data.contracts` с новым DTO — седьмой из 11, и страница
+# `applied` (`offset`, бюджет ответа сервера) срезала бы его первым.
+REFUSAL_KEYS: Final = frozenset(
+    {"exclude", "not_enrolled", "dotnet.exclude", "web.exclude", "web.not_wrappers", "remove"}
+)
+
 # Записи, которые решают о вызовах и символах фронта: без фронта им нечего
 # решать (`no_front`). Кроме `web.*` — две записи секции `link` о вызовах:
 # `link.external_callers` решает об эндпоинтах .NET и сюда не входит.
@@ -117,13 +129,23 @@ class Note(_Base):
     message: str
 
 
+def is_refusal(key: str) -> bool:
+    """Ключ охвата записи «не берём»: `REFUSAL_KEYS` и вся секция `link`.
+
+    Каждая запись секции `link` — решение человека с его причиной (протокол
+    интервью, «Кто решает»), в том числе `external_callers` с `document: true`.
+    """
+    return key in REFUSAL_KEYS or key.startswith("link.")
+
+
 class AppliedDecision(_Base):
     """Решение, применившееся к новому коду.
 
     `count` — единиц кода, решённых в новых файлах (сумма разбивки по этим
     файлам: символ из двух новых файлов — в обоих), `total` — охват во всём
     репозитории, как в `setup status`. `files` — новые файлы, до `--limit`,
-    `files_total` — сколько их всего.
+    `files_total` — сколько их всего. В `Review.applied` первыми идут записи
+    «не берём» (`is_refusal`), внутри обеих групп — по `count`, затем по `id`.
     """
 
     id: str
@@ -735,8 +757,8 @@ def build_review(
                 files_total=len(files),
             )
         )
-    # Сверху — решение, забравшее больше всего нового кода: ради него ревью и нужно.
-    applied.sort(key=lambda item: (-item.count, item.id))
+    # Сверху — записи «не берём», забравшие новый код, затем — по числу нового кода.
+    applied.sort(key=lambda item: (not is_refusal(item.key), -item.count, item.id))
 
     new_findings: list[NewFinding] = []
     for finding in detail.status.findings:
