@@ -323,6 +323,69 @@ def test_no_standard_registrations_is_said_out_loud(tmp_path: Path) -> None:
     assert "Стандартных регистраций нет" in format_candidates(report)
 
 
+# Модуль тестов рядом с модулем области: та же обёртка дважды, своя обёртка
+# только тестов и одна стандартная регистрация.
+FIXTURE = """
+namespace App.Tests;
+
+public static class Fixture
+{
+    public static void Configure(IServiceCollection services)
+    {
+        services.AddSingletonAs<T1>();
+        services.AddSingletonAs<T2>();
+        services.AddTestOnly<T3>();
+        services.AddTestOnly<T4>();
+        services.AddSingleton<IX, X>();
+    }
+}
+"""
+
+NOT_TESTS = {"not_enrolled": [{"glob": "tests/**", "reason": "тесты — не контракт продукта"}]}
+
+
+def _with_tests(tmp_path: Path) -> Path:
+    root = _repo(tmp_path)
+    module = root / "tests" / "App.Tests"
+    module.mkdir(parents=True)
+    (module / "App.Tests.csproj").write_text(_CSPROJ, encoding="utf-8")
+    (module / "Fixture.cs").write_text(FIXTURE, encoding="utf-8")
+    return root
+
+
+def test_candidates_count_only_the_area(tmp_path: Path) -> None:
+    """Кандидаты — по области (S34): на semantic-kernel первая страница была из samples и тестов."""
+    root = _with_tests(tmp_path)
+    settings = DocpipeConfig.model_validate(NOT_TESTS)
+    report = di_method_candidates(run(root, settings), settings, limit=0)
+
+    by_method = {item.method: item for item in report.items}
+    assert set(by_method) == {"AddSingletonAs", "AddField"}
+    wrapper = by_method["AddSingletonAs"]
+    assert (wrapper.calls, wrapper.calls_outside_area, wrapper.files) == (3, 2, 1)
+    assert all(example.startswith("src/") for item in report.items for example in item.examples)
+    # База — тоже по области; вне её — нестандартные: 2 `AddSingletonAs` и 2 `AddTestOnly`.
+    assert (report.standard_calls, report.outside_area_calls) == (2, 4)
+    assert "Вне области — 4 нестандартных вызовов Add*" in format_candidates(report)
+
+    # Умолчание `enrolled: ["**"]` берёт и тесты: та же обёртка тестов — кандидат.
+    everything = di_method_candidates(run(root, DocpipeConfig()), DocpipeConfig(), limit=0)
+    assert {item.method for item in everything.items} == {
+        "AddSingletonAs",
+        "AddField",
+        "AddTestOnly",
+    }
+    assert (everything.standard_calls, everything.outside_area_calls) == (3, 0)
+
+
+def test_scope_conflict_is_an_input_error_before_the_area(tmp_path: Path) -> None:
+    """`scope_of` бросает `ScopeConflict`; переводит его `ctx.scan`, и он зовётся раньше."""
+    root = _with_tests(tmp_path)
+    settings = DocpipeConfig.model_validate({"enrolled": ["**"], **NOT_TESTS})
+    with pytest.raises(InputError, match="enrolled"):
+        candidates("di-methods", CandidateInputs(root, settings, use_cache=False))
+
+
 def test_negative_page_and_unknown_kind_are_input_errors(tmp_path: Path) -> None:
     inputs = CandidateInputs(_repo(tmp_path), DocpipeConfig(), use_cache=False)
     with pytest.raises(InputError, match="известны: di-methods"):
@@ -386,7 +449,8 @@ def test_command_prints_json_report(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert not result.output.endswith("\n\n")
     report = json.loads(result.output)
-    assert report["schema_version"] == "1.0"
+    assert report["schema_version"] == "1.1"
+    assert report["outside_area_calls"] == 0
     assert [item["method"] for item in report["items"]] == ["AddSingletonAs", "AddField"]
     assert report["items"][0]["receivers"] == [["services", 3]]
 

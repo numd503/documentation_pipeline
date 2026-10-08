@@ -58,15 +58,15 @@ description: Настройка docpipe на репозиторий продук
 | Инструмент | Аргументы | CLI-двойник | Что даёт |
 |---|---|---|---|
 | `setup_config_check` | — | `docpipe config check` | во что разрешается каждый путь; первым и после каждой правки |
-| `setup_recon` | `top` | `docpipe recon` | чем собран репозиторий: проекты, фронты, прокси |
-| `setup_status` | `limit`, `baseline`, `offset` | `docpipe setup status` | находки без решения и дефекты, разница с прошлым вызовом |
+| `setup_recon` | `top`, `list`, `limit`, `offset` | `docpipe recon` | чем собран репозиторий: проекты, фронты, прокси |
+| `setup_status` | `list`, `limit`, `baseline`, `offset` | `docpipe setup status` | находки без решения и дефекты, разница с прошлым вызовом |
 | `setup_review` | `since`, `limit`, `offset` | `docpipe setup review` | новое с последнего коммита настройки |
-| `setup_explain` | `path`, `limit`, `offset` | `docpipe setup explain` | что решено об этом коде, какой записью и почему |
+| `setup_explain` | `path`, `list`, `limit`, `offset` | `docpipe setup explain` | что решено об этом коде, какой записью и почему |
 | `setup_stats` | `lang`, `top` | `docpipe scan --stats`, `docpipe web scan --stats` | срезы символов, в том числе «последнее слово» |
 | `setup_symbols` | `lang`, `state`, `module`, `namespace`, `path`, `rule`, `kind`, `limit`, `offset` | `docpipe symbols` | символы группы: базы, атрибуты, правило-победитель |
 | `setup_candidates` | `kind`, `limit`, `offset` | `docpipe setup candidates` | кандидаты в ключи настройки |
 | `setup_link` | `category`, `by`, `limit`, `offset` | `docpipe setup link` | шов фронт↔.NET кластерами, подсказка префикса |
-| `setup_pages` | `note`, `limit`, `offset` | `docpipe web pages` | страницы и почему они страницы |
+| `setup_pages` | `note`, `list`, `limit`, `offset` | `docpipe web pages` | страницы и почему они страницы |
 | `setup_docs` | `status`, `lang`, `limit`, `offset` | `docpipe docs status` | документы: статус и действие с файлом |
 | `setup_docs_explain` | `path`, `lang` | `docpipe docs explain` | один документ подробно |
 
@@ -78,9 +78,9 @@ description: Настройка docpipe на репозиторий продук
   правки зови снова. Прошлый ответ `setup_status` сервер помнит сам —
   `previous` у находки и есть разница.
 - **Ответ — страница**: `total`, `offset`, `truncated`, `next_offset`.
-  «Не показали» не значит «нет»: при `truncated` или `total` больше
-  показанного — следующая страница (`offset`) или сужение (`module`, `path`,
-  `limit`). Вывод длиннее 25 000 символов агент обрежет молча.
+  «Не показали» не значит «нет»: есть `next_offset` — бери эту страницу
+  (`offset`) или сужай (`module`, `path`, `limit`); `truncated_lists`
+  называет урезанный список — возьми его аргументом `list`.
 - **Ошибка инструмента** (`isError`) — читай текст: обычно это неверный
   аргумент или отказ загрузки настройки, а не «сервер упал».
 

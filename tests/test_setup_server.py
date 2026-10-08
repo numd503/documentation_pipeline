@@ -32,6 +32,7 @@ from docpipe.setup.server import (
     SERVER_NAME,
     TOOLS,
     SetupTools,
+    compact_row,
     fit,
 )
 from docpipe.setup.status import SetupStatus
@@ -262,8 +263,12 @@ def test_containers_keep_their_items_and_families_share_one_cap() -> None:
 
 
 def test_lines_are_a_budget_too() -> None:
-    """Список коротких строк упирается в порог строк агента раньше, чем в символы."""
-    answer = fit({"names": [f"n{index}" for index in range(5000)]})
+    """Список коротких записей упирается в порог строк агента раньше, чем в символы.
+
+    Записи, а не имена: список скаляров с S34 — одна строка, и порог строк
+    на нём не сработал бы никогда.
+    """
+    answer = fit({"names": [{"name": f"n{index}"} for index in range(5000)]})
     text = tool_text(answer)
     assert len(text) < MAX_CHARS // 2
     assert text.count("\n") < MAX_LINES
@@ -332,6 +337,203 @@ def test_symbols_of_5000_symbols_come_in_pages(tmp_path: Path) -> None:
     following = [row["fqn"] for row in second["symbols"]]
     assert following == names[len(shown) : len(shown) + len(following)]
     assert second["next_offset"] == len(shown) + len(following)
+
+
+# --------------------------------------------------------------------------------------
+# Страницы ответов (S34): каждый урезанный список листается, счёт не врёт
+# --------------------------------------------------------------------------------------
+
+SEAM: Final = FIXTURES / "SeamWorkspace"
+
+_CSPROJ: Final = (
+    '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+    "<TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>"
+)
+
+
+def seam_copy(tmp_path: Path) -> tuple[Path, Path]:
+    """Копия шва с правилами абсолютным путём: от `tmp_path` относительный не разрешится."""
+    root = tmp_path / "seam"
+    shutil.copytree(SEAM, root, ignore=shutil.ignore_patterns(".docpipe"))
+    config = root / "docpipe.yaml"
+    raw = yaml.safe_load(config.read_text(encoding="utf-8"))
+    raw["rules"] = raw["web"]["rules"] = str(RULES.resolve())
+    config.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+    return root, config
+
+
+def pages_of(
+    tools: SetupTools, tool: str, arguments: dict[str, Any], key: str, budget: int
+) -> list[list[Any]]:
+    """Страницы списка `key` по `next_offset`, пока он есть; каждая — в бюджете."""
+    pages: list[list[Any]] = []
+    offset = 0
+    while True:
+        answer = tools.call(tool, {**arguments, "offset": offset})
+        assert "error" not in answer, answer
+        assert len(tool_text(answer)) <= budget
+        pages.append(answer[key])
+        following = answer.get("next_offset")
+        if following is None:
+            return pages
+        assert following == offset + len(answer[key]) and following > offset
+        offset = following
+        assert len(pages) < 200, "листание не кончается"
+
+
+def test_coverage_is_paged_with_list(tmp_path: Path) -> None:
+    """Охват урезался без продолжения (abp — 29 из 107): с `list: coverage` он листается."""
+    root, config = seam_copy(tmp_path)
+    result = runner.invoke(
+        app,
+        ["setup", "status", "--root", str(root), "--config", str(config), "--format", "json"]
+        + ["--no-cache"],
+    )
+    assert result.exit_code == 0, result.output
+    expected = json.loads(result.stdout)["coverage"]
+    tools = SetupTools(root, config, use_cache=False, max_chars=4000)
+    arguments = {"list": "coverage", "baseline": "none"}
+    pages = pages_of(tools, "setup_status", arguments, "coverage", 4000)
+    assert len(pages) > 1
+    assert [item for page in pages for item in page] == expected
+    # Находки рядом не листаются и не съедают страницу: пусто, число — в `omitted`.
+    answer = tools.call("setup_status", arguments)
+    assert answer["findings"] == [] and answer["omitted"]["findings"] > 0
+
+
+def test_shown_is_what_was_given(tmp_path: Path) -> None:
+    """`shown: 100` при 22 строках терял агенту больше половины группы (S31, ловушка 13)."""
+    synthetic_solution(tmp_path, files=5, per_file=100)
+    tools = SetupTools(tmp_path, None, use_cache=False)
+    for limit, offset in ((100, 0), (3, 0), (100, 450), (0, 0)):
+        answer = tools.call("setup_symbols", {"state": "any", "limit": limit, "offset": offset})
+        assert answer["shown"] == len(answer["symbols"]), (limit, offset)
+    assert tools.call("setup_symbols", {"state": "any", "limit": 100})["truncated"] is True
+
+
+def test_candidates_continue_when_the_report_cuts_its_own_page(tmp_path: Path) -> None:
+    """Страницу по `limit` режет отчёт: `next_offset` есть и без урезания бюджетом."""
+    project = tmp_path / "src" / "App"
+    project.mkdir(parents=True)
+    (project / "App.csproj").write_text(_CSPROJ, encoding="utf-8")
+    (project / "Startup.cs").write_text(
+        "namespace App;\npublic static class Startup {\n"
+        "  public static void Configure(IServiceCollection services) {\n"
+        "    services.AddSingletonAs<A>(); services.AddSingletonAs<B>();\n"
+        "    services.AddScopedAs<C>(); services.AddScopedAs<D>();\n"
+        "    services.AddScoped<IFoo, Foo>();\n  }\n}\n",
+        encoding="utf-8",
+    )
+    tools = SetupTools(tmp_path, None, use_cache=False)
+    first = tools.call("setup_candidates", {"kind": "di-methods", "limit": 1})
+    assert (first["total"], len(first["items"]), first["next_offset"]) == (2, 1, 1)
+    assert "truncated" not in first
+    last = tools.call("setup_candidates", {"kind": "di-methods", "limit": 1, "offset": 1})
+    assert len(last["items"]) == 1
+    assert "next_offset" not in last and "truncated" not in last
+
+
+def abp_like_solution(root: Path, count: int = 120) -> None:
+    """Форма abp: длинные пути проекта и файлов, `partial`, обобщённая база, атрибут, методы.
+
+    Пути — у нижней границы формы (`.csproj` от 80 символов, файл от 90), как
+    у abp (90 и 105 у строки S31): длиннее — и тест мерил бы длину путей,
+    а не разметку.
+    """
+    project = root / "modules" / "identity" / "src" / "Volo.Abp.Identity.Contracts"
+    project.mkdir(parents=True)
+    csproj = project / "Volo.Abp.Identity.Contracts.csproj"
+    csproj.write_text(_CSPROJ, encoding="utf-8")
+    assert 80 <= len(csproj.relative_to(root).as_posix()) < 90
+    sources = project / "Volo" / "Abp" / "Identity"
+    sources.mkdir(parents=True)
+    for index in range(count):
+        name = f"IdentityRoleMapper{index:04d}"
+        source = sources / f"{name}.cs"
+        source.write_text(
+            "namespace Volo.Abp.Identity;\n"
+            "[Mapper]\n"
+            f"public partial class {name} : Base<Role>, IFoo\n"
+            "{\n    public void Map() { }\n    public void MapBack() { }\n"
+            "    public void Configure() { }\n}\n",
+            encoding="utf-8",
+        )
+        assert 90 <= len(source.relative_to(root).as_posix()) < 100
+
+
+def test_symbols_page_holds_thirty_abp_like_symbols(tmp_path: Path) -> None:
+    """22–26 символов на страницу съели две трети вызовов S31; разметка и проекция — 30+."""
+    abp_like_solution(tmp_path)
+    answer = SetupTools(tmp_path, None, use_cache=False).call(
+        "setup_symbols", {"state": "any", "limit": 0}
+    )
+    assert answer["truncated"] is True
+    assert len(answer["symbols"]) >= 30, len(answer["symbols"])
+    row = answer["symbols"][0]
+    # Пустые поля нерешённого символа не пишутся, непустые — на месте.
+    assert not {"kind", "rules", "winner_rule", "exclusion", "page"} & set(row)
+    assert row["modifiers"] == ["partial", "public"] and row["attributes"] == ["Mapper"]
+
+
+def test_recon_list_pages_add_up_to_the_recon_json(tmp_path: Path) -> None:
+    """Полный список проектов листается: abp отдавал 10 из 671 с `next_offset: null`."""
+    for index in range(120):
+        project = tmp_path / "src" / f"Company.Product.Module{index:03d}.Application.Contracts"
+        project.mkdir(parents=True)
+        (project / f"{project.name}.csproj").write_text(_CSPROJ, encoding="utf-8")
+    out = tmp_path / "recon.json"
+    result = runner.invoke(app, ["recon", "--root", str(tmp_path), "--json", str(out)])
+    assert result.exit_code == 0, result.output
+    composition = next(b for b in json.loads(out.read_text())["blocks"] if b["id"] == "composition")
+    expected = composition["data"]["projects"]["dotnet_projects"]
+    assert len(expected) == 120
+
+    tools = SetupTools(tmp_path, None, use_cache=False, max_chars=3000)
+    pages = pages_of(tools, "setup_recon", {"list": "dotnet_projects"}, "items", 3000)
+    assert len(pages) > 1
+    assert [item for page in pages for item in page] == expected
+
+    # Без `list` — первые `top` и длины рядом, а не урезанный бюджетом список.
+    summary = SetupTools(tmp_path, None, use_cache=False).call("setup_recon", {"top": 5})
+    data = summary["blocks"][0]["data"]
+    assert data["projects"]["dotnet_projects"] == expected[:5]
+    assert data["projects_total"]["dotnet_projects"] == 120
+
+
+def test_pages_neighbours_are_omitted_and_paged_by_list() -> None:
+    """`not_pages` съедал 60 % бюджета страницы `setup_pages` (squidex — 4 страницы из 54)."""
+    tools = SetupTools(WEB, None, use_cache=False)
+    default = tools.call("setup_pages", {"limit": 0})
+    assert default["not_pages"] == [] and default["features"] == []
+    assert default["omitted"]["not_pages"] == 2 and default["omitted"]["features"] == 0
+    every = tools.call("setup_pages", {"list": "not_pages", "limit": 0})
+    assert len(every["not_pages"]) == 2 and every["pages"] == []
+    assert every["omitted"]["pages"] == every["pages_total"]
+    pages = pages_of(
+        tools, "setup_pages", {"list": "not_pages", "limit": 1}, "not_pages", MAX_CHARS
+    )
+    assert [item for page in pages for item in page] == every["not_pages"]
+
+
+def test_pairs_are_not_cut_from_inside(tmp_path: Path) -> None:
+    """Пара `[имя, число]` урезалась до `[]` (abp: 40 пустых в `base_types`)."""
+    project = tmp_path / "src" / "App"
+    project.mkdir(parents=True)
+    (project / "App.csproj").write_text(_CSPROJ, encoding="utf-8")
+    (project / "Types.cs").write_text(
+        "namespace App;\n"
+        + "".join(f"public class Thing{n:03d} : Base{n:03d}<int> {{ }}\n" for n in range(80)),
+        encoding="utf-8",
+    )
+    answer = SetupTools(tmp_path, None, use_cache=False, max_chars=2500).call(
+        "setup_stats", {"top": 100}
+    )
+    assert answer["truncated"] is True
+    assert any(family.startswith("breakdown.") for family in answer["truncated_lists"])
+    assert not [family for family in answer["truncated_lists"] if family.endswith(".*")]
+    pairs = [item for slice_ in answer["breakdown"].values() for item in slice_["items"]]
+    pairs += answer["kinds"]
+    assert pairs and all(len(pair) == 2 for pair in pairs)
 
 
 # --------------------------------------------------------------------------------------
@@ -476,9 +678,25 @@ def test_config_check_with_a_config_is_the_cli_report(tmp_path: Path) -> None:
 def test_tool_answers_what_its_cli_twin_prints(
     tool: str, arguments: dict[str, Any], command: list[str]
 ) -> None:
+    """Ответ — JSON двойника в проекции сервера, а не «похожий» ответ.
+
+    Проекция — та же функция сервера (`compact_row` у строк символов) плюс
+    `next_offset`, когда список продолжается: ослабь сравнение — и расхождение
+    логики сервера и CLI прошло бы незамеченным (ловушка S34).
+    """
     result = runner.invoke(app, [*command, "--root", str(SAMPLE), "--format", "json", "--no-cache"])
     assert result.exit_code == 0, result.output
-    assert sample().call(tool, arguments) == json.loads(result.stdout)
+    expected = json.loads(result.stdout)
+    # Строки символов: `symbols` у `symbols`, `symbol_rows` у `setup explain`
+    # (там `symbols` — счёт по состояниям, а не строки).
+    rows = "symbol_rows" if tool == "setup_explain" else "symbols"
+    if isinstance(expected.get(rows), list):
+        expected[rows] = [compact_row(row) for row in expected[rows]]
+    if tool == "setup_symbols":
+        following = arguments.get("offset", 0) + expected["shown"]
+        if following < expected["total"]:
+            expected["next_offset"] = following
+    assert sample().call(tool, arguments) == expected
 
 
 def test_candidates_answer_what_the_cli_prints() -> None:

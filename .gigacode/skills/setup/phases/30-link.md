@@ -19,7 +19,9 @@
 - `setup_link` (`docpipe setup link`) — кластеры шва: `category`, `by`;
   у `calls_without_endpoint` по `module` — подсказка `suggested_rewrite`;
 - `setup_status` — находки `link.*`, кластеры те же, что у `setup_link`;
-- `setup_recon` — `projects.fronts[].proxy_configs`, `projects.proxy_files`;
+- `setup_recon` — `projects.fronts[].proxy_configs`, `projects.proxy_files`:
+  в блоке — первые `top` (длины в `projects_total`), целиком — `list: fronts`
+  или `list: proxy_files`, `offset` из `next_offset`;
 - `setup_explain` (`docpipe setup explain`) — `unresolved_reasons` файла.
 
 ## Шаги

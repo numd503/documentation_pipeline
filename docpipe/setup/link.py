@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from docpipe.config import DocpipeConfig
 from docpipe.hashing import stable_json_dumps
-from docpipe.model import UnresolvedCall
+from docpipe.model import Manifest, UnresolvedCall
 from docpipe.route import RewriteRule, RouteKey, normalize_route
 from docpipe.setup.context import InputError, SetupContext
 from docpipe.web.link import (
@@ -170,9 +170,17 @@ class LinkClusters(_Base):
     стоит в кластере каждого узла. `linked` и `categories` — мест в каждой
     категории шва целиком: по ним видно, куда смотреть дальше, не зовя
     команду семь раз.
+
+    Стороны шва (S34): `dotnet_modules`, `web_modules` — модулей в манифестах
+    шагов, `seam` — есть ли обе (`seam_sides`); `calls_total`, `endpoints_total`
+    — вызовов фронта и эндпоинтов бэкенда из `counts` отчёта связи. Без них
+    25 эндпоинтов без вызывающего на eshoponweb, где фронта нет, читались как
+    25 вопросов «кто зовёт», а число восстановленных вызовов складывали
+    из категорий.
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    # 1.1 — стороны шва и счёт концов (S34).
+    schema_version: Literal["1.1"] = "1.1"
     category: str
     by: str
     places: int
@@ -181,6 +189,11 @@ class LinkClusters(_Base):
     clusters: list[LinkCluster] = Field(default_factory=list)
     linked: int
     categories: dict[str, int] = Field(default_factory=dict)
+    dotnet_modules: int
+    web_modules: int
+    seam: bool
+    calls_total: int
+    endpoints_total: int
 
 
 @dataclass(frozen=True)
@@ -434,21 +447,37 @@ def suggest_rewrite(
 # --------------------------------------------------------------------------------------
 
 
+def seam_sides(scan_manifest: Manifest, web_manifest: Manifest) -> bool:
+    """У шва обе стороны: модули .NET и модули фронта.
+
+    Без фронта каждый эндпоинт — «без вызывающего», без бэка каждый вызов —
+    «без эндпоинта», и решения у таких концов нет: на `SampleSolution` их
+    было бы столько, сколько действий в контроллерах. Одна функция на сводку
+    шва и на `setup status` (`_Runs.seam`): вторая копия правила «обе
+    стороны» разошлась бы с первой, и сводка назвала бы находкой то, чего
+    статус не считает.
+    """
+    return bool(scan_manifest.modules) and bool(web_manifest.modules)
+
+
 def clusters_of(
     report: LinkReport,
     settings: DocpipeConfig,
     keys: Mapping[RouteKey, object],
     *,
+    sides: tuple[Manifest, Manifest],
     category: str = DEFAULT_CATEGORY,
     by: str | None = None,
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
 ) -> LinkClusters:
-    """Сводка категории отчёта связи кластерами. Чистая функция отчёта и настройки.
+    """Сводка категории отчёта связи кластерами. Чистая функция отчёта, настройки и сторон.
 
     `keys` — ключи эндпоинтов бэкенда (`web.link.backend_keys`): по ним
-    подсказка правила префикса проверяет, свяжется ли вызов. Порядок
-    кластеров — `(-count, key)`; примеры — первые места по `(file, line)`.
+    подсказка правила префикса проверяет, свяжется ли вызов. `sides` —
+    манифесты шага 1 и шага `web`, из которых собран отчёт: по ним сводка
+    говорит, есть ли у шва обе стороны. Порядок кластеров — `(-count, key)`;
+    примеры — первые места по `(file, line)`.
     """
     category, chosen = check_query(category, by)
     if limit < 0 or offset < 0:
@@ -491,6 +520,11 @@ def clusters_of(
         clusters=clusters,
         linked=len({(link.file, link.line) for link in report.links if link.match == "exact"}),
         categories={name: _places(_items(report, name)) for name in CATEGORIES},
+        dotnet_modules=len(sides[0].modules),
+        web_modules=len(sides[1].modules),
+        seam=seam_sides(*sides),
+        calls_total=report.counts.get("calls_total", 0),
+        endpoints_total=report.counts.get("endpoints_total", 0),
     )
 
 
@@ -516,6 +550,7 @@ def link_clusters(
         report,
         ctx.settings,
         backend_keys(ctx.scan.manifest),
+        sides=(ctx.scan.manifest, ctx.web.manifest),
         category=category,
         by=by,
         limit=limit,
@@ -554,12 +589,26 @@ def _page_line(total: int, offset: int, shown: int) -> str:
     return line
 
 
+def _no_seam(report: LinkClusters) -> str:
+    """Строка «шва нет»: без неё концы одной стороны читаются как вопросы «кто зовёт»."""
+    if not report.dotnet_modules and not report.web_modules:
+        missing, ends = "модулей .NET 0 и фронта 0", "концы без пары"
+    elif not report.web_modules:
+        missing, ends = "модулей фронта 0", "эндпоинты без вызывающего"
+    else:
+        missing, ends = "модулей .NET 0", "вызовы без эндпоинта"
+    return f"Шва нет: {missing} — {ends} не находки, `setup status` их не считает."
+
+
 def format_link_clusters(report: LinkClusters) -> str:
     """Человекочитаемая сводка: категория, кластеры с примерами и подсказкой."""
     overview = ", ".join(f"{name} {count}" for name, count in report.categories.items())
-    lines = [
+    lines = [] if report.seam else [_no_seam(report)]
+    lines += [
         f"Шов, {_TITLES[report.category]} ({report.category}): мест {report.places}, "
         f"кластеров по {report.by} — {report.total}.",
+        f"Вызовов фронта {report.calls_total} (модулей {report.web_modules}), "
+        f"эндпоинтов бэкенда {report.endpoints_total} (модулей {report.dotnet_modules}).",
         f"Мест по категориям: связано точно {report.linked}; {overview}.",
     ]
     for cluster in report.clusters:
@@ -595,5 +644,6 @@ __all__ = [
     "link_clusters",
     "link_clusters_json",
     "places_of",
+    "seam_sides",
     "suggest_rewrite",
 ]

@@ -183,8 +183,47 @@ def tool_text(answer: dict[str, Any]) -> str:
     и в несколько раз длиннее по строкам, а агент контура обрезает и по
     символам, и по строкам. Мерить копию с другими параметрами `dumps`
     значило бы уложить в бюджет не тот текст, который уйдёт.
+
+    Разметка — `json.dumps(…, indent=2)`, кроме одного: **список скаляров —
+    одной строкой** (`"modifiers": ["partial", "public"]`, S34). По строке
+    на имя давало строке символа `setup_symbols` три десятка строк, из
+    которых половина — скобки и короткие имена, и страница упиралась в порог
+    строк агента раньше, чем в символы; пара `[имя, число]` среза занимала
+    четыре строки. Значения не меняются: `json.loads(tool_text(x)) == x`.
+    Несериализуемое значение — `TypeError`, как у `json.dumps`.
     """
-    return json.dumps(answer, ensure_ascii=False, indent=2)
+    return _layout(answer, 0)
+
+
+def _layout(node: Any, depth: int) -> str:
+    """Узел на глубине `depth`: словари и списки с вложенными — с отступом 2."""
+    if isinstance(node, dict):
+        if not node:
+            return "{}"
+        pad = "  " * (depth + 1)
+        entries = [
+            f"{pad}{json.dumps(_key(key), ensure_ascii=False)}: {_layout(value, depth + 1)}"
+            for key, value in node.items()
+        ]
+        return "{\n" + ",\n".join(entries) + "\n" + "  " * depth + "}"
+    if isinstance(node, list | tuple):
+        if not node:
+            return "[]"
+        if not any(isinstance(item, dict | list | tuple) for item in node):
+            return "[" + ", ".join(json.dumps(item, ensure_ascii=False) for item in node) + "]"
+        pad = "  " * (depth + 1)
+        entries = [pad + _layout(item, depth + 1) for item in node]
+        return "[\n" + ",\n".join(entries) + "\n" + "  " * depth + "]"
+    return json.dumps(node, ensure_ascii=False)
+
+
+def _key(key: object) -> str:
+    """Ключ словаря строкой — по правилам `json.dumps`: числа, `true`, `null`."""
+    if isinstance(key, str):
+        return key
+    if key is None or isinstance(key, bool | int | float):
+        return json.dumps(key)
+    raise TypeError(f"keys must be str, int, float, bool or None, not {type(key).__name__}")
 
 
 def _call_tool(toolset: ToolSet, name: str, arguments: dict[str, Any]) -> dict[str, Any]:

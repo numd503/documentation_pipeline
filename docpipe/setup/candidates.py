@@ -15,13 +15,14 @@ import json
 import posixpath
 import re
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from docpipe.config import DocpipeConfig, HttpWrapper, NotWrapper, UrlBuilder
+from docpipe.config import DocpipeConfig, HttpWrapper, NotWrapper, UrlBuilder, scope_of
+from docpipe.discovery import map_files_to_modules
 from docpipe.dotnet.di import is_standard_method
 from docpipe.dotnet.facts import bare_type
 from docpipe.emit import ScanResult, dispatch_name, dispatch_names, split_type_arguments
@@ -117,12 +118,16 @@ class DiMethodCandidate(_Base):
     `declared_in` — необязательная подсказка: главную обёртку по объявлениям
     не найти, на squidex `AddSingletonAs` объявлен в пакете, а 41 объявленный
     `AddSquidex*(this IServiceCollection …)` — агрегаторы, а не обёртки.
+
+    Все счёты — по файлам модулей области (S34); `calls_outside_area` — сколько
+    вызовов того же метода отброшено вне её.
     """
 
     method: str
     calls: int
     calls_with_types: int
     files: int
+    calls_outside_area: int
     receivers: list[tuple[str, int]]
     receiver_overlap: float
     declared_in: str | None = None
@@ -137,11 +142,17 @@ class DiMethodCandidates(_Base):
     `receiver_overlap`. Без неё ноль пересечения у всех кандидатов
     неотличим от репозитория, где стандартных регистраций нет вовсе: тогда
     признак молчит, и порядок решает только число вызовов с типом.
+
+    Всё — по области (S34): база тоже. `outside_area_calls` — нестандартных
+    вызовов `Add*` вне области, то есть материала кандидатов, который
+    не считался: ноль кандидатов при нём не ноль — «не видно», а не «нет».
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    # 1.1 — счёт по области: `outside_area_calls`, `calls_outside_area` (S34).
+    schema_version: Literal["1.1"] = "1.1"
     standard_calls: int
     standard_receivers: list[tuple[str, int]]
+    outside_area_calls: int
     total: int
     offset: int
     items: list[DiMethodCandidate]
@@ -194,6 +205,35 @@ def _typed(call: RegistrationCall) -> bool:
     return call.type_args > 0 or call.typeof_args > 0
 
 
+@dataclass(frozen=True)
+class _Area:
+    """Модули области и чей каждый файл: кандидаты .NET считаются только по области (S34).
+
+    По всему репозиторию на semantic-kernel все примеры первой страницы были
+    samples и тестами, а `dispatch-interfaces` возглавлял `ConformanceTests…`:
+    агент отбирал кандидатов области руками. Файл вне проектов — вне области.
+    """
+
+    modules: frozenset[str]
+    module_of: dict[str, str]
+
+    def covers(self, path: str) -> bool:
+        return self.module_of.get(path) in self.modules
+
+
+def _area(scan: ScanResult, settings: DocpipeConfig, files: Iterable[str]) -> _Area:
+    """Область прогона: `scope_of(...) == "enrolled"` по `.csproj` каждого модуля.
+
+    `scope_of` бросает `ScopeConflict` при модуле под явным `enrolled`
+    и `not_enrolled` сразу, а сервер настройки ловит `InputError`. Переводит
+    конфликт `SetupContext.scan`, поэтому прогон — аргумент: к этой строке
+    он уже собран, и противоречие стало ответом с `error`, а не трассировкой.
+    """
+    projects = sorted(module.project_file for module in scan.manifest.modules)
+    enrolled = frozenset(path for path in projects if scope_of(path, settings) == "enrolled")
+    return _Area(enrolled, map_files_to_modules(sorted(set(files)), projects))
+
+
 def _page[T](items: list[T], limit: int, offset: int) -> list[T]:
     """Страница списка. `limit = 0` — до конца, как у `symbols --limit 0`."""
     return items[offset:] if limit == 0 else items[offset : offset + limit]
@@ -212,12 +252,22 @@ def di_method_candidates(
     они известны без настройки, — но по ним считается база получателей.
     Порядок — `(-round(receiver_overlap, 2), -calls_with_types, method)`:
     пересечение отделяет обёртку от `AddField`, число вызовов с типом —
-    частую обёртку от редкой.
+    частую обёртку от редкой. Считаются только вызовы в файлах модулей
+    области; отброшенные нестандартные — `calls_outside_area` и
+    `outside_area_calls`.
     """
+    area = _area(scan, settings, (path for path, _ in scan.registration_calls))
     standard: Counter[str] = Counter()
     standard_calls = 0
+    outside: Counter[str] = Counter()
     by_method: defaultdict[str, list[tuple[str, RegistrationCall]]] = defaultdict(list)
     for path, call in scan.registration_calls:
+        if not area.covers(path):
+            # Стандартные вне области не в счёт и здесь: их имена известны
+            # без настройки, и «не видно» они не значат.
+            if not is_standard_method(call.method):
+                outside[call.method] += 1
+            continue
         if is_standard_method(call.method):
             standard_calls += 1
             # Неизвестный получатель базой не считается: пустая строка
@@ -246,6 +296,7 @@ def di_method_candidates(
                 calls=len(calls),
                 calls_with_types=with_types,
                 files=len({path for path, _ in calls}),
+                calls_outside_area=outside[method],
                 receivers=_top(Counter(call.receiver for _, call in calls), _TOP_RECEIVERS),
                 receiver_overlap=round(overlap, 4),
                 declared_in=declarations.get(method),
@@ -258,6 +309,7 @@ def di_method_candidates(
     return DiMethodCandidates(
         standard_calls=standard_calls,
         standard_receivers=_top(standard, _TOP_RECEIVERS),
+        outside_area_calls=sum(outside.values()),
         total=len(found),
         offset=offset,
         items=_page(found, limit, offset),
@@ -271,8 +323,14 @@ def _receivers_text(receivers: list[tuple[str, int]]) -> str:
 def format_di_methods(report: DiMethodCandidates) -> str:
     lines = [
         f"Кандидаты в di_methods: {report.total} "
-        f"(нестандартные Add*, названные с типом не меньше {MIN_CALLS_WITH_TYPES} раз)."
+        f"(нестандартные Add*, названные с типом не меньше {MIN_CALLS_WITH_TYPES} раз; "
+        "по файлам модулей области)."
     ]
+    if report.outside_area_calls:
+        lines.append(
+            f"Вне области — {report.outside_area_calls} нестандартных вызовов Add*: "
+            "не считались ни в кандидатах, ни в базе."
+        )
     if report.standard_calls:
         lines.append(
             f"Стандартные регистрации: {report.standard_calls}; "
@@ -289,7 +347,8 @@ def format_di_methods(report: DiMethodCandidates) -> str:
         lines += [
             "",
             f"{item.method}{mark}",
-            f"  вызовов {item.calls}, с типом {item.calls_with_types}, файлов {item.files}; "
+            f"  вызовов {item.calls}, с типом {item.calls_with_types}, файлов {item.files}, "
+            f"вне области {item.calls_outside_area}; "
             f"пересечение получателей {item.receiver_overlap:.2f}",
             f"  получатели: {_receivers_text(item.receivers)}",
             f"  объявлен: {item.declared_in or 'не в репозитории'}",
@@ -351,11 +410,16 @@ class DispatchCandidate(_Base):
     `requests` — первые по имени типы-запросы: по ним человек отвечает
     на вопрос, а `IEntityTypeConfiguration` с запросами `Customer, Order`
     объясняет себя без открытия файлов.
+
+    Реализации, отправки и исключительность — по модулям области (S34);
+    `implementations_outside_area` — сколько реализаций той же головы
+    отброшено вне её.
     """
 
     interface: str
     resolved: bool
     implementations: int
+    implementations_outside_area: int
     request_types: int
     exclusivity: float
     sent: int
@@ -367,9 +431,17 @@ class DispatchCandidate(_Base):
 
 
 class DispatchCandidates(_Base):
-    """Отчёт `setup candidates dispatch-interfaces`."""
+    """Отчёт `setup candidates dispatch-interfaces`.
 
-    schema_version: Literal["1.0"] = "1.0"
+    `outside_area_implementations` — реализаций обобщённых баз (пар «голова,
+    класс») вне области, которые не считались: ноль кандидатов при нём —
+    «не видно», а не «нет».
+    """
+
+    # 1.1 — счёт по области: `outside_area_implementations`,
+    # `implementations_outside_area` (S34).
+    schema_version: Literal["1.1"] = "1.1"
+    outside_area_implementations: int
     total: int
     offset: int
     items: list[DispatchCandidate]
@@ -476,14 +548,24 @@ def dispatch_candidates(
     чем у любого запроса, и без этого отсева они шли бы первыми.
 
     Порядок — `(-exclusivity, -sent, -implementations, interface)`.
+
+    Реализации, исключительность и отправки — только по модулям области:
+    класс — по своему модулю (`Symbol.module`, тот же `.csproj`, что даёт
+    обход файлов), отправка — по файлу. Типы-запросы «объявлены в
+    репозитории» по-прежнему по всему индексу: запрос из общей библиотеки
+    вне области остаётся запросом. Отброшенные реализации —
+    `implementations_outside_area`.
     """
     fqns = {symbol.fqn for symbol in scan.index.values()}
     declared = {symbol.name for symbol in scan.index.values()}
+    area = _area(scan, settings, (path for path, _ in scan.constructions))
 
     heads: defaultdict[_Head, dict[str, set[str]]] = defaultdict(dict)
+    outside: defaultdict[_Head, set[str]] = defaultdict(set)
     for key, symbol in scan.index.items():
         if symbol.type_kind != "class" or "abstract" in symbol.modifiers:
             continue
+        inside = symbol.module in area.modules
         own = {symbol.name, *symbol.type_parameters}
         # Списки параллельны (`dotnet/resolve.py`): по позиции известны и
         # текст базы с аргументами, и её FQN, если резолв удался.
@@ -494,6 +576,9 @@ def dispatch_candidates(
             written, arguments = parsed
             resolved = base in fqns
             head = (base if resolved else dispatch_name(written), resolved)
+            if not inside:
+                outside[head].add(key)
+                continue
             requests = heads[head].setdefault(key, set())
             request = bare_type(arguments[0])
             if request in declared and request not in own:
@@ -510,7 +595,8 @@ def dispatch_candidates(
 
     created: defaultdict[str, list[tuple[str, Construction]]] = defaultdict(list)
     for path, construction in scan.constructions:
-        created[construction.type_name].append((path, construction))
+        if area.covers(path):
+            created[construction.type_name].append((path, construction))
 
     packages_of = {
         module.project_file: module.package_references for module in scan.manifest.modules
@@ -547,6 +633,7 @@ def dispatch_candidates(
                 interface=interface,
                 resolved=resolved,
                 implementations=len(implementations),
+                implementations_outside_area=len(outside[(interface, resolved)]),
                 request_types=len(requests),
                 exclusivity=round(exclusive / len(requests), 4),
                 # Отправка внутри реализации — сам обработчик создаёт свой
@@ -566,7 +653,12 @@ def dispatch_candidates(
         )
 
     found.sort(key=lambda c: (-c.exclusivity, -c.sent, -c.implementations, c.interface, c.resolved))
-    return DispatchCandidates(total=len(found), offset=offset, items=_page(found, limit, offset))
+    return DispatchCandidates(
+        outside_area_implementations=sum(len(keys) for keys in outside.values()),
+        total=len(found),
+        offset=offset,
+        items=_page(found, limit, offset),
+    )
 
 
 def _packages_text(item: DispatchCandidate) -> str:
@@ -585,8 +677,13 @@ def format_dispatch_interfaces(report: DispatchCandidates) -> str:
     lines = [
         f"Кандидаты в dispatch_interfaces: {report.total} "
         f"(обобщённые базы классов: реализаций не меньше {MIN_IMPLEMENTATIONS}, "
-        f"типов-запросов из репозитория не меньше {MIN_REQUEST_TYPES})."
+        f"типов-запросов из репозитория не меньше {MIN_REQUEST_TYPES}; по модулям области)."
     ]
+    if report.outside_area_implementations:
+        lines.append(
+            f"Вне области — {report.outside_area_implementations} реализаций обобщённых баз: "
+            "не считались."
+        )
     for item in report.items:
         mark = "  [уже в dispatch_interfaces]" if item.configured else ""
         where = "объявлен в репозитории" if item.resolved else "внешний тип"
@@ -594,7 +691,9 @@ def format_dispatch_interfaces(report: DispatchCandidates) -> str:
         lines += [
             "",
             f"{item.interface}{mark}",
-            f"  реализаций {item.implementations}, типов-запросов {item.request_types}, "
+            f"  реализаций {item.implementations} "
+            f"(вне области {item.implementations_outside_area}), "
+            f"типов-запросов {item.request_types}, "
             f"исключительность {item.exclusivity:.2f}, отправок {item.sent}",
             f"  в ключ: {dispatch_name(item.interface)} ({where})",
             f"  запросы: {', '.join(item.requests)}{more}",

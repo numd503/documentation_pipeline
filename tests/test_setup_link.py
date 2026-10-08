@@ -26,6 +26,8 @@ from typer.testing import CliRunner
 
 from docpipe.cli import app
 from docpipe.config import DocpipeConfig
+from docpipe.emit import parser_versions
+from docpipe.model import Manifest
 from docpipe.route import RouteKey
 from docpipe.setup.context import InputError, SetupContext
 from docpipe.setup.link import (
@@ -38,6 +40,7 @@ from docpipe.setup.link import (
     link_clusters,
     link_clusters_json,
 )
+from docpipe.setup.status import build_status
 from docpipe.web.calls import REASON_CONCAT_BASE, REASON_MUTABLE_FIELD, REASON_VARIABLE
 from docpipe.web.link import CallRef, EndpointRef, Link, LinkReport
 
@@ -279,6 +282,14 @@ def _call(route: str, *, line: int, caller: str = "svc", file: str = "a.ts") -> 
     )
 
 
+# Стороны шва для чистой сводки по отчёту: манифесты без модулей. Сводке они
+# нужны только для `seam` и счёта модулей, кластеры от них не зависят.
+NO_SIDES: Final = (
+    Manifest(ruleset_version="test", parser=parser_versions()),
+    Manifest(ruleset_version="test", parser=parser_versions()),
+)
+
+
 def _keys(*routes: str) -> dict[RouteKey, object]:
     return {RouteKey(http_method="GET", route=route): [] for route in routes}
 
@@ -286,7 +297,7 @@ def _keys(*routes: str) -> dict[RouteKey, object]:
 def test_tie_goes_to_the_shorter_strip() -> None:
     """`api` и `api/apps` + `apps` связывают одно и то же — выигрывает короткий срез."""
     report = LinkReport(calls_without_endpoint=[_call("api/apps", line=1)])
-    result = clusters_of(report, DocpipeConfig(), _keys("apps"), by="module")
+    result = clusters_of(report, DocpipeConfig(), _keys("apps"), sides=NO_SIDES, by="module")
     rewrite = result.clusters[0].suggested_rewrite
     assert rewrite is not None
     assert (rewrite.strip_prefix, rewrite.add_prefix, rewrite.would_link) == ("api", "", 1)
@@ -304,13 +315,13 @@ def test_pair_that_unlinks_as_much_as_it_links_is_not_a_suggestion() -> None:
     )
     one = LinkReport(links=[linked], calls_without_endpoint=[_call("api/y", line=1)])
     keys = _keys("api/x", "y", "z")
-    [cluster] = clusters_of(one, DocpipeConfig(), keys, by="module").clusters
+    [cluster] = clusters_of(one, DocpipeConfig(), keys, sides=NO_SIDES, by="module").clusters
     assert (cluster.suggested_rewrite, cluster.rewrite_note) == (None, NOTE_NO_GAIN)
 
     two = one.model_copy(
         update={"calls_without_endpoint": [_call("api/y", line=1), _call("api/z", line=2)]}
     )
-    [cluster] = clusters_of(two, DocpipeConfig(), keys, by="module").clusters
+    [cluster] = clusters_of(two, DocpipeConfig(), keys, sides=NO_SIDES, by="module").clusters
     rewrite = cluster.suggested_rewrite
     assert rewrite is not None
     assert (rewrite.strip_prefix, rewrite.would_link, rewrite.would_unlink) == ("api", 2, 1)
@@ -320,12 +331,12 @@ def test_route_without_a_fixed_segment_does_not_choose_the_pair() -> None:
     """`GET ''` + `add_prefix: api` = корень API: совпадение, а не правило (squidex)."""
     alone = LinkReport(calls_without_endpoint=[_call("", line=1)])
     keys = _keys("api", "api/apps")
-    [cluster] = clusters_of(alone, DocpipeConfig(), keys, by="module").clusters
+    [cluster] = clusters_of(alone, DocpipeConfig(), keys, sides=NO_SIDES, by="module").clusters
     assert (cluster.suggested_rewrite, cluster.rewrite_note) == (None, NOTE_NO_GAIN)
 
     # Пару выбрал настоящий маршрут — `would_link` считает и пустой: столько свяжет прогон.
     both = LinkReport(calls_without_endpoint=[_call("", line=1), _call("apps", line=2)])
-    [cluster] = clusters_of(both, DocpipeConfig(), keys, by="module").clusters
+    [cluster] = clusters_of(both, DocpipeConfig(), keys, sides=NO_SIDES, by="module").clusters
     rewrite = cluster.suggested_rewrite
     assert rewrite is not None
     assert (rewrite.strip_prefix, rewrite.add_prefix, rewrite.would_link) == ("", "api", 2)
@@ -340,13 +351,13 @@ def test_a_call_on_two_nodes_is_one_place() -> None:
             _call("api/other", line=9, caller="service"),
         ]
     )
-    by_module = clusters_of(report, DocpipeConfig(), _keys("apps"), by="module")
+    by_module = clusters_of(report, DocpipeConfig(), _keys("apps"), sides=NO_SIDES, by="module")
     assert (by_module.places, by_module.clusters[0].count) == (2, 2)
     assert by_module.categories["calls_without_endpoint"] == 2
     rewrite = by_module.clusters[0].suggested_rewrite
     assert rewrite is not None and rewrite.would_link == 1  # место, а не две записи
 
-    by_node = clusters_of(report, DocpipeConfig(), _keys(), by="controller")
+    by_node = clusters_of(report, DocpipeConfig(), _keys(), sides=NO_SIDES, by="controller")
     assert [(item.key, item.count) for item in by_node.clusters] == [("service", 2), ("dto", 1)]
     assert by_node.places == 2
 
@@ -366,7 +377,9 @@ def test_endpoints_count_entries_not_lines() -> None:
         )
 
     report = LinkReport(endpoints_without_caller=[endpoint("GET"), endpoint("POST")])
-    result = clusters_of(report, DocpipeConfig(), {}, category="endpoints_without_caller")
+    result = clusters_of(
+        report, DocpipeConfig(), {}, sides=NO_SIDES, category="endpoints_without_caller"
+    )
     assert (result.by, result.places) == ("controller", 2)
     assert [item.text for item in result.clusters[0].examples] == [
         "GET api/verbs (Echo)",
@@ -485,6 +498,45 @@ def test_command_refuses_bad_arguments_with_code_2(args: list[str], hint: str) -
     result = runner.invoke(app, ["setup", "link", "--root", str(SEAM), *args])
     assert result.exit_code == 2
     assert hint in result.output
+
+
+def test_sides_of_the_seam_are_named(seam: SetupContext) -> None:
+    """Стороны шва и счёт концов — в сводке, а не складываются из категорий (S34)."""
+    report = link_clusters(seam)
+    assert report.schema_version == "1.1"
+    assert report.seam is True
+    assert (report.dotnet_modules, report.web_modules) == (
+        len(seam.scan.manifest.modules),
+        len(seam.web.manifest.modules),
+    )
+    assert report.dotnet_modules > 0 and report.web_modules > 0
+    counts = seam.link.counts
+    assert (report.calls_total, report.endpoints_total) == (
+        counts["calls_total"],
+        counts["endpoints_total"],
+    )
+    text = format_link_clusters(report)
+    assert "Шва нет" not in text
+    assert f"Вызовов фронта {report.calls_total} (модулей {report.web_modules})" in text
+
+
+def test_without_a_front_the_seam_says_so() -> None:
+    """eshoponweb без фронта: 25 эндпоинтов «без вызывающего» без признака, что фронта нет."""
+    ctx = SetupContext.build(Path("tests/fixtures/SampleSolution"), None, use_cache=False)
+    report = link_clusters(ctx, category="endpoints_without_caller")
+    assert (report.seam, report.web_modules) == (False, 0)
+    assert report.dotnet_modules > 0 and report.places > 0
+    text = format_link_clusters(report)
+    assert text.splitlines()[0] == (
+        "Шва нет: модулей фронта 0 — эндпоинты без вызывающего не находки, "
+        "`setup status` их не считает."
+    )
+    # Правило «обе стороны» одно: `setup status` этих концов не считает.
+    assert not [
+        item
+        for item in build_status(ctx).findings
+        if item.code in ("link.endpoints_without_caller", "link.calls_without_endpoint")
+    ]
 
 
 def test_command_refuses_unreadable_config_with_code_2(tmp_path: Path) -> None:

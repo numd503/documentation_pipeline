@@ -9,7 +9,8 @@
 ## Инструменты
 
 - `setup_config_check` (`docpipe config check`) — пути и их базы, коды проблем;
-- `setup_recon` (`docpipe recon`) — состав репозитория, полные списки проектов;
+- `setup_recon` (`docpipe recon`) — состав репозитория; списки проектов —
+  первые `top`, целиком — с `list` страницами;
 - `setup_status` (`docpipe setup status`) — находки `scope.*` (первая —
   `scope.not_configured`, пока область не записана), `out_of_scope`;
 - `setup_explain` (`docpipe setup explain`) — что решено о каталоге и какой записью.
@@ -38,11 +39,17 @@
    Пока проблемы есть, дальше не идёшь: остальные числа считаются по
    настройке, которой в работе не будет.
 2. **`setup_recon`.** Блоки — по `id`: `composition` — языки, файлы
-   сборки, раскладка и полные списки `projects.dotnet_projects`,
+   сборки, раскладка и списки `projects.dotnet_projects`,
    `projects.solutions`, `projects.fronts` (`path`, `kind`, `config`,
    `proxy_configs`, `config_readable`), `projects.proxy_files`; `limits` —
-   чего разведка не видит. Раскладка (`layout`) — только верхний уровень:
-   вложенный корень решения (`eShopOnWeb/src/…`) видно по путям
+   чего разведка не видит. Списки в блоке — только первые `top` (умолчание
+   15), длины — в `projects_total`; в `recon.json` CLI-двойника они полные.
+   Длина больше показанного — список целиком: `setup_recon` с
+   `list: dotnet_projects` (`solutions`, `fronts`, `proxy_files`), дальше
+   `offset` из `next_offset`, пока ключ есть (abp — 671 проект, четыре
+   страницы). Область по первым `top` не строй: каталог за их пределами
+   останется без слова человека. Раскладка (`layout`) — только верхний
+   уровень: вложенный корень решения (`eShopOnWeb/src/…`) видно по путям
    `projects.dotnet_projects`. Расскажи человеку в пять–десять строк:
    сколько `.csproj` в каких каталогах, сколько фронтов, где прокси.
 3. **Область** — вопрос «Область» по находке `scope.not_configured` и её

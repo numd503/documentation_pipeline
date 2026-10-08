@@ -93,9 +93,10 @@ INSTRUCTIONS: Final = """
 3. После правки файла настройки позовите инструмент ещё раз и сравните ответ:
    каждый вызов перечитывает настройку. `setup_status` сравнивает с прошлым
    своим ответом сам (`previous` у находок и охвата).
-4. Списки — страницами: `limit` и `offset`. Ответ с `truncated: true`
-   неполон: `next_offset` — следующая страница, `truncated_lists` — какие
-   списки урезаны и сколько в них было. Сузьте запрос или возьмите CLI-двойник.
+4. Списки — страницами: `limit` и `offset`. Есть `next_offset` — список
+   продолжается, это следующая страница. `truncated: true` — ответ урезан
+   бюджетом: `truncated_lists` называет урезанные списки и сколько в них было;
+   второй список инструмента листается аргументом `list`.
 """.strip()
 
 # CLI-двойник каждого инструмента: команда, которая зовёт ту же функцию.
@@ -127,6 +128,14 @@ STATUS_LIMIT: Final = 5
 # проектов — S10), чем заякорен, швы, чему не верить. «Что читать первым»
 # и «где центр» — вопросы чтения кода, а не настройки; они у `docpipe_overview`.
 RECON_BLOCKS: Final = ("composition", "registries", "seams", "limits")
+
+# Листаемые списки инструментов, где больших списков больше одного (S34):
+# аргумент `list` выбирает, какой из них листают `offset` и `limit`; первый —
+# умолчание. У `setup_recon` умолчания нет: без `list` ответ — блоки разведки.
+RECON_LISTS: Final = ("dotnet_projects", "solutions", "fronts", "proxy_files")
+STATUS_LISTS: Final = ("findings", "coverage")
+EXPLAIN_LISTS: Final = ("decisions", "symbol_rows")
+PAGES_LISTS: Final = ("pages", "features", "not_pages")
 
 # Статус конфигурации у `setup_config_check`, когда отчёта проверки нет.
 CONFIG_MISSING: Final = "config_missing"
@@ -165,14 +174,23 @@ def fit(
     max_lines: int = MAX_LINES,
     paged: str | None = None,
     offset: int = 0,
+    total: int | None = None,
+    count_key: str | None = None,
 ) -> dict[str, Any]:
     """Уложить ответ в бюджет: урезать списки детерминированно и сказать об этом.
 
-    Влезает — ответ возвращается как есть, без единого нового ключа. Не влезает —
+    `paged` — страничный список, `offset` — с какого места он начинался, `total` —
+    его длина до окна обработчика (`None` — `paged` и есть весь остаток с `offset`).
+    `next_offset` — продолжение страничного списка: стоит, когда
+    `offset + показано < total`, **урезал ли бюджет или нет** — свою страницу
+    отчёт режет сам по `limit` (S34). Список кончился — ключа нет.
+
+    Влезает — ответ как есть, и новый ключ у него только `next_offset`. Не влезает —
     в начало ответа встают `truncated: true`, `truncated_lists` (семейство
     списков → сколько было в самом длинном из них) и `next_offset`: продолжение
-    страничного списка `paged` (`offset` — с какого места он начинался), `null`
-    — урезано только то, что страницами не листается.
+    страничного списка или `null` — список кончился, урезано то, что страницами
+    не листается. `count_key` — ключ счёта выданного (`shown` у `setup_symbols`):
+    после урезания в нём длина страницы, а не запрошенное.
 
     Порядок: остальное — не больше доли `REST_SHARE` (иначе страница вышла бы
     в один элемент), страница — сколько влезет, но не меньше одного элемента
@@ -186,19 +204,38 @@ def fit(
     по одному списку — сотня мелких списков примеров не перевесила бы ни
     одного соседа, а глубокая вложенность в компактном JSON легче, чем в тексте,
     который уйдёт. При равном весе — семейство с меньшим путём; в списке
-    остаётся начало. Всё решает содержимое: один ответ урезается одинаково.
+    остаётся начало. Пары `[имя, число]` изнутри не урезаются (семейство, каждый
+    член которого — два скаляра): урезается список пар. Всё решает содержимое:
+    один ответ урезается одинаково.
     """
     budget = _Budget(max_chars, max_lines)
-    if budget.holds(answer):
+    whole = _continued(answer, paged, offset, total)
+    if budget.holds(whole):
+        return whole
+    return _Fitter(answer, budget, paged, offset, total, count_key).run()
+
+
+def _continued(
+    answer: dict[str, Any], paged: str | None, offset: int, total: int | None
+) -> dict[str, Any]:
+    """Ответ, который влез: с `next_offset` в начале, если страничный список продолжается."""
+    items = answer.get(paged) if paged is not None else None
+    if total is None or not isinstance(items, list) or offset + len(items) >= total:
         return answer
-    return _Fitter(answer, budget, paged, offset).run()
+    return {"next_offset": offset + len(items), **answer}
 
 
 class _Fitter:
     """Состояние урезания одного ответа: тело, что урезано, где продолжение."""
 
     def __init__(
-        self, answer: dict[str, Any], budget: _Budget, paged: str | None, offset: int
+        self,
+        answer: dict[str, Any],
+        budget: _Budget,
+        paged: str | None,
+        offset: int,
+        total: int | None = None,
+        count_key: str | None = None,
     ) -> None:
         # Копия через JSON: ответ — данные для `tool_text`, и копировать его
         # иначе, чем его сериализуют, незачем.
@@ -209,6 +246,12 @@ class _Fitter:
         self.paged = paged
         self.page: _Path | None = (paged,) if paged is not None else None
         self.offset = offset
+        items = self.body.get(paged) if paged is not None else None
+        self.length = len(items) if isinstance(items, list) else 0
+        # Длина страничного списка до окна обработчика: без неё `next_offset`
+        # видел бы только урезанное бюджетом, а страницу по `limit` — нет.
+        self.total = total if total is not None else offset + self.length
+        self.count_key = count_key
 
     def run(self) -> dict[str, Any]:
         def full() -> bool:
@@ -242,11 +285,17 @@ class _Fitter:
             for family, longest in sorted(self.cut.items(), key=lambda item: _dotted(item[0]))
             if any(True for _ in _members(self.body, family))
         }
+        body = self.body
+        page = body.get(self.paged) if self.paged is not None else None
+        if self.count_key is not None and isinstance(page, list):
+            # Счёт выданного — длина страницы после урезания: агент, поверивший
+            # запрошенному числу (`shown: 100` при 22 строках), терял остаток группы.
+            body = {**body, self.count_key: len(page)}
         return {
             "truncated": True,
             "next_offset": self.next_offset,
             "truncated_lists": lists,
-            **self.body,
+            **body,
         }
 
     def holds(self, budget: _Budget) -> bool:
@@ -268,7 +317,8 @@ class _Fitter:
 
         def holds(count: int) -> bool:
             _set(self.body, page, items[:count])
-            self.next_offset = self.offset + count if count < total else None
+            following = self.offset + count
+            self.next_offset = following if following < self.total else None
             return self.holds(self.budget)
 
         if holds(total):
@@ -287,7 +337,7 @@ class _Fitter:
         """Самое тяжёлое семейство непустых списков из разрешённых."""
         weights: dict[_Path, list[int]] = {}
         found: list[tuple[_Path, int, int]] = []
-        _measure(self.body, (), 0, found)
+        _measure(self.body, (), 0, found, _pair_families(self.body))
         for path, chars, lines in found:
             family = _family(path)
             if allowed(family):
@@ -333,25 +383,45 @@ class _Fitter:
 
 
 def _measure(
-    node: Any, path: _Path, depth: int, found: list[tuple[_Path, int, int]]
+    node: Any,
+    path: _Path,
+    depth: int,
+    found: list[tuple[_Path, int, int]],
+    inline: frozenset[_Path] = frozenset(),
 ) -> tuple[int, int, int, int]:
-    """Символы и переводы строк узла в тексте с отступами — и сколько из них во вложенных списках.
+    """Символы и переводы строк узла в тексте ответа — и сколько из них во вложенных списках.
 
-    Узел стоит на глубине `depth` (отступ `2 * depth`), как в `json.dumps(..., indent=2)`.
+    Раскладка — та же, что у `mcp.tool_text`: узел на глубине `depth` (отступ
+    `2 * depth`), словари и списки с вложенными — по строке на элемент, список
+    скаляров — одной строкой. Повторяет её буквально: бюджет держит `holds()`
+    по настоящему тексту, и неверный вес не дал бы длинного ответа, а молча
+    сменил бы, что урезается первым (тест сверяет равенство на телах разной
+    вложенности).
+
     В `found` — непустые списки с собственным весом: свои символы и строки минус
-    те, что во вложенных в элементы списках. Для родителя список целиком — вложенный.
+    те, что во вложенных в элементы списках. Для родителя список целиком —
+    вложенный. Кроме семейств `inline` (пары `[имя, число]`): их в `found` нет,
+    а вес — родителю, как у скаляра, — урезается список пар, а не пара.
     """
     if not isinstance(node, dict | list):
         return len(json.dumps(node, ensure_ascii=False)), 0, 0, 0
     if not node:
         return 2, 0, 0, 0
+    if isinstance(node, list) and not any(isinstance(item, dict | list) for item in node):
+        # «[», элементы через «, », «]» — одной строкой.
+        chars = sum(len(json.dumps(item, ensure_ascii=False)) for item in node)
+        chars += 2 * (len(node) - 1) + 2
+        if _family(path) in inline:
+            return chars, 0, 0, 0
+        found.append((path, chars, 0))
+        return chars, 0, chars, 0
     pad = 2 * (depth + 1)
     # «[», перевод строки, запятые между элементами, отступ и «]» закрытия.
     chars, lines, nested_chars, nested_lines = 2 + len(node) - 1 + 2 * depth + 1, 1, 0, 0
     entries = node.items() if isinstance(node, dict) else enumerate(node)
     for key, value in entries:
         inner, inner_lines, inner_nested, inner_nested_lines = _measure(
-            value, (*path, key), depth + 1, found
+            value, (*path, key), depth + 1, found, inline
         )
         label = len(json.dumps(key, ensure_ascii=False)) + 2 if isinstance(node, dict) else 0
         chars += pad + label + inner + 1
@@ -366,6 +436,32 @@ def _measure(
 
 def _family(path: _Path) -> _Path:
     return tuple(_EACH if isinstance(part, int) else part for part in path)
+
+
+def _pair_families(body: dict[str, Any]) -> frozenset[_Path]:
+    """Семейства, каждый член которых — список из двух скаляров: пары `[имя, число]`.
+
+    Признак — в данных, а не в модели: `list[tuple[str, int]]` сериализуется
+    списком, как любой другой. Пара, урезанная изнутри, — `[]` или `["Base"]`
+    без числа: на abp `setup_stats` отдал 40 пустых `[]` в `base_types`.
+    Семейство, где хоть один член не пара (`modifiers` с двумя и тремя
+    словами), — обычное.
+    """
+    pairs: dict[_Path, bool] = {}
+
+    def walk(node: Any, path: _Path) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                walk(value, (*path, key))
+        elif isinstance(node, list):
+            pair = len(node) == 2 and not any(isinstance(item, dict | list) for item in node)
+            family = _family(path)
+            pairs[family] = pairs.get(family, True) and pair
+            for index, item in enumerate(node):
+                walk(item, (*path, index))
+
+    walk(body, ())
+    return frozenset(family for family, pair in pairs.items() if pair)
 
 
 def _members(node: Any, family: _Path, path: _Path = ()) -> Iterator[tuple[_Path, list[Any]]]:
@@ -459,11 +555,19 @@ class Param:
 
 @dataclass(frozen=True)
 class Answer:
-    """Ответ инструмента до бюджета: тело и какой его список листается страницами."""
+    """Ответ инструмента до бюджета: тело и какой его список листается страницами.
+
+    `total` — длина листаемого списка до окна обработчика (`offset`, `limit`):
+    по ней `fit` ставит `next_offset` и тогда, когда бюджет списка не урезал.
+    `count_key` — ключ тела, в котором счёт выданного (`shown`): после
+    урезания в нём длина страницы.
+    """
 
     body: dict[str, Any]
     paged: str | None = None
     offset: int = 0
+    total: int | None = None
+    count_key: str | None = None
 
 
 Handler = Callable[["SetupTools", dict[str, Any]], Answer]
@@ -511,10 +615,47 @@ def _lang() -> Param:
     return Param("lang", "string", "cs — .NET (шаг 1), ts — фронт (шаг web).", "cs", ("cs", "ts"))
 
 
+def _list(choices: tuple[str, ...]) -> Param:
+    return Param(
+        "list",
+        "string",
+        "Какой список листать (offset и limit — его); truncated_lists называет урезанный.",
+        choices[0],
+        choices,
+    )
+
+
 def _window(items: list[Any], offset: int, limit: int) -> list[Any]:
     """Страница списка: с `offset`, не больше `limit` (0 — до конца)."""
     rest = items[offset:]
     return rest[:limit] if limit else rest
+
+
+def _only(body: dict[str, Any], chosen: str, lists: tuple[str, ...]) -> dict[str, Any]:
+    """Тело, в котором из листаемых списков остался один: остальные пусты, длины — в `omitted`.
+
+    Рядом с выбранным списком соседи съедали бюджет страницы: `not_pages`
+    (245 на squidex) при доле `REST_SHARE` занимал 60 % ответа `setup_pages`,
+    и на страницу влезало 4 страницы из 54. Длина рядом — иначе пустой список
+    читался бы как «таких нет».
+    """
+    others = [name for name in lists if name != chosen]
+    omitted = {name: len(body[name]) for name in others}
+    return {
+        **{key: ([] if key in others else value) for key, value in body.items()},
+        "omitted": omitted,
+    }
+
+
+def compact_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Строка символа без пустых полей: `None`, `[]` и `""` не пишутся (S34).
+
+    У нерешённого символа пять полей пусты всегда (`kind`, `rules`,
+    `winner_rule`, `exclusion`, `page`), и на 870 символов строки они вместе
+    с пустыми списками давали треть строк. Проекция — сервера: JSON
+    `symbols --format json` полный, его читают скрипты, ждущие все ключи.
+    """
+    return {key: value for key, value in row.items() if value is not None and value not in ([], "")}
 
 
 def _as_lang(value: str) -> Lang:
@@ -558,7 +699,22 @@ def _config_check(tools: "SetupTools", args: dict[str, Any]) -> Answer:
 
 
 def _recon(tools: "SetupTools", args: dict[str, Any]) -> Answer:
-    report = recon.build_report(tools.root, recon.DEFAULT_MONTHS, args["top"], [])
+    top: int = args["top"]
+    report = recon.build_report(tools.root, recon.DEFAULT_MONTHS, top, [])
+    chosen, offset = args["list"], args["offset"]
+    if chosen:
+        # Один полный список проектов страницами: фаза 00 строит из них
+        # `roots`, `enrolled`, `web.roots`, а 671 проект abp в один ответ
+        # не влезает — без страницы он урезался до 10 с `next_offset: null`.
+        composition = next(block for block in report["blocks"] if block["id"] == "composition")
+        items: list[Any] = composition["data"]["projects"][chosen]
+        body = {
+            "list": chosen,
+            "total": len(items),
+            "offset": offset,
+            "items": _window(items, offset, args["limit"]),
+        }
+        return Answer(body, paged="items", offset=offset, total=len(items))
     blocks: list[dict[str, Any]] = []
     for block in report["blocks"]:
         if block["id"] not in RECON_BLOCKS:
@@ -566,9 +722,16 @@ def _recon(tools: "SetupTools", args: dict[str, Any]) -> Answer:
         data = block["data"]
         if block["id"] == "composition":
             # Полные списки файлов сборки повторяют `projects` и съели бы бюджет
-            # ответа: остаются счёт и примеры, полные списки проектов — в `projects`.
+            # ответа: остаются счёт и примеры. Полные списки проектов — первые
+            # `top` и длины в `projects_total`; целиком — аргументом `list`.
             rows = [{k: v for k, v in row.items() if k != "paths"} for row in data["build_files"]]
-            data = {**data, "build_files": rows}
+            projects = data["projects"]
+            data = {
+                **data,
+                "build_files": rows,
+                "projects": {name: projects[name][:top] for name in RECON_LISTS},
+                "projects_total": {name: len(projects[name]) for name in RECON_LISTS},
+            }
         blocks.append({**block, "data": data})
     body = {key: report[key] for key in ("schema", "repo", "vcs", "head", "params")}
     return Answer({**body, "blocks": blocks})
@@ -576,6 +739,7 @@ def _recon(tools: "SetupTools", args: dict[str, Any]) -> Answer:
 
 def _status(tools: "SetupTools", args: dict[str, Any]) -> Answer:
     offset: int = args["offset"]
+    chosen: str = args["list"]
     context = tools.context()
     report = tools.remember_status(
         lambda baseline: build_status(context, baseline=baseline, limit=args["limit"]),
@@ -583,27 +747,45 @@ def _status(tools: "SetupTools", args: dict[str, Any]) -> Answer:
         first_page=offset == 0,
     )
     body = report.model_dump(mode="json")
-    body["findings"] = body["findings"][offset:]
-    return Answer(body, paged="findings", offset=offset)
+    total = len(body[chosen])
+    if chosen != STATUS_LISTS[0]:
+        # Охват листают, чтобы проверить новую запись: находки рядом с каждой
+        # страницей охвата съели бы её долю, а их уже видели на первой.
+        body = _only(body, chosen, STATUS_LISTS)
+    body[chosen] = body[chosen][offset:]
+    return Answer(body, paged=chosen, offset=offset, total=total)
 
 
 def _review(tools: "SetupTools", args: dict[str, Any]) -> Answer:
     offset: int = args["offset"]
     report = build_review(tools.context(), since=args["since"], limit=args["limit"])
     body = report.model_dump(mode="json")
+    total = len(body["applied"])
     body["applied"] = body["applied"][offset:]
-    return Answer(body, paged="applied", offset=offset)
+    return Answer(body, paged="applied", offset=offset, total=total)
 
 
 def _explain(tools: "SetupTools", args: dict[str, Any]) -> Answer:
     offset: int = args["offset"]
-    report = explain_path(tools.context(), args["path"], limit=args["limit"])
+    limit: int = args["limit"]
+    chosen: str = args["list"]
+    rows = chosen == "symbol_rows"
+    # Строки символов листаются окном сервера: отчёт отдаёт первые `limit`,
+    # поэтому для них он собирается целиком, а документы режутся тем же `limit`.
+    report = explain_path(tools.context(), args["path"], limit=0 if rows else limit)
     body = report.model_dump(mode="json")
-    # Страницы — по `decisions`, главному полю ответа: без страницы бюджет
-    # урезал бы его наравне с примерами символов, и «что решило судьбу этого
-    # кода» оборвалось бы на середине без продолжения.
-    body["decisions"] = body["decisions"][offset:]
-    return Answer(body, paged="decisions", offset=offset)
+    total = len(body[chosen])
+    if rows:
+        body = _only(body, chosen, EXPLAIN_LISTS)
+        body["symbol_rows"] = _window(body["symbol_rows"], offset, limit)
+        body["documents"] = _window(body["documents"], 0, limit)
+    else:
+        # Страницы — по `decisions`, главному полю ответа: без страницы бюджет
+        # урезал бы его наравне с примерами символов, и «что решило судьбу этого
+        # кода» оборвалось бы на середине без продолжения.
+        body["decisions"] = body["decisions"][offset:]
+    body["symbol_rows"] = [compact_row(row) for row in body["symbol_rows"]]
+    return Answer(body, paged=chosen, offset=offset, total=total)
 
 
 def _stats(tools: "SetupTools", args: dict[str, Any]) -> Answer:
@@ -653,12 +835,17 @@ def _symbols(tools: "SetupTools", args: dict[str, Any]) -> Answer:
         offset=args["offset"],
     )
     body = build_symbols_report(selection).model_dump(mode="json")
-    return Answer(body, paged="symbols", offset=args["offset"])
+    body["symbols"] = [compact_row(row) for row in body["symbols"]]
+    return Answer(
+        body, paged="symbols", offset=args["offset"], total=selection.total, count_key="shown"
+    )
 
 
 def _candidates(tools: "SetupTools", args: dict[str, Any]) -> Answer:
     report = candidates(args["kind"], tools.context(), limit=args["limit"], offset=args["offset"])
-    return Answer(report.model_dump(mode="json"), paged="items", offset=args["offset"])
+    return Answer(
+        report.model_dump(mode="json"), paged="items", offset=args["offset"], total=report.total
+    )
 
 
 def _link(tools: "SetupTools", args: dict[str, Any]) -> Answer:
@@ -675,17 +862,22 @@ def _link(tools: "SetupTools", args: dict[str, Any]) -> Answer:
         limit=args["limit"],
         offset=args["offset"],
     )
-    return Answer(report.model_dump(mode="json"), paged="clusters", offset=args["offset"])
+    return Answer(
+        report.model_dump(mode="json"), paged="clusters", offset=args["offset"], total=report.total
+    )
 
 
 def _pages(tools: "SetupTools", args: dict[str, Any]) -> Answer:
     report = build_pages_report(tools.context().web.manifest, note=args["note"] or "")
+    chosen: str = args["list"]
     body = report.model_dump(mode="json")
     # `pages_total` — сколько страниц прошло отбор: `counts` считается по всему
     # дереву, и без этого числа страница списка читалась бы как весь отбор.
     body["pages_total"] = len(body["pages"])
-    body["pages"] = _window(body["pages"], args["offset"], args["limit"])
-    return Answer(body, paged="pages", offset=args["offset"])
+    total = len(body[chosen])
+    body = _only(body, chosen, PAGES_LISTS)
+    body[chosen] = _window(body[chosen], args["offset"], args["limit"])
+    return Answer(body, paged=chosen, offset=args["offset"], total=total)
 
 
 def _step2(context: SetupContext, lang: Lang) -> Step2Inputs:
@@ -699,11 +891,12 @@ def _docs(tools: "SetupTools", args: dict[str, Any]) -> Answer:
     status = args["status"]
     selected = filter_documents(loaded.plan.documents, [], [], statuses=[status] if status else [])
     body = status_report(loaded.plan, selected).model_dump(mode="json")
+    total = len(body["documents"])
     body["documents"] = _window(body["documents"], args["offset"], args["limit"])
     if loaded.warnings:
         # CLI печатает их в stderr, а stderr сервера агент не видит.
         body["warnings"] = list(loaded.warnings)
-    return Answer(body, paged="documents", offset=args["offset"])
+    return Answer(body, paged="documents", offset=args["offset"], total=total)
 
 
 def _docs_explain(tools: "SetupTools", args: dict[str, Any]) -> Answer:
@@ -744,17 +937,31 @@ TOOLS: Final[tuple[Tool, ...]] = (
     Tool(
         "setup_recon",
         "Разведка репозитория, настройки не требует: чем собран (языки, файлы сборки, "
-        "полные списки проектов .NET, решений и фронтов — `projects`), чем заякорен "
-        "(кандидаты в реестры), как языки говорят между собой, чему в отчёте не верить.",
-        (Param("top", "integer", "Длина списков в блоках.", recon.DEFAULT_TOP),),
+        "списки проектов .NET, решений, фронтов и прокси — первые `top` в `projects`, длины "
+        "в `projects_total`), чем заякорен (кандидаты в реестры), как языки говорят между "
+        "собой, чему в отчёте не верить. С `list` — один список проектов целиком страницами: "
+        "`list`, `total`, `offset`, `items`.",
+        (
+            Param("top", "integer", "Длина списков в блоках.", recon.DEFAULT_TOP),
+            Param(
+                "list",
+                "string",
+                "Список проектов целиком, страницами (offset и limit — его).",
+                choices=RECON_LISTS,
+            ),
+            _limit(0, "Элементов списка `list` на странице"),
+            _offset(),
+        ),
         _recon,
     ),
     Tool(
         "setup_status",
         "Что в области ещё без решения и что сломано: находки по кодам с кластерами "
         "и местом решения (`decision_home`), охват каждого решения настройки, что решено "
-        "не брать. Страница — по `findings`; `unexplained` и `defects` — по всем.",
+        "не брать. Страница — по `findings`, с `list: coverage` — по охвату (находки тогда "
+        "пусты, их число — в `omitted`); `unexplained` и `defects` — по всем.",
         (
+            _list(STATUS_LISTS),
             _limit(STATUS_LIMIT, "Кластеров на срез находки"),
             Param(
                 "baseline",
@@ -790,7 +997,8 @@ TOOLS: Final[tuple[Tool, ...]] = (
         "Что решено об этом коде: обход и отсев, область модуля, символы с решениями, "
         "страницы, вызовы, документы, владение и главное — `decisions`: какие записи "
         "настройки и с какими причинами решили его судьбу. По ним видно, что править. "
-        "Страница — по `decisions`.",
+        "Страница — по `decisions`, с `list: symbol_rows` — по строкам символов (решения "
+        "тогда пусты, их число — в `omitted`). У строк символов пустые поля не пишутся.",
         (
             Param(
                 "path",
@@ -798,6 +1006,7 @@ TOOLS: Final[tuple[Tool, ...]] = (
                 "Файл, каталог или глоб от корня репозитория; `.` — весь репозиторий.",
                 required=True,
             ),
+            _list(EXPLAIN_LISTS),
             _limit(what="Строк символов и документов"),
             _offset(),
         ),
@@ -814,7 +1023,8 @@ TOOLS: Final[tuple[Tool, ...]] = (
     Tool(
         "setup_symbols",
         "Сами символы с решением о каждом: правило-победитель, отсев с причиной, "
-        "страница, базы, атрибуты, публичные члены. По умолчанию — без решения.",
+        "страница, базы, атрибуты, публичные члены. По умолчанию — без решения. "
+        "Пустые поля не пишутся; `shown` — сколько строк в этом ответе.",
         (
             _lang(),
             Param(
@@ -866,10 +1076,12 @@ TOOLS: Final[tuple[Tool, ...]] = (
     Tool(
         "setup_pages",
         "Страницы фронта и почему каждая — страница: маршруты с источником, зависимости, "
-        "вызовы, заметки. Разделы и компоненты, страницами не ставшие, — рядом. "
-        "Страница списка — по `pages`, `pages_total` — сколько прошло отбор.",
+        "вызовы, заметки. Разделы (`features`) и компоненты, страницами не ставшие "
+        "(`not_pages`), — аргументом `list`; невыбранные списки пусты, их длины — "
+        "в `omitted`. `pages_total` — сколько страниц прошло отбор.",
         (
             Param("note", "string", "Только страницы с этой заметкой.", choices=tuple(NOTE_CODES)),
+            _list(PAGES_LISTS),
             _limit(what="Страниц"),
             _offset(),
         ),
@@ -1003,6 +1215,8 @@ class SetupTools:
             max_lines=self.max_lines,
             paged=answer.paged,
             offset=answer.offset,
+            total=answer.total,
+            count_key=answer.count_key,
         )
 
 
@@ -1016,5 +1230,6 @@ __all__ = [
     "SERVER_NAME",
     "TOOLS",
     "SetupTools",
+    "compact_row",
     "fit",
 ]

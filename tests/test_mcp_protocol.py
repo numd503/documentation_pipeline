@@ -26,6 +26,8 @@ from docpipe.mcp import (
     negotiate,
     serve,
 )
+from docpipe.mcp import tool_text as answer_text
+from docpipe.setup.server import _measure
 
 
 class FakeTools:
@@ -316,3 +318,81 @@ def test_protocol_lives_in_one_module() -> None:
         text = path.read_text(encoding="utf-8")
         for marker in ('"jsonrpc"', "protocolVersion", "-32600", "-32601"):
             assert marker not in text, f"{path}: копия протокола MCP — «{marker}»"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Текст ответа инструмента (S34)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Тела разной вложенности: скаляры, пустые контейнеры, списки скаляров, пары,
+# списки словарей, глубина пять, не-ASCII и экранирование, списки списков.
+BODIES: list[dict[str, Any]] = [
+    {},
+    {"a": 1},
+    {"names": ["Run", "Stop"], "empty": [], "none": None, "flag": False},
+    {"pairs": [["controller", 2], ["service", 1]], "total": 3},
+    {"rows": [{"fqn": "A.B", "modifiers": ["public"], "page": None}]},
+    {"deep": {"x": [{"y": [{"z": [1, 2, {"w": ["ы", '"кавычка"\n']}]}]}]}},
+    {"mixed": [1, [2, 3], {"k": []}, "s", None], "dict": {}},
+    {"floats": [0.5, -1.25, 1e21], "unicode": "фронт↔.NET", "tab": "a\tb"},
+    {"1": {"2": [[[]], [{}]]}, "list_of_lists": [["a"], ["b", "c", "d"]]},
+    {
+        "blocks": [
+            {"id": f"b{i}", "data": {"examples": [f"e{n}" for n in range(i)]}} for i in range(4)
+        ]
+    },
+]
+
+
+@pytest.mark.parametrize("body", BODIES)
+def test_tool_text_is_json_of_the_same_value(body: dict[str, Any]) -> None:
+    """Разметка меняется, значения — нет: тесты `graph serve` читают JSON и не
+    зависят от неё, а агент получает то же, что получал."""
+    assert json.loads(answer_text(body)) == body
+
+
+def test_list_of_scalars_is_one_line_and_the_rest_is_indented() -> None:
+    """Строка символа `setup_symbols` была 30 строк, из них половина — скобки
+    и короткие имена: список скаляров — одна строка (S34)."""
+    text = answer_text(
+        {"modifiers": ["partial", "public"], "rows": [{"names": ["Run"]}], "pair": [["a", 1]]}
+    )
+    assert text == (
+        "{\n"
+        '  "modifiers": ["partial", "public"],\n'
+        '  "rows": [\n'
+        "    {\n"
+        '      "names": ["Run"]\n'
+        "    }\n"
+        "  ],\n"
+        '  "pair": [\n'
+        '    ["a", 1]\n'
+        "  ]\n"
+        "}"
+    )
+    # Без списков скаляров — ровно `json.dumps(…, indent=2)`.
+    plain = {"a": {"b": [{"c": 1}, {}]}, "d": [], "e": "ё"}
+    assert answer_text(plain) == json.dumps(plain, ensure_ascii=False, indent=2)
+
+
+def test_tool_text_refuses_what_json_refuses() -> None:
+    """Несериализуемое — `TypeError`, как у `json.dumps`: `_call_tool` ловит его
+    и отвечает ошибкой инструмента."""
+    for body in ({"path": Path("x")}, {"set": {1}}, {"nested": [{"p": Path("y")}]}):
+        with pytest.raises(TypeError):
+            answer_text(body)
+    with pytest.raises(TypeError):
+        answer_text({("tuple", "key"): 1})  # type: ignore[dict-item]
+
+
+@pytest.mark.parametrize("body", BODIES)
+def test_budget_measure_repeats_the_layout(body: dict[str, Any]) -> None:
+    """Вес бюджета (`setup/server._measure`) — копия разметки `tool_text`.
+
+    Бюджет держит настоящий текст, поэтому неверный вес не дал бы длинного
+    ответа, а молча сменил бы, что урезается первым: тест равенства, а не
+    «примерно» (ловушка S34).
+    """
+    text = answer_text(body)
+    chars, lines, _, _ = _measure(body, (), 0, [])
+    assert (chars, lines) == (len(text), text.count("\n"))

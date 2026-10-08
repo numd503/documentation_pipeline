@@ -74,12 +74,20 @@ uv run docpipe setup candidates url-builders --root . --config docpipe.yaml
 вызовов с типом — тип-аргументом или `typeof`. Порядок —
 `(-round(receiver_overlap, 2), -calls_with_types, method)`.
 
+**Считается только область** (S34, `schema_version` 1.1): вызов идёт
+в счёт, если его файл лежит в модуле с `scope_of(…) == "enrolled"`
+(файл → ближайший вверх `.csproj` манифеста); файл вне проектов — вне
+области. Без этого на semantic-kernel вся первая страница была из samples
+и тестов, и агент отбирал кандидатов области руками. База пересечения
+(`standard_calls`, `standard_receivers`) — тоже по области.
+
 | Поле | Что значит |
 |---|---|
 | `method` | имя метода |
-| `calls` | все вызовы, включая лямбда-форму без типа |
+| `calls` | все вызовы в области, включая лямбда-форму без типа |
 | `calls_with_types` | вызовы с типом-аргументом или `typeof` |
 | `files` | в скольких файлах вызывается |
+| `calls_outside_area` | сколько вызовов того же метода отброшено вне области |
 | `receivers` | три самых частых получателя: `[имя, вызовов]` |
 | `receiver_overlap` | доля вызовов, у которых получатель тот же, на котором в этом репозитории зовут стандартные `Add*` |
 | `declared_in` | файл объявления метода-расширения (`static`, `this ` в сигнатуре), если он в репозитории; иначе `null` |
@@ -87,9 +95,17 @@ uv run docpipe setup candidates url-builders --root . --config docpipe.yaml
 | `examples` | до трёх `файл:строка`, сначала вызовы с типом |
 
 Над списком — база пересечения: `standard_calls` (число стандартных
-регистраций) и `standard_receivers` (их три частых получателя).
+регистраций) и `standard_receivers` (их три частых получателя),
+и `outside_area_calls` — нестандартных вызовов `Add*` вне области,
+которые не считались (стандартные вне области не в счёт и здесь: их имена
+известны без настройки).
 
 Как читать:
+
+- **Ноль кандидатов при `outside_area_calls` больше нуля** — «не видно»,
+  а не «нет»: обёртка может жить в модуле, о котором область ещё не
+  решена (`undecided`) или решено не брать. Решение — об области, а не
+  о `di_methods`.
 
 - **Высокое пересечение и много вызовов с типом** — почти наверняка
   обёртка: её зовут на той же коллекции сервисов, что и `AddScoped`.
@@ -128,11 +144,22 @@ uv run docpipe setup candidates url-builders --root . --config docpipe.yaml
 не меньше двух реализаций и двух разных типов-запросов. Порядок —
 `(-exclusivity, -sent, -implementations, interface)`.
 
+**Считается только область** (S34, `schema_version` 1.1): реализация —
+класс модуля области (`Symbol.module` с `scope_of(…) == "enrolled"`),
+отправка — `new X(…)` в файле модуля области; исключительность — по
+головам области. Тип-запрос «объявлен в репозитории» — по всему индексу:
+запрос из общей библиотеки вне области остаётся запросом. Без этого
+`dispatch-interfaces` на semantic-kernel, abp и eshoponweb возглавляли
+тестовые базы (`VectorData.ConformanceTests…`). Отчёт — с
+`outside_area_implementations`: пар «голова, класс» вне области, которые
+не считались; ноль кандидатов при нём — «не видно», а не «нет».
+
 | Поле | Что значит |
 |---|---|
 | `interface` | FQN объявленной в репозитории базы или имя внешней |
 | `resolved` | база объявлена в репозитории |
-| `implementations` | классов-реализаций |
+| `implementations` | классов-реализаций в области |
+| `implementations_outside_area` | реализаций той же головы, отброшенных вне области |
 | `request_types` | разных типов-запросов |
 | `exclusivity` | доля типов-запросов, которые первым аргументом обобщённой базы встречаются **только** у этой головы |
 | `sent` | сколько раз тип-запрос создают (`new X(…)`) вне классов-реализаций этой головы |
@@ -179,13 +206,17 @@ uv run docpipe setup candidates url-builders --root . --config docpipe.yaml
   наследник, и кандидатом будет голова наследника `CommandHandler` — ключ
   сверяется с прямыми базами.
 
-Числа на открытых репозиториях (07.10): eShopOnWeb — 5 кандидатов,
-первый `IRequestHandler` (2 реализации, 1.0, 4 отправки, пакет `MediatR`);
-squidex — 32, `IMessageHandler` третьим после `Content<T>` и
-`ReadonlyList<T>` (у всех 1.0, порядок решает `sent`); abp — 62, первыми
-`AsyncBackgroundJob` и `BackgroundJob` (диспетчеризация джобов по типу
-аргументов), `ILocalEventHandler` и `IDistributedEventHandler` — 32-м и
-33-м из-за общих событий.
+Числа на открытых репозиториях (07.10, до счёта по области):
+eShopOnWeb — 5 кандидатов, первый `IRequestHandler` (2 реализации, 1.0,
+4 отправки, пакет `MediatR`); squidex — 32, `IMessageHandler` третьим
+после `Content<T>` и `ReadonlyList<T>` (у всех 1.0, порядок решает
+`sent`); abp — 62, первыми `AsyncBackgroundJob` и `BackgroundJob`
+(диспетчеризация джобов по типу аргументов), `ILocalEventHandler`
+и `IDistributedEventHandler` — 32-м и 33-м из-за общих событий.
+По области (08.10, копии S31 с настройкой после прогона): semantic-kernel
+15 → 4 (вне области 713 реализаций), squidex 32 → 25 (162), abp 8 → 4 (65),
+eShopOnWeb 5 → 3 (16); у `di-methods` semantic-kernel 37 → 1 (вне области
+3517 нестандартных вызовов).
 
 ### `registry-calls`
 
@@ -639,6 +670,17 @@ uv run docpipe setup link --root . --by module --format json --no-cache
 | `clusters[].rewrite_note` | почему подсказки нет; пусто, если она есть или не положена |
 | `linked` | мест, связанных точно, — для сравнения |
 | `categories` | мест в каждой из семи категорий: куда смотреть дальше, не зовя команду семь раз |
+| `dotnet_modules`, `web_modules` | модулей в манифестах шага 1 и шага `web` (S34, `schema_version` 1.1) |
+| `seam` | у шва обе стороны — `setup/link.seam_sides`, та же функция, что у `setup status` |
+| `calls_total`, `endpoints_total` | вызовов фронта и эндпоинтов бэкенда (`counts` отчёта связи) |
+
+**Шва нет — первая строка текста.** При `seam: false` сводка начинается
+строкой «Шва нет: модулей фронта 0 — эндпоинты без вызывающего не находки,
+`setup status` их не считает» (или «модулей .NET 0 — вызовы без эндпоинта»).
+Без неё на eshoponweb, где фронта нет, 25 эндпоинтов без вызывающего
+читались как 25 вопросов «кто зовёт». Правило «обе стороны» одно на сводку
+и статус: вторая копия разошлась бы, и сводка назвала бы находкой то, чего
+статус не считает.
 
 **Место — `(file, line)`, а не запись отчёта.** Вызов, у которого нет узла
 с подходящим диапазоном строк, приписан каждому узлу файла (S16, п. 6),
@@ -1046,24 +1088,44 @@ MCP-сервер настройки на stdio (S27), `serverInfo.name` — `doc
 | Инструмент | Аргументы (умолчание) | Функция | CLI-двойник |
 |---|---|---|---|
 | `setup_config_check` | — | `configcheck.check_config` | `config check` |
-| `setup_recon` | `top` (15) | `recon.build_report`: блоки `composition` (с `projects`), `registries`, `seams`, `limits` | `recon` |
-| `setup_status` | `limit` (**5**), `baseline` (`previous` \| `none`), `offset` | `setup/status.build_status`; страница — `findings` | `setup status` |
+| `setup_recon` | `top` (15), `list` (`dotnet_projects` \| `solutions` \| `fronts` \| `proxy_files`), `limit` (0), `offset` | `recon.build_report`: блоки `composition` (`projects` — первые `top`, длины — `projects_total`), `registries`, `seams`, `limits`; с `list` — один список проектов страницами | `recon` |
+| `setup_status` | `list` (`findings` \| `coverage`), `limit` (**5**), `baseline` (`previous` \| `none`), `offset` | `setup/status.build_status`; страница — `findings` или `coverage` | `setup status` |
 | `setup_review` | `since`, `limit` (20), `offset` | `setup/review.build_review`; страница — `applied` | `setup review` |
-| `setup_explain` | `path`, `limit` (20), `offset` | `setup/explain.explain_path`; страница — `decisions` | `setup explain` |
+| `setup_explain` | `path`, `list` (`decisions` \| `symbol_rows`), `limit` (20), `offset` | `setup/explain.explain_path`; страница — `decisions` или `symbol_rows` | `setup explain` |
 | `setup_stats` | `lang` (`cs` \| `ts`), `top` (15) | `stats.build_stats_report` (`scope_info` у `cs`, `stale_overrides` у `ts`) | `scan --stats`, `web scan --stats` |
 | `setup_symbols` | `lang`, `state` (`undecided`), `module`, `namespace`, `path`, `rule`, `kind`, `limit` (20), `offset` | `explain.select` → `build_symbols_report` | `symbols` |
 | `setup_candidates` | `kind`, `limit` (20), `offset` | `setup/candidates.candidates` | `setup candidates` |
 | `setup_link` | `category`, `by`, `limit` (20), `offset` | `setup/link.link_clusters` | `setup link` |
-| `setup_pages` | `note`, `limit` (20), `offset` | `web/pages.build_report` по манифесту фронта в памяти; страница — `pages` | `web pages` |
+| `setup_pages` | `note`, `list` (`pages` \| `features` \| `not_pages`), `limit` (20), `offset` | `web/pages.build_report` по манифесту фронта в памяти; страница — список `list`, остальные пусты, длины — в `omitted` | `web pages` |
 | `setup_docs` | `status`, `lang`, `limit` (20), `offset` | `step2.prepare(…, links=True)` → `materialize/status.status_report`; страница — `documents` | `docs status` |
 | `setup_docs_explain` | `path`, `lang` | `step2.prepare` → `materialize/explain.explain_report` | `docs explain` |
 
 Ответ без урезания — та же модель, что JSON двойника (`--format json`),
-байт в байт по содержимому; тест сверяет `setup_config_check`,
-`setup_status`, `setup_stats` (оба языка), `setup_symbols`, `setup_explain`,
-`setup_link`, `setup_candidates`, `setup_docs` и `setup_docs_explain`
-с выводом команд.
+байт в байт по содержимому, в проекции сервера: строки символов без пустых
+полей и `next_offset`, когда список продолжается (ниже); тест сверяет
+`setup_config_check`, `setup_status`, `setup_stats` (оба языка),
+`setup_symbols`, `setup_explain`, `setup_link`, `setup_candidates`,
+`setup_docs` и `setup_docs_explain` с выводом команд.
 Отличия от двойника — только здесь:
+
+- **строки символов без пустых полей** (S34): у `symbols` в `setup_symbols`
+  и `symbol_rows` в `setup_explain` ключи со значением `null`, `[]` и `""`
+  не пишутся (`server.compact_row`). У нерешённого символа пять полей пусты
+  всегда (`kind`, `rules`, `winner_rule`, `exclusion`, `page`); JSON
+  `symbols --format json` остаётся полным — его читают скрипты, ждущие все
+  ключи. `shown` у `setup_symbols` — сколько строк в этом ответе, после
+  урезания тоже;
+- **второй список — аргументом `list`** (S34): у `setup_status`
+  (`findings` | `coverage`), `setup_explain` (`decisions` | `symbol_rows`),
+  `setup_pages` (`pages` | `features` | `not_pages`) и `setup_recon` (один
+  из списков проектов) `offset` и `limit` относятся к выбранному списку.
+  Невыбранные листаемые списки пусты, их длины — в `omitted`: у
+  `setup_pages` всегда (`not_pages` — 245 на squidex — съедал 60 % бюджета
+  страницы), у `setup_status` и `setup_explain` — когда выбран не первый
+  (по умолчанию ответ прежний, `coverage` рядом с находками). У
+  `setup_recon` без `list` списки `projects` — первые `top`, длины —
+  `projects_total`; с `list` ответ — `{"list", "total", "offset", "items"}`,
+  `limit` 0 по умолчанию (страницу режет бюджет);
 
 - **прогоны — в памяти**, как у остальных команд `setup`: `setup_docs`
   и `setup_docs_explain` строят план по манифесту текущего прогона (`lang`:
@@ -1074,7 +1136,7 @@ MCP-сервер настройки на stdio (S27), `serverInfo.name` — `doc
   восьми находок расползается на шесть страниц; при 5 — три;
 - `setup_recon` — блоки «что читать первым» и «где центр» не отдаются (они
   про чтение кода, а не настройку; они у `docpipe_overview`), а у строк
-  `build_files` нет `paths`: полные списки проектов — в `projects`;
+  `build_files` нет `paths`: полные списки проектов — аргументом `list`;
 - `setup_pages` — сверх отчёта `pages_total` (сколько страниц прошло отбор:
   `counts` считаются по всему дереву); `setup_docs` — `warnings`
   (предупреждения шага 2: CLI печатает их в stderr, а его агент не видит);
@@ -1109,16 +1171,25 @@ MCP-сервер настройки на stdio (S27), `serverInfo.name` — `doc
 ### Бюджет ответа
 
 Ответ — не больше **20 000 символов и 800 строк** текста, который уходит
-агенту (`mcp.tool_text`, JSON с отступом 2): агент контура обрезает вывод
-на 25 000 символов или 1000 строк, и обрезанное читается как полное.
-Влезает — ответ как есть, без новых ключей. Не влезает — `fit` урезает
-списки и ставит в начало ответа:
+агенту (`mcp.tool_text`): агент контура обрезает вывод на 25 000 символов
+или 1000 строк, и обрезанное читается как полное. Разметка — JSON
+с отступом 2, кроме одного: **список скаляров — одной строкой**
+(`"modifiers": ["partial", "public"]`, S34). По строке на имя давало строке
+символа три десятка строк, а пара `[имя, число]` среза — четыре. Значения
+те же: `json.loads(tool_text(x)) == x`; разметка общая с `graph serve`.
+
+**`next_offset` — всегда, когда список продолжается** (S34): `offset +
+показано < total`, урезал бюджет или нет. Свою страницу отчёт режет сам
+по `limit`: у `setup_candidates di-methods` при `total` 37 и 20 показанных
+не было ни `truncated`, ни `next_offset`. Список кончился — ключа нет.
+Влезает — ответ как есть, и новый ключ у него только `next_offset`.
+Не влезает — `fit` урезает списки и ставит в начало ответа:
 
 | Поле | Что значит |
 |---|---|
-| `truncated` | `true` — ответ неполон |
-| `next_offset` | `offset` следующей страницы страничного списка; `null` — урезано только то, что страницами не листается |
-| `truncated_lists` | семейство списков → сколько было в самом длинном из них: `findings` (страница), `findings.*.clusters.*.examples` (примеры у каждого кластера каждой находки), `blocks.*.data.projects.dotnet_projects` |
+| `truncated` | `true` — ответ урезан бюджетом (и только это) |
+| `next_offset` | `offset` следующей страницы страничного списка; `null` — список кончился, урезано то, что страницами не листается (второй список — аргументом `list`) |
+| `truncated_lists` | семейство списков → сколько было в самом длинном из них: `findings` (страница), `findings.*.clusters.*.examples` (примеры у каждого кластера каждой находки), `coverage` (листается `list: coverage`) |
 
 Как урезается, — детерминированно, по содержимому:
 
@@ -1130,11 +1201,21 @@ MCP-сервер настройки на stdio (S27), `serverInfo.name` — `doc
    не влез и один — он урезается изнутри (кластеры, примеры);
 3. остальное — самое тяжёлое семейство первым: всем спискам семейства
    одна граница длины; если одного семейства мало — граница вдвое, и дальше
-   следующее. Вес — собственный (без вложенных списков) и по тексту
-   с отступами, с учётом строк.
+   следующее. Вес — собственный (без вложенных списков) и по тексту,
+   который уйдёт (`_measure` повторяет раскладку `tool_text`; тест сверяет
+   равенство), с учётом строк;
+4. пары изнутри не урезаются: семейство, каждый член которого — список
+   из двух скаляров (`breakdown.*.items.*` у `setup_stats`, `receivers`
+   у кандидатов), не выбирается, его вес — родителю; урезается список пар
+   целиком. Иначе пара выходила `[]` (на abp `setup_stats lang cs top 40` —
+   40 пустых `[]` в `base_types`).
 
-Что делать с урезанным: взять `next_offset`; сузить запрос (`limit`, `top`,
-`path`, фильтры); полный ответ — CLI-двойник с `--format json`.
+После урезания `shown` у `setup_symbols` — длина выданной страницы, а не
+запрошенное (`count_key` ответа): при 22 показанных было `shown: 100`.
+
+Что делать с урезанным: взять `next_offset`; второй список — аргументом
+`list`; сузить запрос (`limit`, `top`, `path`, фильтры); полный ответ —
+CLI-двойник с `--format json`.
 
 Размеры (`--no-cache`, настройки S24b, 08.10): на `SampleSolution` все
 ответы без урезания, самый длинный — `setup_explain .` (12,4 тыс. символов);
@@ -1145,6 +1226,17 @@ MCP-сервер настройки на stdio (S27), `serverInfo.name` — `doc
 .NET (`projects.dotnet_projects` урезан: полный список — `docpipe recon
 --json`). Самый длинный ответ — 19,8 тыс. символов (`setup_recon` на abp),
 больше всего строк — 691 (`setup_symbols lang ts` на squidex).
+
+После S34 (`--no-cache`, копии S31 с настройкой после прогона, 08.10):
+страница `setup_symbols` — 30 символов на abp (было 22), 37 на squidex (26),
+31 на eshoponweb (22), 32 на semantic-kernel (23), у фронта — 37 на abp
+(25) и 36 на squidex (23); 701 символ без решения squidex — 23 вызова.
+`coverage` листается: abp 107 записей — три страницы (50, 48, 9);
+`setup_recon list: dotnet_projects` на abp — 671 проект за четыре страницы;
+`setup_pages` — 8 страниц на ответ вместо 4 (abp, squidex);
+`setup_stats lang cs top 40` на abp — 276 строк без урезания (было 731
+и 40 пустых пар). Самый длинный ответ — 19 994 символа (`setup_symbols`
+на squidex), больше всего строк — 556 (`setup_recon` на squidex).
 
 > **Ловушка. Контейнер всегда длиннее своего содержимого.** Урезание
 > «самого длинного списка» выбрасывало `blocks` разведки — целые блоки, —

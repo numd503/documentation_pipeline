@@ -443,6 +443,61 @@ def test_two_runs_give_the_same_bytes(tmp_path: Path) -> None:
     assert candidates_json(_candidates(root)) == candidates_json(_candidates(root))
 
 
+# Модуль тестов: подставной обработчик того же запроса, своя обобщённая база
+# с двумя реализациями и отправка запроса из теста.
+TESTS = """
+using App.Orders;
+namespace App.Tests;
+
+public class FakeCreateHandler : IRequestHandler<CreateOrder>
+{
+    public Task HandleAsync(CreateOrder request, CancellationToken token) => Task.CompletedTask;
+}
+
+public class OrderProbe : ITestCase<Order> { }
+public class CustomerProbe : ITestCase<Customer> { }
+
+public class Client
+{
+    public void Send() { var query = new CreateOrder(); }
+}
+"""
+
+
+def test_candidates_count_only_the_area(tmp_path: Path) -> None:
+    """Кандидаты — по области (S34): `dispatch-interfaces` возглавлял `ConformanceTests…`."""
+    root = _repo(tmp_path)
+    module = root / "tests" / "App.Tests"
+    module.mkdir(parents=True)
+    (module / "App.Tests.csproj").write_text(_CSPROJ, encoding="utf-8")
+    (module / "Probes.cs").write_text(TESTS, encoding="utf-8")
+    settings = DocpipeConfig.model_validate(
+        {"not_enrolled": [{"glob": "tests/**", "reason": "тесты — не контракт продукта"}]}
+    )
+    report = dispatch_candidates(run(root, settings), settings, limit=0)
+
+    assert [item.interface for item in report.items] == [
+        "IRequestHandler",
+        "IEntityTypeConfiguration",
+    ]
+    handler = report.items[0]
+    assert (handler.implementations, handler.implementations_outside_area) == (2, 1)
+    # Отправка из теста не в счёт: остаётся одна, из контроллера области.
+    assert handler.sent == 1
+    assert all(example.startswith("src/") for example in handler.examples)
+    # Вне области: подставной обработчик и две реализации `ITestCase`.
+    assert report.outside_area_implementations == 3
+    assert "Вне области — 3 реализаций обобщённых баз" in format_candidates(report)
+
+    # Без области тесты в счёте: `ITestCase` — кандидат, отправок две.
+    everything = _by_interface(_candidates(root))
+    assert set(everything) == {"IRequestHandler", "IEntityTypeConfiguration", "ITestCase"}
+    assert (everything["IRequestHandler"].implementations, everything["IRequestHandler"].sent) == (
+        3,
+        2,
+    )
+
+
 def test_kind_is_known_to_the_entry_point(tmp_path: Path) -> None:
     inputs = CandidateInputs(_repo(tmp_path), DocpipeConfig(), use_cache=False)
     report = candidates("dispatch-interfaces", inputs)
@@ -464,7 +519,8 @@ def test_command_prints_json_report(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert not result.output.endswith("\n\n")
     report = json.loads(result.output)
-    assert report["schema_version"] == "1.0"
+    assert report["schema_version"] == "1.1"
+    assert report["outside_area_implementations"] == 0
     first = report["items"][0]
     assert (first["interface"], first["exclusivity"], first["sent"]) == ("IRequestHandler", 1.0, 1)
     assert first["handler_members"] == ["HandleAsync"]

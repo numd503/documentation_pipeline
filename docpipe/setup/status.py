@@ -62,7 +62,7 @@ from docpipe.setup.candidates import (
 )
 from docpipe.setup.context import InputError, SetupContext
 from docpipe.setup.explain import covering_root, shown_root
-from docpipe.setup.link import clusters_of, places_of
+from docpipe.setup.link import clusters_of, places_of, seam_sides
 from docpipe.stats import NOT_ENROLLED, UNDECIDED, enrolled_keys, last_word, plural
 from docpipe.step2 import Step2Error, Step2Inputs
 from docpipe.web.absorb import PAGE_KIND
@@ -378,7 +378,7 @@ class _Runs:
 
     @property
     def seam(self) -> bool:
-        """У шва обе стороны: модули .NET и модули фронта.
+        """У шва обе стороны — `setup.link.seam_sides`, та же, что у сводки `setup link`.
 
         Без фронта каждый эндпоинт — «без вызывающего», без бэка каждый вызов —
         «без эндпоинта», и решения у таких находок нет: на `SampleSolution`
@@ -388,8 +388,7 @@ class _Runs:
             self.link is not None
             and self.scan is not None
             and self.web is not None
-            and bool(self.scan.manifest.modules)
-            and bool(self.web.manifest.modules)
+            and seam_sides(self.scan.manifest, self.web.manifest)
         )
 
 
@@ -1069,10 +1068,15 @@ def _link_found(
     code: str, runs: _Runs, ctx: SetupContext, category: str, limit: int
 ) -> _Found | None:
     """Находка шва кластерами `setup link` (S21): та же сводка, своей копии нет."""
-    if runs.link is None or runs.scan is None:
+    if runs.link is None or runs.scan is None or runs.web is None:
         return None
     report = clusters_of(
-        runs.link, ctx.settings, backend_keys(runs.scan.manifest), category=category, limit=limit
+        runs.link,
+        ctx.settings,
+        backend_keys(runs.scan.manifest),
+        sides=(runs.scan.manifest, runs.web.manifest),
+        category=category,
+        limit=limit,
     )
     clusters = [
         Cluster(
