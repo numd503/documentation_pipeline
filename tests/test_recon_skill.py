@@ -10,36 +10,29 @@
 """
 
 import re
-import shutil
-import subprocess
 from pathlib import Path
+from typing import Any
 
-import pytest
 import yaml
 
 from docpipe.arch import check_document
+from tests.test_skills import split_skill
 
 # Агент на целевой машине — gigacode, форк qwen code со своими каталогами:
 # проектные скиллы он ищет в `.gigacode/skills/<имя>/SKILL.md`, а `.qwen/`
-# не читает. Claude Code, которым ведётся разработка, видит тот же файл через
-# ссылку `.claude/skills/recon`.
+# не читает. Общие проверки всех скиллов — front matter, имя, длина описания,
+# ссылка `.claude/skills/<имя>` и `.gitignore` — в `test_skills.py`.
 SKILL = Path(".gigacode/skills/recon/SKILL.md")
-CLAUDE_LINK = Path(".claude/skills/recon")
 
 
-def frontmatter_and_body() -> tuple[dict, str]:
-    text = SKILL.read_text(encoding="utf-8")
-    assert text.startswith("---\n"), "у скилла нет front matter"
-    _, header, body = text.split("---\n", 2)
-    return yaml.safe_load(header), body
+def frontmatter_and_body() -> tuple[dict[str, Any], str]:
+    return split_skill(SKILL)
 
 
-def test_skill_exists_with_name_and_description() -> None:
+def test_description_names_the_registry() -> None:
+    """Описание — то, по чему скилл выбирают: без слова «реестр» его не позовут
+    там, где он нужен, — разведка до черновика реестра и есть его работа."""
     header, _ = frontmatter_and_body()
-    assert header["name"] == "recon"
-    # Описание — то, по чему скилл выбирают. Без условий применения его
-    # не позовут там, где он нужен, и позовут там, где не нужен.
-    assert len(header["description"]) > 200
     assert "реестр" in header["description"]
 
 
@@ -102,26 +95,3 @@ def test_skill_points_at_the_recon_script_and_the_format_reference() -> None:
     assert "docs/arch-registry.md" in body
     assert Path("docpipe/recon.py").is_file()
     assert Path("docs/arch-registry.md").is_file()
-
-
-def test_claude_sees_the_same_skill_through_a_link() -> None:
-    """Ссылка, а не копия: две копии одной инструкции разъедутся молча."""
-    assert CLAUDE_LINK.is_symlink()
-    assert (CLAUDE_LINK / "SKILL.md").resolve() == SKILL.resolve()
-
-
-def test_skill_reaches_a_fresh_clone() -> None:
-    """Скилл обязан быть в git, а не только на машине разработчика.
-
-    Строка `.claude/` в `.gitignore` закрывала его целиком: R02 числился
-    сделанным, а в свежем клоне скилла не было, и этот файл тестов падал.
-    Проверка идёт по правилам игнорирования, а не по индексу.
-    """
-    if shutil.which("git") is None or not Path(".git").exists():
-        pytest.skip("нужен git-клон")
-    result = subprocess.run(
-        ["git", "check-ignore", "--no-index", str(SKILL), str(CLAUDE_LINK)],
-        capture_output=True,
-        text=True,
-    )
-    assert result.stdout.split() == []

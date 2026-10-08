@@ -91,6 +91,7 @@
 | `docs/configuration.md` | `docpipe.yaml`: какой ключ кем читается и относительно чего разрешается. |
 | `docs/setup-map.md` | Карта настройки: каждый ключ каждого файла настройки — кто читает, база пути, чем проверяется, откуда значение, что ломается молча; группы взаимозависимых ключей. Полноту в обе стороны держит `tests/test_setup_map.py`: новый ключ без строки — красный тест. |
 | `docs/setup-interview.md` | Протокол интервью настройки (S28): кто решает (агент — доказуемое кодом, человек — «не берём» с причиной, имена-ключи, область, остановку), форма вопроса для инструмента вопроса агента, каталог по коду находки `setup status` — материал, вопрос, варианты с адресом правки (файл и ключ), пробелы формата, — правила потока и остановка. Ключи, команды и примеры сверяет с кодом `tests/test_setup_interview.py`. |
+| `.gigacode/skills/setup/` | Скилл настройки (S29) для агента контура; для Claude Code — ссылка `.claude/skills/setup`. `SKILL.md` — граница, где что лежит, инструменты сервера `docpipe-setup` и их CLI-двойники, цикл, три входа (онбординг, расширение, ревью), правила правки файлов, остановка; `phases/` — фазы 00–60 и входы 80, 90. Протокол вопросов не копирует, ссылается на `docs/setup-interview.md`. Имена команд, инструментов, кодов находок и ключей, примеры YAML, оболочку и длины сверяет с кодом `tests/test_setup_skill.py`; общее для всех скиллов (front matter, ссылка, `.gitignore`) — `tests/test_skills.py`. |
 | `deploy/README.md`, `deploy/OFFLINE.md` | Раскладка на целевой машине: инструмент ставится на машину, настройка живёт в репозитории продукта. |
 | `docs/entry-guide.md`, `docs/ownership.md` | Руководства для настройщика: заполнение `entry` и правила владения. |
 
@@ -119,6 +120,13 @@ uv run docpipe docs status /tmp/dt.json --root /tmp/docs
 
 # разведка репозитория, который видишь впервые (R01); скилл поверх неё — `.gigacode/skills/recon`
 uv run docpipe recon --root ПУТЬ --json recon.json --text recon.txt
+
+# настройка с ассистентом (S11–S25); сценарий поверх этих команд — скилл `.gigacode/skills/setup`
+uv run docpipe setup status --root ПУТЬ --config ПУТЬ/docpipe.yaml      # что в области без решения
+uv run docpipe setup explain ПУТЬ_К_КОДУ --root ПУТЬ --config …         # что решено об этом коде и чем
+uv run docpipe setup review --root ПУТЬ --config …                      # новое с коммита настройки
+uv run docpipe setup candidates di-methods --root ПУТЬ --config …       # кандидаты в ключ настройки
+uv run docpipe setup link --root ПУТЬ --config …                        # шов фронт↔.NET кластерами
 
 # нормализованный реестр архитектурных элементов (R03, R04)
 uv run docpipe arch validate arch-registry.yaml       # черновик скилла — с `--draft`
