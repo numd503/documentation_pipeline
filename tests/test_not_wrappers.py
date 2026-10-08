@@ -29,10 +29,11 @@ from docpipe.setup.candidates import (
     declined_calls,
     format_http_wrappers,
     http_wrapper_candidates,
+    http_wrapper_places,
 )
 from docpipe.setup.context import InputError, SetupContext
 from docpipe.setup.explain import BUILTIN_FILE, DEFAULT_FILE, explain_path
-from docpipe.setup.status import FINDING_CODES, build_status, decision_coverage
+from docpipe.setup.status import FINDING_CODES, build_status, decision_coverage, status_detail
 from docpipe.web.calls import NotWrapperConflict, WrapperConflict, not_wrapper_for
 from docpipe.web.tree import run as run_web
 from tests.test_setup_link import S19_WEB
@@ -363,6 +364,32 @@ def test_declined_calls_name_the_record_by_its_index(declined: SetupContext) -> 
         (0, "window", "open"),
         (1, "url", "startsWith"),
     ]
+
+
+def test_review_places_skip_declined_calls(declined: SetupContext) -> None:
+    """Сторож свода S24b и S25: места `link.calls_invisible` — того же отсева, что число.
+
+    Места ревью (`status_detail`) берутся из `http_wrapper_places`, а число —
+    из кандидатов без «не обёрток». Снятая группа, оставшаяся в местах,
+    отнесла бы `window.open` в новом файле к находкам ревью, хотя отчёт её
+    уже не считает.
+    """
+    web = declined.web
+    located = http_wrapper_places(
+        web.candidate_calls, web.builder_uses, not_wrappers=declined.settings.web.not_wrappers
+    )
+    assert sorted(located) == [
+        ("HTTP", "getVersioned"),
+        ("HTTP", "requestVersioned"),
+        ("rest", "request"),
+    ]
+    assert not any(file == PRINT for places in located.values() for file, _ in places)
+
+    detail = status_detail(declined)
+    [finding] = [item for item in detail.status.findings if item.code == "link.calls_invisible"]
+    places = detail.places["link.calls_invisible"]
+    assert len(places) == finding.count
+    assert all(PRINT not in place.files for place in places)
 
 
 def test_first_record_in_file_order_decides() -> None:

@@ -138,6 +138,7 @@ from docpipe.setup.link import (
     link_clusters,
     link_clusters_json,
 )
+from docpipe.setup.review import HistoryError, build_review, format_review, has_changes, review_json
 from docpipe.setup.status import build_status, load_baseline, status_json, write_status
 from docpipe.setup.status import format_status as format_setup_status
 from docpipe.stats import (
@@ -3741,6 +3742,78 @@ def setup_status(
     text = status_json(report) if output_format == "json" else format_setup_status(report)
     typer.echo(text.rstrip("\n"))
     if fail_on_unexplained and (report.unexplained or report.defects):
+        raise typer.Exit(code=1)
+
+
+@setup_app.command("review")
+def setup_review(
+    since: Annotated[
+        str | None,
+        typer.Option(
+            "--since", help="Ревизия базы; по умолчанию — последний коммит файлов настройки."
+        ),
+    ] = None,
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория с исходниками.")] = Path(
+        "."
+    ),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
+    limit: Annotated[
+        int,
+        typer.Option(
+            "--limit", help="Новых файлов, файлов у решения, примеров у находки; 0 — все."
+        ),
+    ] = SETUP_LIMIT,
+    fail_on_changes: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-changes",
+            help="Код 1 при новых находках, решениях без охвата или дефектах.",
+        ),
+    ] = False,
+    no_cache: Annotated[
+        bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
+    ] = False,
+) -> None:
+    """Ревью настройки: что появилось после её коммита и как прежние решения с этим обошлись.
+
+    База — последний коммит файлов настройки (`docpipe.yaml`, наборы правил,
+    `pages.yaml`, правила владения): коммит и есть принятие решений. Новый
+    код — изменённое после базы (коммиты, рабочее дерево, неотслеживаемое).
+
+    `applied` — решения, применившиеся к новым файлам, с причиной и числом:
+    правило отсева, молча забравшее новые типы, видно здесь. `new_findings` —
+    находки `setup status` с местами в новых файлах. `dead_decisions` —
+    решения без охвата во всём репозитории. `config_dirty` — настройка
+    изменена и не закоммичена.
+
+    Настройка ни разу не коммитилась — отчёт `setup status` с пометкой.
+    Код 0; с `--fail-on-changes` — 1 при новых находках, решениях без охвата
+    или дефектах; 2 — не git, ревизии нет, база на границе неглубокого клона
+    (подсказка `--since`), неверный аргумент или настройка не читается.
+    Файлов не пишет, кроме кэша разбора.
+    """
+    output_format = _format(output_format, ("text", "json"))
+    if limit < 0:
+        raise typer.BadParameter("не бывает отрицательным", param_hint="--limit")
+    if not root.is_dir():
+        raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
+
+    try:
+        context = SetupContext.build(root, config, use_cache=not no_cache)
+        report = build_review(context, since=since, limit=limit)
+    except HistoryError as exc:
+        typer.echo(f"Ревью не построено: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except InputError as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    text = review_json(report) if output_format == "json" else format_review(report)
+    typer.echo(text.rstrip("\n"))
+    if fail_on_changes and has_changes(report):
         raise typer.Exit(code=1)
 
 

@@ -1232,6 +1232,28 @@ def declined_calls(
     return sorted(found, key=lambda pair: (pair[1].file, pair[1].line, pair[0]))
 
 
+def http_wrapper_places(
+    candidate_calls: list[CandidateCall],
+    builder_uses: list[BuilderUse],
+    *,
+    not_wrappers: list[NotWrapper] | None = None,
+) -> dict[tuple[str, str], list[tuple[str, int]]]:
+    """Все места `(file, line)` каждой группы-кандидата `(receiver, method)`.
+
+    У кандидата в отчёте — три примера; ревью (S25) нужны все места, чтобы
+    узнать, лежит ли вызов в новом файле. Отбор — тот же `_wrapper_groups`,
+    что у `http_wrapper_candidates`, и тот же отсев `web.not_wrappers`:
+    группа и её места не расходятся. Без отсева места снятой группы ушли бы
+    в `link.calls_invisible` ревью, а её `count` их уже не считает.
+    """
+    groups = _wrapper_groups(candidate_calls, _builder_groups(builder_uses))
+    return {
+        group: sorted((call.file, call.line) for call, _ in items)
+        for group, items in sorted(groups.items())
+        if not_wrapper_for(*group, not_wrappers or ()) is None
+    }
+
+
 def http_wrapper_candidates(
     candidate_calls: list[CandidateCall],
     builder_uses: list[BuilderUse],

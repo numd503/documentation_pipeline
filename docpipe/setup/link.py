@@ -301,6 +301,23 @@ def _places(items: list[_Item]) -> int:
     return len({item.place for item in items})
 
 
+def places_of(report: LinkReport, category: str) -> list[ClusterExample]:
+    """Все места категории по одному, в порядке `(file, line, text)` — для ревью (S25).
+
+    Сводка отдаёт три примера на кластер; ревью нужно каждое место, чтобы
+    узнать, лежит ли оно в новом файле. Место — то же, что у счёта `places`:
+    вызов, приписанный двум узлам файла, — одно место, поэтому число записей
+    равно `LinkClusters.places`.
+    """
+    check_query(category, None)
+    first: dict[tuple[str | int, ...], _Item] = {}
+    for item in _items(report, category):
+        first.setdefault(item.place, item)
+    return [
+        ClusterExample(file=item.file, line=item.line, text=item.text) for item in first.values()
+    ]
+
+
 def _page[T](items: list[T], limit: int, offset: int) -> list[T]:
     """Страница списка. `limit = 0` — до конца, как у `setup candidates`."""
     return items[offset:] if limit == 0 else items[offset : offset + limit]
@@ -577,5 +594,6 @@ __all__ = [
     "format_link_clusters",
     "link_clusters",
     "link_clusters_json",
+    "places_of",
     "suggest_rewrite",
 ]

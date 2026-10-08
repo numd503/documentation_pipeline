@@ -14,7 +14,8 @@
 - **охват** (`coverage`) — сколько чего досталось каждому решению настройки:
   шаблону `exclude`, записи `enrolled`, правилу отсева и правилу-победителю,
   записям шва, `pages.yaml`, правилам владения. В отчёт идёт сумма, разбивку
-  «файл → сколько решено» отдаёт `decision_coverage` — она нужна ревью (S25);
+  «файл → сколько решено» отдаёт `decision_coverage`, а её вместе со всеми
+  местами каждой находки — `status_detail`: они нужны ревью (S25);
 - **вне области** (`out_of_scope`) — что решено не брать: модули под
   `not_enrolled`, фронты под `exclude`, их символы.
 
@@ -53,10 +54,15 @@ from docpipe.materialize.ownership import Ownership, owner_of
 from docpipe.materialize.plan import shadowed_docs
 from docpipe.model import DocNode, Manifest, Symbol
 from docpipe.route import normalize_route
-from docpipe.setup.candidates import DEFAULT_LIMIT, declined_calls, http_wrapper_candidates
+from docpipe.setup.candidates import (
+    DEFAULT_LIMIT,
+    declined_calls,
+    http_wrapper_candidates,
+    http_wrapper_places,
+)
 from docpipe.setup.context import InputError, SetupContext
 from docpipe.setup.explain import covering_root, shown_root
-from docpipe.setup.link import clusters_of
+from docpipe.setup.link import clusters_of, places_of
 from docpipe.stats import NOT_ENROLLED, UNDECIDED, last_word, plural
 from docpipe.step2 import Step2Error, Step2Inputs
 from docpipe.web.absorb import PAGE_KIND
@@ -837,13 +843,29 @@ def _without_reason(ctx: SetupContext) -> list[str]:
 
 
 @dataclass(frozen=True)
+class FindingPlace:
+    """Место находки для ревью (S25): пример — как в кластере — и файлы, которых оно касается.
+
+    В отчёт `setup status` места не идут: там кластеры с тремя примерами.
+    Ревью нужны все места, чтобы узнать, лежит ли место в новом файле.
+    Мест нет у находок, которые к файлу не привязаны (`config.problems`,
+    `load.errors`, `docs.unavailable`, `pages.stale_overrides`): ревью
+    к новому коду их не относит.
+    """
+
+    example: str
+    files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class _Found:
-    """Находка до сравнения с базой: код, число, кластеры и сколько их всего."""
+    """Находка до сравнения с базой: код, число, кластеры, сколько их всего и все места."""
 
     code: str
     count: int
     clusters: list[Cluster]
     total: int
+    places: tuple[FindingPlace, ...] = ()
 
 
 def _grouped(
@@ -870,15 +892,35 @@ def _found(
     slices: Sequence[tuple[str, Sequence[tuple[str, str]]]],
     limit: int,
     count: int | None = None,
+    places: Iterable[FindingPlace] = (),
 ) -> _Found:
-    """Находка по срезам. `count` по умолчанию — мест первого среза."""
+    """Находка по срезам. `count` по умолчанию — мест первого среза.
+
+    `places` — все места с файлами, для ревью; в кластеры они не идут.
+    """
     clusters: list[Cluster] = []
     total = 0
     for slice_, items in slices:
         shown, all_of = _grouped(slice_, items, limit)
         clusters += shown
         total += all_of
-    return _Found(code, len(slices[0][1]) if count is None else count, clusters, total)
+    number = len(slices[0][1]) if count is None else count
+    return _Found(code, number, clusters, total, tuple(places))
+
+
+def _in_file(paths: Iterable[str]) -> list[FindingPlace]:
+    """Места, у которых пример — сам файл: модуль, документ, файл с ошибкой разбора."""
+    return [FindingPlace(path, (path,)) for path in paths]
+
+
+def _located(file: str, line: int, text: str) -> FindingPlace:
+    """Место вызова: `файл:строка  что там` — та же форма, что у примеров кластеров шва."""
+    return FindingPlace(f"{file}:{line}  {text}", (file,))
+
+
+def _node_files(manifest: Manifest) -> dict[str, tuple[str, ...]]:
+    """Файлы символа каждого узла манифеста: место находки об узле — его исходники."""
+    return {node.id: tuple(_sources(node.symbol)) for node in manifest.nodes}
 
 
 def _parent(path: str) -> str:
@@ -919,10 +961,21 @@ def _scope_findings(ctx: SetupContext, runs: _Runs, limit: int) -> list[_Found]:
             if scope_of(module.project_file, ctx.settings) == "undecided"
         )
         items = [(_parent(_parent(path)), path) for path in undecided]
-        found.append(_found("scope.module_undecided", [("directory", items)], limit))
+        found.append(
+            _found(
+                "scope.module_undecided", [("directory", items)], limit, places=_in_file(undecided)
+            )
+        )
     fronts, _ = _fronts(ctx)
     items = [(str(front["path"]), str(front["config"])) for front in fronts]
-    found.append(_found("scope.front_undecided", [("front", items)], limit))
+    found.append(
+        _found(
+            "scope.front_undecided",
+            [("front", items)],
+            limit,
+            places=_in_file(config for _, config in items),
+        )
+    )
     return found
 
 
@@ -939,6 +992,7 @@ def _symbol_findings(runs: _Runs, limit: int) -> list[_Found]:
                 [("module", by_module), ("last_word", by_word)],
                 limit,
                 count=len(rows),
+                places=(FindingPlace(row.symbol.fqn, tuple(_sources(row.symbol))) for row in rows),
             )
         )
     return found
@@ -962,7 +1016,8 @@ def _link_found(
         )
         for cluster in report.clusters
     ]
-    return _Found(code, report.places, clusters, report.total)
+    places = [_located(item.file, item.line, item.text) for item in places_of(runs.link, category)]
+    return _Found(code, report.places, clusters, report.total, tuple(places))
 
 
 def _seam_findings(ctx: SetupContext, runs: _Runs, limit: int) -> list[_Found | None]:
@@ -986,6 +1041,11 @@ def _seam_findings(ctx: SetupContext, runs: _Runs, limit: int) -> list[_Found | 
             limit=0,
         )
         invisible = [item for item in candidates.items if not item.configured]
+        # Места — того же отсева, что кандидаты: группа под `web.not_wrappers`
+        # снята и из числа, и из мест, иначе ревью нашло бы её в новом файле.
+        located = http_wrapper_places(
+            web.candidate_calls, web.builder_uses, not_wrappers=ctx.settings.web.not_wrappers
+        )
         clusters = [
             Cluster(
                 slice="wrapper",
@@ -1001,6 +1061,11 @@ def _seam_findings(ctx: SetupContext, runs: _Runs, limit: int) -> list[_Found | 
                 sum(item.calls for item in invisible),
                 clusters[:limit] if limit else clusters,
                 len(clusters),
+                tuple(
+                    FindingPlace(f"{file}:{line}", (file,))
+                    for item in invisible
+                    for file, line in located.get((item.receiver, item.method), [])
+                ),
             )
         )
         registry = sorted(web.calls.registry_unresolved, key=lambda call: (call.file, call.line))
@@ -1011,7 +1076,17 @@ def _seam_findings(ctx: SetupContext, runs: _Runs, limit: int) -> list[_Found | 
             )
             for call in registry
         ]
-        found.append(_found("link.registry_unresolved", [("route", items)], limit))
+        found.append(
+            _found(
+                "link.registry_unresolved",
+                [("route", items)],
+                limit,
+                places=(
+                    _located(call.file, call.line, f"{call.key.http_method} {call.key.route}")
+                    for call in registry
+                ),
+            )
+        )
 
     if not runs.seam or runs.link is None or runs.web is None:
         return found
@@ -1051,14 +1126,23 @@ def _seam_findings(ctx: SetupContext, runs: _Runs, limit: int) -> list[_Found | 
             len(runs.link.unconfigured_modules),
             modules[:limit] if limit else modules,
             len(modules),
+            tuple(
+                _located(file, line, text)
+                for module in sorted(runs.link.unconfigured_modules)
+                for file, line, text in sorted(places[module])
+            ),
         )
     )
 
-    duplicates = [
-        (f"{item.http_method} {item.route}", ", ".join(item.nodes))
-        for item in runs.link.duplicate_endpoints
-    ]
-    found.append(_found("link.duplicate_endpoints", [("route", duplicates)], limit))
+    node_files = _node_files(runs.scan.manifest) if runs.scan is not None else {}
+    duplicates: list[tuple[str, str]] = []
+    doubled: list[FindingPlace] = []
+    for item in runs.link.duplicate_endpoints:
+        route, nodes = f"{item.http_method} {item.route}", ", ".join(item.nodes)
+        duplicates.append((route, nodes))
+        files = sorted({path for node in item.nodes for path in node_files.get(node, ())})
+        doubled.append(FindingPlace(f"{route}  {nodes}", tuple(files)))
+    found.append(_found("link.duplicate_endpoints", [("route", duplicates)], limit, places=doubled))
     return found
 
 
@@ -1089,11 +1173,16 @@ def _page_findings(runs: _Runs, limit: int) -> list[_Found]:
     report = build_pages_report(runs.web.manifest)
     pages = sorted(report.pages, key=lambda page: (page.module, page.title, page.node_id))
 
+    def text(page: Any) -> str:
+        return _page_text(page.title, ((r.path, r.unresolved) for r in page.routes))
+
     def items(selected: Iterable[Any]) -> list[tuple[str, str]]:
-        return [
-            (page.module, _page_text(page.title, ((r.path, r.unresolved) for r in page.routes)))
-            for page in selected
-        ]
+        return [(page.module, text(page)) for page in selected]
+
+    node_files = _node_files(runs.web.manifest)
+
+    def located(selected: Iterable[Any]) -> list[FindingPlace]:
+        return [FindingPlace(text(page), node_files.get(page.node_id, ())) for page in selected]
 
     unanchorable = [page for page in pages if NOTE_UNANCHORABLE in page.notes]
     partial = [
@@ -1110,9 +1199,16 @@ def _page_findings(runs: _Runs, limit: int) -> list[_Found]:
     ]
     stale = sorted(runs.web.overrides.stale, key=lambda rule: (rule.kind, rule.key, rule.reason))
     return [
-        _found("pages.route_unresolved", [("module", items(partial))], limit),
-        _found("pages.unanchorable", [("module", items(unanchorable))], limit),
-        _found("pages.layout", [("module", items(layout))], limit),
+        _found(
+            "pages.route_unresolved", [("module", items(partial))], limit, places=located(partial)
+        ),
+        _found(
+            "pages.unanchorable",
+            [("module", items(unanchorable))],
+            limit,
+            places=located(unanchorable),
+        ),
+        _found("pages.layout", [("module", items(layout))], limit, places=located(layout)),
         _found(
             "pages.stale_overrides",
             [("kind", [(rule.kind, rule.describe()) for rule in stale])],
@@ -1159,25 +1255,32 @@ def _document_findings(ctx: SetupContext, runs: _Runs, limit: int) -> list[_Foun
         return [(_parent(path), path) for path in paths]
 
     return [
-        _found("docs.orphan", [("directory", items(orphans))], limit),
-        _found("docs.broken", [("directory", items(broken))], limit),
-        _found("docs.shadowed", [("directory", items(shadowed))], limit),
+        _found("docs.orphan", [("directory", items(orphans))], limit, places=_in_file(orphans)),
+        _found("docs.broken", [("directory", items(broken))], limit, places=_in_file(broken)),
+        _found("docs.shadowed", [("directory", items(shadowed))], limit, places=_in_file(shadowed)),
     ]
 
 
 def _owner_findings(ctx: SetupContext, runs: _Runs, limit: int) -> list[_Found]:
     """Документы без владельца; без ключа `ownership` — одна находка «не настроено» на все."""
     documented = _documented(runs)
+
+    def located(nodes: list[DocNode]) -> list[FindingPlace]:
+        # Пример — путь документа, файлы — исходники узла: новым становится код, а не документ.
+        return [FindingPlace(node.doc_path, tuple(_sources(node.symbol))) for node in nodes]
+
     if not ctx.settings.ownership:
         items = [(node.module, node.doc_path) for node in documented]
-        return [_found("owners.not_configured", [("module", items)], limit)]
+        return [
+            _found("owners.not_configured", [("module", items)], limit, places=located(documented))
+        ]
     if runs.ownership is None:
         # Правила не читаются: это `docs.unavailable`, владельцев здесь не посчитать.
         return []
     ownership = runs.ownership
     unowned = [node for node in documented if owner_of(node, ownership).team is None]
     items = [(node.module, node.doc_path) for node in unowned]
-    return [_found("owners.unowned", [("module", items)], limit)]
+    return [_found("owners.unowned", [("module", items)], limit, places=located(unowned))]
 
 
 def _parse_findings(runs: _Runs, limit: int) -> list[_Found]:
@@ -1185,7 +1288,12 @@ def _parse_findings(runs: _Runs, limit: int) -> list[_Found]:
     metas = [run.meta for run in (runs.scan, runs.web) if run is not None]
     files = sorted({path for meta in metas for path in meta.parse_error_files})
     return [
-        _found("parse.errors", [("directory", [(_parent(path), path) for path in files])], limit)
+        _found(
+            "parse.errors",
+            [("directory", [(_parent(path), path) for path in files])],
+            limit,
+            places=_in_file(files),
+        )
     ]
 
 
@@ -1293,6 +1401,28 @@ def _compared(found: list[_Found], baseline: SetupStatus | None) -> list[Finding
     return findings
 
 
+@dataclass(frozen=True)
+class StatusDetail:
+    """Отчёт `setup status` и то, что в отчёт не идёт, — для ревью (S25).
+
+    `coverage` — охват с разбивкой по файлам (как у `decision_coverage`),
+    `places` — все места каждой находки отчёта с их файлами. Собраны тем же
+    прогоном, что и отчёт: ревью сопоставляет с новыми файлами ровно то,
+    что отчёт посчитал, а не второй подсчёт.
+    """
+
+    status: SetupStatus
+    coverage: list[CoverageDetail]
+    places: dict[str, tuple[FindingPlace, ...]]
+
+
+def status_detail(ctx: SetupContext, *, limit: int = DEFAULT_LIMIT) -> StatusDetail:
+    """Отчёт `setup status` вместе с разбивкой охвата по файлам и всеми местами находок."""
+    status, coverage, found = _build(ctx, None, limit)
+    places = {item.code: item.places for item in found if item.count}
+    return StatusDetail(status, coverage, places)
+
+
 def build_status(
     ctx: SetupContext, *, baseline: SetupStatus | None = None, limit: int = DEFAULT_LIMIT
 ) -> SetupStatus:
@@ -1303,10 +1433,19 @@ def build_status(
     вне области; `0` — все. Охват не усекается: он база сравнения следующего
     прогона, и обрезанный потерял бы `previous` у остального.
     """
+    return _build(ctx, baseline, limit)[0]
+
+
+def _build(
+    ctx: SetupContext, baseline: SetupStatus | None, limit: int
+) -> tuple[SetupStatus, list[CoverageDetail], list[_Found]]:
+    """Отчёт, охват с разбивкой и находки с местами — одним прогоном."""
     if limit < 0:
         raise InputError("limit не бывает отрицательным")
     runs = _gather(ctx)
-    findings = _compared(_findings(ctx, runs, limit), baseline)
+    found = _findings(ctx, runs, limit)
+    details = _coverage(ctx, runs)
+    findings = _compared(found, baseline)
     before = {item.id: item.count for item in baseline.coverage} if baseline else {}
     coverage = [
         Coverage(
@@ -1318,9 +1457,9 @@ def build_status(
             previous=before.get(item.id),
             reason=item.reason,
         )
-        for item in _coverage(ctx, runs)
+        for item in details
     ]
-    return SetupStatus(
+    status = SetupStatus(
         findings=findings,
         coverage=coverage,
         out_of_scope=_out_of_scope(ctx, runs, limit),
@@ -1328,6 +1467,7 @@ def build_status(
         unexplained=sum(item.count for item in findings if item.category == "decision"),
         defects=sum(item.count for item in findings if item.category == "defect"),
     )
+    return status, details, found
 
 
 def load_baseline(path: Path) -> SetupStatus:
@@ -1427,13 +1567,16 @@ __all__ = [
     "CoverageDetail",
     "Finding",
     "FindingCode",
+    "FindingPlace",
     "OutOfScope",
     "SetupStatus",
+    "StatusDetail",
     "build_status",
     "decision_coverage",
     "decision_id",
     "format_status",
     "load_baseline",
+    "status_detail",
     "status_json",
     "write_status",
 ]
