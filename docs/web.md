@@ -287,8 +287,15 @@ component` и `winner_rule: web.component`**: `symbols` отвечает по п
 
 ```bash
 docpipe web pages artifacts/doc-tree.web.json [--depth 3] [--not-pages]
-                  [--route ПОДСТРОКА] [--module ПОДСТРОКА] [--format text|json|csv]
+                  [--route ПОДСТРОКА] [--module ПОДСТРОКА] [--note КОД]
+                  [--format text|json|csv]
 ```
+
+`--note` — только страницы с заметкой этого кода (`unanchorable`, `empty_route`,
+`no_features`, `no_calls`, `chain_stops`; `web/pages.NOTE_CODES`), `counts` —
+по-прежнему по всему дереву. Отбор по коду, а не по тексту: текст заметки
+меняется вместе с формулировкой. Тот же отбор у инструмента `setup_pages`
+сервера настройки (`docs/setup.md`, «`setup serve`»).
 
 Отвечает на вопрос, на который не отвечают ни `scan --stats`, ни `symbols`:
 **почему этот класс — страница.** Оба показывают срабатывания правил, а правило

@@ -54,11 +54,13 @@ def filter_documents(
     paths: list[Path],
     actions: list[str],
     file_actions: list[str] | None = None,
+    statuses: list[str] | None = None,
 ) -> list[PlannedDoc]:
     """Сузить выборку. Принимаются и файлы, и каталоги.
 
     Фильтры складываются: `--action write --file-action update` — «агенту писать
-    И файл будет переписан», а не объединение.
+    И файл будет переписан», а не объединение. `statuses` — отбор по статусу
+    документа; его зовёт сервер настройки (`setup_docs`, S27).
     """
     selected = documents
     if paths:
@@ -75,6 +77,8 @@ def filter_documents(
         selected = [doc for doc in selected if doc.agent_action in set(actions)]
     if file_actions:
         selected = [doc for doc in selected if doc.file_action in set(file_actions)]
+    if statuses:
+        selected = [doc for doc in selected if doc.status in set(statuses)]
     return selected
 
 

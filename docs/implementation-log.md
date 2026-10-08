@@ -10659,3 +10659,45 @@ squidex без эндпоинта: **опечатка в самом squidex** (�
   столько же, сколько `count`.
 
 **Проверка:** команда S25 — 23 passed.
+
+---
+
+## S27 — `docpipe setup serve` (08.10.2026)
+
+**Создано:** `docpipe/setup/server.py` (`SetupTools`, `TOOLS`, `CLI_TWIN`, `fit`, `INSTRUCTIONS`),
+`tests/test_setup_server.py` (46). **Изменено:** `docpipe/cli.py` (`setup serve`; `symbols --offset`,
+`web pages --note`), `docpipe/mcp.py` (`tool_text` — точный текст ответа для бюджета),
+`docpipe/explain.py` (`select(offset=)`), `docpipe/stats.py` (`enrolled_keys` — четыре копии
+выражения стали одной), `docpipe/web/pages.py` (`NOTE_CODES`), `docpipe/materialize/status.py`
+(`filter_documents(statuses=)`), `docs/setup.md`, `deploy/README.md`, `docs/module-review.md`,
+`docs/graph-implementation-plan.md` (G12), `docs/web.md`, `README.md`.
+
+Двенадцать инструментов, каждый зовёт функцию своего CLI-двойника (`CLI_TWIN`; тест сверяет
+девять из них с JSON команд на `SampleSolution` по содержимому): `setup_config_check`,
+`setup_recon`, `setup_status`, `setup_review`, `setup_explain`, `setup_stats`, `setup_symbols`,
+`setup_candidates`, `setup_link`, `setup_pages`, `setup_docs`, `setup_docs_explain`. Контекст
+собирается заново на каждый вызов — агент правит настройку между вызовами; прошлый
+`setup_status` помнится для `baseline: previous`. Без `docpipe.yaml` сервер стартует
+(`config_missing`).
+
+**Бюджет ответа** — 20 000 символов **и 800 строк**: агент обрезает вывод и по 1000 строк,
+а JSON с отступом 2 даёт тысячу коротких имён на 15 тыс. символов, но 1008 строк. Замеры
+(`--no-cache`): `SampleSolution` — без урезания (максимум 12,4 тыс.); squidex — максимум
+19,7 тыс. и 691 строка, `setup_status` — три страницы; abp — 19,8 тыс. (`setup_recon`, 671 проект).
+
+**Отклонения и находки.**
+- Первый `fit` урезал «самый длинный список» и выбросил два блока `recon` из четырёх —
+  контейнер длиннее содержимого; затем сотня мелких `examples` не перевешивала соседа
+  и исчезала до нуля. Итог: семейства списков одного места урезаются одной границей,
+  вес — по тексту с отступами (сверен с `json.dumps(indent=2)`), остальная часть ответа
+  ужимается до 60 % бюджета.
+- Страницы `setup_status` с `offset > 0` сравнивались бы с первой страницей — база
+  запоминается от вызова с `offset 0`.
+- `offset` у `setup_status`/`review`/`explain` (иначе `next_offset` нечем взять); `limit`
+  у `setup_status` — 5 (при 20 одна находка squidex — 10,9 тыс. символов); синтаксическая
+  ошибка YAML — ответ, а не трассировка (у CLI пункт бэклога S03 открыт); `symbols --limit -1`
+  теперь код 2.
+- `import click` в тестах падает: typer 0.27 несёт свой click.
+
+**Проверка:** команда S27 — 78 passed; живой stdio-прогон (`initialize`, `tools/list`,
+`tools/call setup_status`) — три строки ответа, stderr пуст.

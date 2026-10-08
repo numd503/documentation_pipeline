@@ -529,7 +529,11 @@ Sbt.Cashflow.Grid.…AutoConclusionService.StandardProcessingFactory
 
 ```bash
 uv run docpipe symbols --root . --path src/Sample.Pricing.Api/Services --state any --format json
+uv run docpipe symbols --root . --state any --format json --limit 20 --offset 20   # вторая страница
 ```
+
+`--limit` и `--offset` — страница выборки по FQN, `total` — до страницы; ту же
+страницу отдаёт инструмент `setup_symbols` сервера настройки (`docs/setup.md`).
 
 И обратная проверка — что новое правило поймало то, что задумано:
 

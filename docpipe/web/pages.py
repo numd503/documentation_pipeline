@@ -65,6 +65,19 @@ NOTE_CHAIN_STOPS: Final = (
     "короче правды. Настройте правила (`web scan --stats`, `symbols --lang ts "
     "--state undecided`) — узлом станет то, про что решение принято"
 )
+
+# Короткие коды заметок — для отбора страниц по заметке (`setup_pages`, S27).
+# Текст заметки — для человека и меняется вместе с формулировкой; отбор по нему
+# сломался бы на первой правке запятой. Код новой заметки обязан появиться
+# здесь — это держит тест.
+NOTE_CODES: Final[dict[str, str]] = {
+    "unanchorable": NOTE_UNANCHORABLE,
+    "empty_route": NOTE_EMPTY_ROUTE,
+    "no_features": NOTE_NO_FEATURES,
+    "no_calls": NOTE_NO_CALLS,
+    "chain_stops": NOTE_CHAIN_STOPS,
+}
+
 REASON_NO_ROUTE: Final = "маршрута нет: в таблицах роутов этот компонент не встретился"
 
 # Маршрут есть, а вида страницы нет — так выглядит снятие руками через
@@ -502,12 +515,14 @@ def _page_of(
     )
 
 
-def _describe(depth: int, route: str, module: str) -> str:
+def _describe(depth: int, route: str, module: str, note: str = "") -> str:
     parts = [f"глубина {depth}"]
     if route:
         parts.append(f"маршрут содержит «{route}»")
     if module:
         parts.append(f"модуль содержит «{module}»")
+    if note:
+        parts.append(f"заметка {note}")
     return ", ".join(parts)
 
 
@@ -516,13 +531,19 @@ def build_report(
     depth: int = DEFAULT_DEPTH,
     route: str = "",
     module: str = "",
+    note: str = "",
 ) -> PagesReport:
     """Собрать отчёт по манифесту шага `web`.
 
     Счётчики считаются по **всему** дереву, а не по отфильтрованному списку:
     сужение отвечает на вопрос «покажи эти», а не «сколько их всего», и сводка,
     посчитанная по срезу, объявила бы, что страниц три.
+
+    `note` — код заметки из `NOTE_CODES`: только страницы с этой заметкой.
+    Неизвестный код — `ValueError`: опечатка иначе дала бы «таких страниц нет».
     """
+    if note and note not in NOTE_CODES:
+        raise ValueError(f"неизвестная заметка {note!r}; известны: {', '.join(NOTE_CODES)}")
     by_fqn = _index_by_fqn(manifest)
     by_id = {node.id: node for node in manifest.nodes}
 
@@ -585,13 +606,14 @@ def build_report(
         for page in pages
         if (not route or any(route in item.path for item in page.routes))
         and (not module or module in page.module)
+        and (not note or NOTE_CODES[note] in page.notes)
     ]
     shown.sort(key=lambda page: (page.routes[0].path if page.routes else "", page.title))
     filtered_not_pages = [item for item in not_pages if not module or module in item.module]
 
     return PagesReport(
         depth=depth,
-        filters=_describe(depth, route, module),
+        filters=_describe(depth, route, module, note),
         pages=shown,
         features=[item for item in features if not module or module in item.module],
         not_pages=filtered_not_pages,

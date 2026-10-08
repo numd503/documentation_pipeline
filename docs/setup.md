@@ -1001,3 +1001,144 @@ Git зовётся подпроцессом с `GIT_OPTIONAL_LOCKS=0`: кома�
 > корня репозитория, а охват — от `--root`. `--relative` даёт пути от
 > `--root` и только под ним; неотслеживаемые `ls-files` и так считает от
 > текущего каталога.
+
+## `setup serve`
+
+```bash
+uv run docpipe setup serve --root . --config docs/ml/docpipe/docpipe.yaml
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | uv run docpipe setup serve --root tests/fixtures/SampleSolution
+```
+
+MCP-сервер настройки на stdio (S27), `serverInfo.name` — `docpipe-setup`.
+Агенту контура его прописывает `install.sh` (S30) вторым сервером рядом
+с `docpipe` (граф): `setup serve --config <repo>/<config-dir>/docpipe.yaml
+--root <repo>`, `cwd` — корень продукта. Протокол общий с `graph serve`
+(`docpipe/mcp.py`, S26): исключение в инструменте — ответ с `isError`,
+печать инструмента уходит в stderr. Индекс графа не нужен, сервер работает
+до любой сборки. Модуль — `docpipe/setup/server.py` (`SetupTools`).
+
+Флаги: `--root` (каталог обязан быть, иначе код 2), `--config` (файла может
+не быть — тогда строка в stderr и работа на умолчаниях), `--no-cache` (без
+кэша разбора: замер на чужом клоне «только для чтения»).
+
+**Каждый инструмент зовёт ту же функцию, что его CLI-двойник**, и таблица
+`CLI_TWIN` держит соответствие тестом: каждый инструмент в ней есть,
+каждый двойник — зарегистрированная команда приложения с названными флагами.
+
+| Инструмент | Аргументы (умолчание) | Функция | CLI-двойник |
+|---|---|---|---|
+| `setup_config_check` | — | `configcheck.check_config` | `config check` |
+| `setup_recon` | `top` (15) | `recon.build_report`: блоки `composition` (с `projects`), `registries`, `seams`, `limits` | `recon` |
+| `setup_status` | `limit` (**5**), `baseline` (`previous` \| `none`), `offset` | `setup/status.build_status`; страница — `findings` | `setup status` |
+| `setup_review` | `since`, `limit` (20), `offset` | `setup/review.build_review`; страница — `applied` | `setup review` |
+| `setup_explain` | `path`, `limit` (20), `offset` | `setup/explain.explain_path`; страница — `decisions` | `setup explain` |
+| `setup_stats` | `lang` (`cs` \| `ts`), `top` (15) | `stats.build_stats_report` (`scope_info` у `cs`, `stale_overrides` у `ts`) | `scan --stats`, `web scan --stats` |
+| `setup_symbols` | `lang`, `state` (`undecided`), `module`, `namespace`, `path`, `rule`, `kind`, `limit` (20), `offset` | `explain.select` → `build_symbols_report` | `symbols` |
+| `setup_candidates` | `kind`, `limit` (20), `offset` | `setup/candidates.candidates` | `setup candidates` |
+| `setup_link` | `category`, `by`, `limit` (20), `offset` | `setup/link.link_clusters` | `setup link` |
+| `setup_pages` | `note`, `limit` (20), `offset` | `web/pages.build_report` по манифесту фронта в памяти; страница — `pages` | `web pages` |
+| `setup_docs` | `status`, `lang`, `limit` (20), `offset` | `step2.prepare(…, links=True)` → `materialize/status.status_report`; страница — `documents` | `docs status` |
+| `setup_docs_explain` | `path`, `lang` | `step2.prepare` → `materialize/explain.explain_report` | `docs explain` |
+
+Ответ без урезания — та же модель, что JSON двойника (`--format json`),
+байт в байт по содержимому; тест сверяет `setup_config_check`,
+`setup_status`, `setup_stats` (оба языка), `setup_symbols`, `setup_explain`,
+`setup_link`, `setup_candidates`, `setup_docs` и `setup_docs_explain`
+с выводом команд.
+Отличия от двойника — только здесь:
+
+- **прогоны — в памяти**, как у остальных команд `setup`: `setup_docs`
+  и `setup_docs_explain` строят план по манифесту текущего прогона (`lang`:
+  `cs` — шаг 1, `ts` — шаг `web`), а не по файлу на диске, как `docs status`;
+  `setup_symbols` и `setup_stats` — то же, что `symbols` и `scan --stats`;
+- `setup_status` — **`limit` 5 по умолчанию**, а не 20: при 20 одна
+  находка `dotnet.undecided` на squidex — 10,9 тыс. символов, и обзор
+  восьми находок расползается на шесть страниц; при 5 — три;
+- `setup_recon` — блоки «что читать первым» и «где центр» не отдаются (они
+  про чтение кода, а не настройку; они у `docpipe_overview`), а у строк
+  `build_files` нет `paths`: полные списки проектов — в `projects`;
+- `setup_pages` — сверх отчёта `pages_total` (сколько страниц прошло отбор:
+  `counts` считаются по всему дереву); `setup_docs` — `warnings`
+  (предупреждения шага 2: CLI печатает их в stderr, а его агент не видит);
+- `setup_docs` отбирает по `status`, `setup_pages` — по `note`: коду
+  заметки `web/pages.NOTE_CODES` (`unanchorable`, `empty_route`,
+  `no_features`, `no_calls`, `chain_stops`); у `web pages` тот же отбор —
+  `--note`, у `symbols` страница — `--offset`.
+
+**Каждый вызов собирает контекст заново** (`SetupContext`): агент правит
+файл настройки и зовёт инструмент снова, и ответ обязан это видеть.
+Помнится одно — прошлый ответ `setup_status` (страница `offset 0`), база
+`baseline: previous`: у находок и охвата `previous`, закрытая с прошлого
+вызова находка — строкой с `count: 0`. Страницы `offset > 0` сравниваются
+с той же базой, что `offset 0`: иначе разница правки была бы видна только
+на первой странице. `baseline: none` — без сравнения; файла базы нет (П-1).
+
+**Конфигурации может не быть** (онбординг): `--config` не назван или файла
+нет — `setup_config_check` отвечает `{"status": "config_missing", "config",
+"message"}`, остальные работают на умолчаниях (как команда без `--config`).
+Нечитаемая конфигурация — у `setup_config_check` ответ `config_unreadable`
+с причиной (найти поломку — его работа), у остальных — ошибка.
+
+**Ошибки — ответом с `error` и `isError: true`**, сервер продолжает:
+«Ошибка аргумента» (не тот тип, вне перечня, отрицательное число, лишний
+аргумент — схема инструмента закрыта, `additionalProperties: false`;
+число строкой из цифр принимается), «Ошибка конфигурации» (`InputError`,
+как у CLI), «Ревью не построено», «Шаг 2 не собрался», «Файл настройки
+не разбирается как YAML» (синтаксическая ошибка любого файла настройки —
+загрузчики её не переводят, бэклог S03). Остальное — «внутренняя ошибка
+инструмента …» протокола с трассировкой в stderr.
+
+### Бюджет ответа
+
+Ответ — не больше **20 000 символов и 800 строк** текста, который уходит
+агенту (`mcp.tool_text`, JSON с отступом 2): агент контура обрезает вывод
+на 25 000 символов или 1000 строк, и обрезанное читается как полное.
+Влезает — ответ как есть, без новых ключей. Не влезает — `fit` урезает
+списки и ставит в начало ответа:
+
+| Поле | Что значит |
+|---|---|
+| `truncated` | `true` — ответ неполон |
+| `next_offset` | `offset` следующей страницы страничного списка; `null` — урезано только то, что страницами не листается |
+| `truncated_lists` | семейство списков → сколько было в самом длинном из них: `findings` (страница), `findings.*.clusters.*.examples` (примеры у каждого кластера каждой находки), `blocks.*.data.projects.dotnet_projects` |
+
+Как урезается, — детерминированно, по содержимому:
+
+1. у инструмента со страничным списком всё остальное ужимается до 60 %
+   бюджета (`REST_SHARE`): иначе сосед (`not_pages` у `setup_pages` — 245
+   компонентов на squidex) оставил бы странице один элемент;
+2. страница — самое длинное начало, которое влезает, но не меньше одного
+   элемента: иначе `next_offset` стоял бы на месте и агент листал бы вечно;
+   не влез и один — он урезается изнутри (кластеры, примеры);
+3. остальное — самое тяжёлое семейство первым: всем спискам семейства
+   одна граница длины; если одного семейства мало — граница вдвое, и дальше
+   следующее. Вес — собственный (без вложенных списков) и по тексту
+   с отступами, с учётом строк.
+
+Что делать с урезанным: взять `next_offset`; сузить запрос (`limit`, `top`,
+`path`, фильтры); полный ответ — CLI-двойник с `--format json`.
+
+Размеры (`--no-cache`, настройки S24b, 08.10): на `SampleSolution` все
+ответы без урезания, самый длинный — `setup_explain .` (12,4 тыс. символов);
+на squidex урезаны `setup_recon` (кандидаты реестров и швов с примерами),
+`setup_status` (3 страницы при `limit` 5, охват целиком на каждой),
+`setup_explain .`, `setup_pages` (`not_pages`), `setup_docs` при
+`limit 20` (19 из 20 документов); на abp — ещё `setup_recon` с 671 проектом
+.NET (`projects.dotnet_projects` урезан: полный список — `docpipe recon
+--json`). Самый длинный ответ — 19,8 тыс. символов (`setup_recon` на abp),
+больше всего строк — 691 (`setup_symbols lang ts` на squidex).
+
+> **Ловушка. Контейнер всегда длиннее своего содержимого.** Урезание
+> «самого длинного списка» выбрасывало `blocks` разведки — целые блоки, —
+> а по одному списку сотня мелких списков примеров не перевешивала ни
+> одного соседа и оставалась целой, пока сосед не исчезал до нуля. Отсюда
+> собственный вес и семейства.
+
+> **Ловушка. Компактный JSON — не тот текст.** Отступы на глубине пяти
+> уровней удваивают длину строки, и по компактной длине вложенные примеры
+> кандидатов реестров казались лёгкими: семейство урезалось последним
+> и сразу до нуля. Вес считается по тексту с отступами — тем, что уйдёт.
+
+> **Ловушка. Проверка из плана пишет кэш в фикстуру**, если позвать
+> инструмент: `tools/list` ничего не прогоняет, а `tools/call` без
+> `--no-cache` кладёт `.docpipe/cache/` в `tests/fixtures/SampleSolution`.

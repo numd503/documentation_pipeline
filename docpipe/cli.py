@@ -108,6 +108,7 @@ from docpipe.materialize.worklist import (
     build_worklist,
     select_documents,
 )
+from docpipe.mcp import serve as serve_tools
 from docpipe.model import DocNode, Manifest, RunMeta
 from docpipe.recon import DEFAULT_MONTHS as RECON_MONTHS
 from docpipe.recon import DEFAULT_TOP as RECON_TOP
@@ -139,6 +140,8 @@ from docpipe.setup.link import (
     link_clusters_json,
 )
 from docpipe.setup.review import HistoryError, build_review, format_review, has_changes, review_json
+from docpipe.setup.server import SERVER_NAME as SETUP_SERVER_NAME
+from docpipe.setup.server import SetupTools
 from docpipe.setup.status import build_status, load_baseline, status_json, write_status
 from docpipe.setup.status import format_status as format_setup_status
 from docpipe.stats import (
@@ -149,6 +152,7 @@ from docpipe.stats import (
     StatsReport,
     build_stats_report,
     collect_stats,
+    enrolled_keys,
     format_kinds,
     format_report,
     plural,
@@ -162,7 +166,7 @@ from docpipe.web.link import CATEGORIES as LINK_CATEGORIES
 from docpipe.web.link import format_report as format_link_report
 from docpipe.web.link import report_for_settings as link_report_for_settings
 from docpipe.web.overrides import StaleRule, load_page_overrides
-from docpipe.web.pages import DEFAULT_DEPTH
+from docpipe.web.pages import DEFAULT_DEPTH, NOTE_CODES
 from docpipe.web.pages import FORMATS as PAGE_FORMATS
 from docpipe.web.pages import build_report as build_pages_report
 from docpipe.web.pages import format_report as format_pages_report
@@ -586,6 +590,9 @@ def symbols(
     ] = "",
     kind: Annotated[str, typer.Option("--kind", help="Только этот вид сущности.")] = "",
     limit: Annotated[int, typer.Option("--limit", help="Показать не больше N; 0 — все.")] = 0,
+    offset: Annotated[
+        int, typer.Option("--offset", help="Сколько пропустить с начала (по FQN).")
+    ] = 0,
     jobs: Annotated[int, typer.Option("--jobs", help="Число процессов для разбора.")] = 1,
     no_cache: Annotated[
         bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
@@ -619,6 +626,10 @@ def symbols(
     if lang not in ("cs", "ts"):
         raise typer.BadParameter("известны cs и ts", param_hint="--lang")
     output_format = _format(output_format, ("text", "json"))
+    if limit < 0:
+        raise typer.BadParameter("не бывает отрицательным", param_hint="--limit")
+    if offset < 0:
+        raise typer.BadParameter("не бывает отрицательным", param_hint="--offset")
 
     # Секция правил и есть язык: набор .NET, прочитанный шагом `web`, отсеял бы
     # весь фронт целиком (`require_public` на TypeScript), и это молчаливая
@@ -640,7 +651,6 @@ def symbols(
     if lang == "cs":
         scanned = _scan_or_refuse(root, settings, ruleset, cache_dir, jobs)
         index, manifest = scanned.index, scanned.manifest
-        configured = {module.project_file for module in manifest.modules if module.enrolled}
     else:
         try:
             web = run_web_scan(root, settings, ruleset, cache_dir, overrides)
@@ -652,15 +662,12 @@ def symbols(
             typer.echo(f"Ошибка в ручном составе страниц: {exc}", err=True)
             raise typer.Exit(code=2) from exc
         index, manifest = web.index, web.manifest
-        configured = {
-            module.id.removeprefix("module:") for module in manifest.modules if module.enrolled
-        }
 
     selection = select(
         index,
         manifest.nodes,
         ruleset,
-        configured,
+        enrolled_keys(manifest, "cs" if lang == "cs" else "ts"),
         state=state,
         module=module,
         namespace=namespace,
@@ -668,6 +675,7 @@ def symbols(
         rule=rule,
         kind=kind,
         limit=limit,
+        offset=offset,
     )
 
     # `rstrip`: `stable_json_dumps` кончается переводом строки, и `echo`
@@ -850,14 +858,7 @@ def web_scan(
     # на старте нерешённых много, красный CI выключат на второй день, и вместе
     # с ним пропадут проверки, которые уже работают.
     statistics = collect_stats(
-        result.index,
-        result.manifest.nodes,
-        ruleset,
-        {
-            module.id.removeprefix("module:")
-            for module in result.manifest.modules
-            if module.enrolled
-        },
+        result.index, result.manifest.nodes, ruleset, enrolled_keys(result.manifest, "ts")
     )
     if show_stats:
         if output_format == "json":
@@ -1038,6 +1039,10 @@ def web_pages(
         bool,
         typer.Option("--not-pages", help="Дописать компоненты, страницами не ставшие, и почему."),
     ] = False,
+    note: Annotated[
+        str,
+        typer.Option("--note", help=f"Только страницы с этой заметкой: {', '.join(NOTE_CODES)}."),
+    ] = "",
 ) -> None:
     """Показать страницы фронта и почему каждая из них страница.
 
@@ -1053,6 +1058,10 @@ def web_pages(
     output_format = _format(output_format, PAGE_FORMATS)
     if depth < 0:
         raise typer.BadParameter("глубина не может быть отрицательной", param_hint="--depth")
+    if note and note not in NOTE_CODES:
+        raise typer.BadParameter(
+            f"{note!r}; известны: {', '.join(NOTE_CODES)}", param_hint="--note"
+        )
 
     try:
         manifest = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
@@ -1060,7 +1069,7 @@ def web_pages(
         typer.echo(f"Не удалось прочитать манифест: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    report = build_pages_report(manifest, depth=depth, route=route, module=module)
+    report = build_pages_report(manifest, depth=depth, route=route, module=module, note=note)
 
     if output_format == "json":
         typer.echo(pages_json(report))
@@ -3815,6 +3824,42 @@ def setup_review(
     typer.echo(text.rstrip("\n"))
     if fail_on_changes and has_changes(report):
         raise typer.Exit(code=1)
+
+
+@setup_app.command("serve")
+def setup_serve(
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория с исходниками.")] = Path(
+        "."
+    ),
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", help="Файл конфигурации docpipe.yaml; может ещё не существовать."),
+    ] = None,
+    no_cache: Annotated[
+        bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
+    ] = False,
+) -> None:
+    """Запустить MCP-сервер настройки на stdio: команды `setup` становятся инструментами агента.
+
+    Те же функции, что у CLI (`config check`, `recon`, `setup *`, `symbols`,
+    `scan --stats`, `web pages`, `docs status`, `docs explain`), — без индекса
+    графа и до любой сборки. Каждый вызов перечитывает настройку: агент правит
+    файл и зовёт инструмент снова. Ответ — не длиннее 20 000 символов, списки
+    страницами.
+
+    `docpipe.yaml` может не быть (онбординг): сервер стартует, инструменты
+    работают на умолчаниях, `setup_config_check` отвечает `config_missing`.
+    Сервер ничего не пишет, кроме кэша разбора (`--no-cache` — и его).
+    """
+    if not root.is_dir():
+        raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
+    if config is not None and not config.is_file():
+        # stderr, не stdout: stdout — канал протокола.
+        typer.echo(
+            f"{SETUP_SERVER_NAME}: {config} не найден — инструменты работают на умолчаниях.",
+            err=True,
+        )
+    serve_tools(SetupTools(root, config, use_cache=not no_cache))
 
 
 if __name__ == "__main__":

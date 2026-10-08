@@ -124,11 +124,16 @@ def select(
     rule: str = "",
     kind: str = "",
     limit: int = 0,
+    offset: int = 0,
 ) -> Selection:
     """Отобрать символы по состоянию решения и фильтрам.
 
     Решение считается той же `decide`, что и в отчёте, — иначе `--stats` и эта
     выборка расходились бы в числах, и доверять было бы нельзя ни одному.
+
+    `offset` и `limit` — страница выборки по FQN (`limit` 0 — до конца);
+    `total` — сколько нашлось до страницы. Страница режется здесь, а не
+    у вызывающего: у CLI и сервера настройки (S27) она обязана быть одной.
     """
     documented_bases = documented_base_types(nodes)
     pages = absorbed_page_refs(nodes)
@@ -153,8 +158,9 @@ def select(
         rows.append(Row(symbol=symbol, decision=decision, page=page))
 
     rows.sort(key=lambda row: row.symbol.fqn)
+    window = rows[offset:]
     return Selection(
-        rows=rows[:limit] if limit else rows,
+        rows=window[:limit] if limit else window,
         total=len(rows),
         description=_description(state, module, namespace, path, rule, kind),
     )

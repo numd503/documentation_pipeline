@@ -184,6 +184,20 @@ def decide(
     return Decision(state=UNDECIDED)
 
 
+def enrolled_keys(manifest: Manifest, lang: Lang) -> set[str]:
+    """Включённые модули в той форме, в какой их сверяет `decide` с `Symbol.module`.
+
+    У .NET это путь `.csproj` (`project_file`), у фронта — ключ модуля, то есть
+    `id` без префикса `module:`: `project_file` там — `angular.json`, общий
+    у нескольких проектов workspace. Перепутать формы — получить `not_enrolled`
+    на всём дереве без единой ошибки, поэтому выражение одно на `symbols`,
+    `web scan --stats`, `setup status` и сервер настройки.
+    """
+    if lang == "cs":
+        return {module.project_file for module in manifest.modules if module.enrolled}
+    return {module.id.removeprefix("module:") for module in manifest.modules if module.enrolled}
+
+
 @dataclass(frozen=True)
 class Stats:
     """Счётчики прогона и подсказки для настройки правил."""

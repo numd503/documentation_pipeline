@@ -175,6 +175,18 @@ def _answer(toolset: ToolSet, method: str, params: dict[str, Any]) -> dict[str, 
     return None
 
 
+def tool_text(answer: dict[str, Any]) -> str:
+    """Текст ответа инструмента — ровно то, что агент получит в `content`.
+
+    Публичная, потому что бюджет ответа (`setup/server.fit`, S27) меряется
+    по этому тексту: с отступами он на треть длиннее компактного JSON
+    и в несколько раз длиннее по строкам, а агент контура обрезает и по
+    символам, и по строкам. Мерить копию с другими параметрами `dumps`
+    значило бы уложить в бюджет не тот текст, который уйдёт.
+    """
+    return json.dumps(answer, ensure_ascii=False, indent=2)
+
+
 def _call_tool(toolset: ToolSet, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Вызвать инструмент; исключение — ответ с `isError`, а не выход из цикла."""
     try:
@@ -185,14 +197,14 @@ def _call_tool(toolset: ToolSet, name: str, arguments: dict[str, Any]) -> dict[s
             answer = toolset.call(name, arguments)
         # Сериализация — внутри `try`: ответ с `Path` или множеством падает
         # здесь, а не в цикле, и это тоже ошибка инструмента.
-        text = json.dumps(answer, ensure_ascii=False, indent=2)
+        text = tool_text(answer)
         is_error = "error" in answer
     except Exception as error:
         traceback.print_exc(file=sys.stderr)
         # Та же форма `{"error": …}`, что у ошибок, которые инструмент
         # возвращает сам: агент читает один формат, а не два.
         message = f"внутренняя ошибка инструмента {name}: {type(error).__name__}: {error}"
-        text = json.dumps({"error": message}, ensure_ascii=False, indent=2)
+        text = tool_text({"error": message})
         is_error = True
     return {"content": [{"type": "text", "text": text}], "isError": is_error}
 

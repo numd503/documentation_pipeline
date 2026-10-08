@@ -63,7 +63,7 @@ from docpipe.setup.candidates import (
 from docpipe.setup.context import InputError, SetupContext
 from docpipe.setup.explain import covering_root, shown_root
 from docpipe.setup.link import clusters_of, places_of
-from docpipe.stats import NOT_ENROLLED, UNDECIDED, last_word, plural
+from docpipe.stats import NOT_ENROLLED, UNDECIDED, enrolled_keys, last_word, plural
 from docpipe.step2 import Step2Error, Step2Inputs
 from docpipe.web.absorb import PAGE_KIND
 from docpipe.web.calls import builder_for, name_matches, wrapper_matches
@@ -403,15 +403,13 @@ def _gather(ctx: SetupContext) -> _Runs:
 
     if runs.scan is not None:
         scan = runs.scan
-        enrolled = {module.project_file for module in scan.manifest.modules if module.enrolled}
+        enrolled = enrolled_keys(scan.manifest, "cs")
         runs.steps.append(
             _step("dotnet", scan.manifest, scan.index, ctx.ruleset, ctx.rules_file, enrolled)
         )
     if runs.web is not None:
         web = runs.web
-        enrolled = {
-            module.id.removeprefix("module:") for module in web.manifest.modules if module.enrolled
-        }
+        enrolled = enrolled_keys(web.manifest, "ts")
         runs.steps.append(
             _step("web", web.manifest, web.index, ctx.web_ruleset, ctx.web_rules_file, enrolled)
         )
