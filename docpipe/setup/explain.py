@@ -693,10 +693,12 @@ def _calls(
     )
     draft.unresolved_reasons.update(call.reason for call in unresolved)
 
-    registry = [(normalize_route(rule.route), rule) for rule in settings.web.registry_calls]
+    # Правило модуля — у каждого вызова, и у невосстановленного тоже (S35): тот же
+    # счёт, что у охвата `setup status` (`_cover_calls`), и та же граница, что
+    # у находки `link.module_without_rewrite` — модуль с любыми вызовами.
     without_rewrite: Counter[str] = Counter()
-    for call in resolved:
-        key = _web_module_of(call.file, modules)
+    for file in [*(call.file for call in resolved), *(call.file for call in unresolved)]:
+        key = _web_module_of(file, modules)
         name = modules[key].name if key is not None else ""
         rule = settings.web.rewrite_for(name) if name else None
         if rule is not None:
@@ -712,6 +714,9 @@ def _calls(
             )
         elif name:
             without_rewrite[name] += 1
+
+    registry = [(normalize_route(rule.route), rule) for rule in settings.web.registry_calls]
+    for call in resolved:
         for route, registry_rule in registry:
             if route == call.key.route:
                 where = registry_rule.discriminator.where

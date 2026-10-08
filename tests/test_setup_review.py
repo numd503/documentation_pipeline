@@ -16,6 +16,7 @@
 иначе он лёг бы в `.docpipe/` копии и стал бы «новым кодом».
 """
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -46,6 +47,8 @@ runner = CliRunner()
 
 SEAM: Final = Path("tests/fixtures/SeamWorkspace")
 RULES: Final = Path("rules/rules.yaml")
+# Нейтральный набор, который кладёт установщик (равен `rules/rules.yaml` байт в байт).
+BUNDLE_RULES: Final = Path("deploy/generic-docspipe/rules.yaml")
 
 CONTROLLER: Final = "backend/Seam.Api/Controllers/ReportsController.cs"
 SERVICE: Final = "frontend/src/app/services/reports.service.ts"
@@ -132,28 +135,49 @@ def write(root: Path, path: str, text: str) -> None:
     target.write_text(text, encoding="utf-8")
 
 
-def _rules() -> dict[str, Any]:
-    """Правила репозитория без библиотечных правил отсева, которым на фикстуре нечего отсеять."""
+def _rules(web_exclude: tuple[str, ...] = ("web.environment",)) -> dict[str, Any]:
+    """Правила репозитория без библиотечных правил отсева, которым на фикстуре нечего отсеять.
+
+    `web_exclude` — какие правила отсева фронта оставить (по `id`).
+    """
     raw: dict[str, Any] = yaml.safe_load(RULES.read_text(encoding="utf-8"))
     raw["dotnet"]["exclude"] = {"require_public": False}
     raw["web"]["exclude"]["rules"] = [
-        rule for rule in raw["web"]["exclude"]["rules"] if rule["id"] == "web.environment"
+        rule for rule in raw["web"]["exclude"]["rules"] if rule["id"] in web_exclude
     ]
     return raw
 
 
-def workspace(root: Path, *, init: bool = True) -> Path:
-    """Копия шва с настройкой в `setup/`; `init` — git-репозиторий с первым коммитом."""
-    shutil.copytree(SEAM, root, ignore=shutil.ignore_patterns(".docpipe", "docpipe.yaml"))
+# Ключа нет — `web.roots` в настройке не пишется (умолчание `["."]`).
+NO_KEY: Final = object()
+
+
+def workspace(
+    root: Path,
+    *,
+    init: bool = True,
+    front: bool = True,
+    web_roots: Any = ("frontend",),
+    rules: dict[str, Any] | None = None,
+) -> Path:
+    """Копия шва с настройкой в `setup/`; `init` — git-репозиторий с первым коммитом.
+
+    `front` — с каталогом `frontend`; `web_roots` — значение `web.roots`
+    (`NO_KEY` — ключа нет); `rules` — набор правил вместо `_rules()`.
+    """
+    ignored = () if front else ("frontend",)
+    shutil.copytree(SEAM, root, ignore=shutil.ignore_patterns(".docpipe", "docpipe.yaml", *ignored))
     setup = root / "setup"
     setup.mkdir()
-    rules = setup / "rules.yaml"
-    rules.write_text(yaml.safe_dump(_rules(), allow_unicode=True), encoding="utf-8")
-    config = {
-        "roots": ["backend"],
-        "rules": str(rules),
-        "web": {"roots": ["frontend"], "rules": str(rules), "url_rewrite": [REWRITE]},
-    }
+    rules_file = setup / "rules.yaml"
+    rules_file.write_text(
+        yaml.safe_dump(rules if rules is not None else _rules(), allow_unicode=True),
+        encoding="utf-8",
+    )
+    web: dict[str, Any] = {"rules": str(rules_file), "url_rewrite": [REWRITE]}
+    if web_roots is not NO_KEY:
+        web["roots"] = list(web_roots)
+    config = {"roots": ["backend"], "rules": str(rules_file), "web": web}
     (setup / "docpipe.yaml").write_text(
         yaml.safe_dump(config, allow_unicode=True), encoding="utf-8"
     )
@@ -315,6 +339,255 @@ def test_classification_rules_without_wins_are_not_dead(tmp_path: Path) -> None:
     ]
     assert idle  # на фикстуре их много: `web.guard`, `ignite.compute`, …
     assert review(root).dead_decisions == []
+
+
+# --------------------------------------------------------------------------------------
+# Записи без охвата: мёртвые, неприменимые, удержанные (S35)
+# --------------------------------------------------------------------------------------
+
+# Второй модуль фронта, у которого единственный вызов невосстановим: адрес
+# приходит в ответе сервера (abp: модуль `components`, S31, ловушка 20).
+WIDGETS_DIR: Final = "frontend/projects/widgets"
+WIDGETS_FILE: Final = f"{WIDGETS_DIR}/src/lib/widget-links.service.ts"
+WIDGETS_CODE: Final = """import { HttpClient } from '@angular/common/http';
+import { Injectable } from '@angular/core';
+import { Observable } from 'rxjs';
+
+// Гипермедиа: адрес — из ответа сервера, статически не восстановить.
+@Injectable({ providedIn: 'root' })
+export class WidgetLinksService {
+  constructor(private http: HttpClient) {}
+
+  follow(link: { href: string }): Observable<unknown> {
+    return this.http.get(link.href);
+  }
+}
+"""
+WIDGETS_REWRITE: Final[dict[str, str]] = {
+    "module": "widgets",
+    "reason": "проверено: библиотека шлёт адрес из ответа как есть, префикса нет",
+}
+WIDGETS_UNRESOLVABLE: Final[dict[str, str]] = {
+    "path": "**/widget-links.service.ts",
+    "reason": "гипермедиа: адрес из ответа сервера",
+}
+
+
+def add_widgets(root: Path) -> None:
+    """Проект `widgets` в `angular.json` фронта под `root` и его единственный файл."""
+    angular = root / "frontend" / "angular.json"
+    data = json.loads(angular.read_text(encoding="utf-8"))
+    data["projects"]["widgets"] = {
+        "projectType": "library",
+        "root": "projects/widgets",
+        "sourceRoot": "projects/widgets/src",
+        "prefix": "lib",
+    }
+    angular.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    write(root, WIDGETS_FILE, WIDGETS_CODE)
+
+
+def edit_config(root: Path, **sections: Any) -> None:
+    """Дописать в `setup/docpipe.yaml`: `web` — в секцию `web`, остальное — наверх."""
+    path = root / "setup" / "docpipe.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw["web"].update(sections.pop("web", {}))
+    raw.update(sections)
+    path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+
+
+def edit_web_rules(root: Path, rule_id: str, **fields: Any) -> None:
+    """Дописать поля правилу отсева фронта `rule_id` в `setup/rules.yaml`."""
+    path = root / "setup" / "rules.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    [rule] = [rule for rule in raw["web"]["exclude"]["rules"] if rule["id"] == rule_id]
+    rule.update(fields)
+    path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+
+
+def test_url_rewrite_of_a_module_with_only_unresolved_calls_is_not_dead(tmp_path: Path) -> None:
+    """Ловушка S31 (20): охват `url_rewrite` — все вызовы модуля, и невосстановленные тоже.
+
+    Находка `link.module_without_rewrite` требует записи у модуля с любыми
+    вызовами, а охват записи считал только восстановленные: пустая запись
+    модуля, чей единственный вызов объявлен `link.unresolvable`, была мёртвой,
+    а без неё возвращалась находка.
+    """
+    root = workspace(tmp_path / "repo", init=False)
+    add_widgets(root)
+    edit_config(
+        root,
+        web={"url_rewrite": [REWRITE, WIDGETS_REWRITE]},
+        link={"unresolvable": [WIDGETS_UNRESOLVABLE]},
+    )
+    git(root, "init", "-q", "-b", "main")
+    commit(root, "настройка, код и библиотека виджетов")
+
+    rewrite = decision_id(config_label(root), "web.url_rewrite", "widgets")
+    detail = status_detail(context(root))
+    [covered] = [item for item in detail.coverage if item.id == rewrite]
+    assert (covered.count, covered.files) == (1, {WIDGETS_FILE: 1})
+    assert "link.module_without_rewrite" not in {item.code for item in detail.status.findings}
+    # Вызов виджетов решён `link.unresolvable`; невосстановленные модуля `seam-web` — нет.
+    unresolved = detail.places.get("link.calls_unresolved", ())
+    assert not any(WIDGETS_FILE in place.files for place in unresolved)
+
+    report = review(root)
+    assert rewrite not in {item.id for item in report.dead_decisions}
+    assert rewrite not in {item.id for item in report.inapplicable}
+    assert not has_changes(report)
+
+
+@pytest.mark.parametrize("web_roots", [NO_KEY, []], ids=["no-key", "empty"])
+def test_repository_without_a_front_puts_front_records_into_inapplicable(
+    tmp_path: Path, web_roots: Any
+) -> None:
+    """Фронта нет — записям фронта нечего решать: `no_front`, ревью зелёное.
+
+    `web.roots` не задан (умолчание `["."]`) или задан `[]`, а шаг `web`
+    не дал ни одного модуля: правила `web.exclude` набора, `url_rewrite`
+    и записи секции `link` о вызовах фронта — в `inapplicable`.
+    """
+    root = workspace(tmp_path / "repo", init=False, front=False, web_roots=web_roots)
+    edit_config(root, link={"unresolvable": [WIDGETS_UNRESOLVABLE]})
+    git(root, "init", "-q", "-b", "main")
+    commit(root, "настройка и код без фронта")
+
+    report = review(root)
+    assert report.dead_decisions == []
+    by_id = {item.id: item for item in report.inapplicable}
+    for key, value in (
+        ("web.url_rewrite", "seam-web"),
+        ("link.unresolvable", WIDGETS_UNRESOLVABLE["path"]),
+    ):
+        assert by_id[decision_id(config_label(root), key, value)].why == "no_front"
+    environment = by_id[decision_id(rules_label(root), "web.exclude", "web.environment")]
+    assert (environment.why, environment.detail, environment.reason) == (
+        "no_front",
+        [],
+        _rules()["web"]["exclude"]["rules"][0]["reason"],
+    )
+    assert not has_changes(report)
+    assert "Неприменимо по построению: 3 (фронта нет — 3, под `exclude` — 0" in format_review(
+        report
+    )
+
+    args = ["setup", "review", "--root", str(root), "--config", config_label(root), "--no-cache"]
+    assert runner.invoke(app, [*args, "--fail-on-changes"]).exit_code == 0
+
+
+def test_without_a_front_the_neutral_set_is_green_once_idle_dotnet_rules_are_kept(
+    tmp_path: Path,
+) -> None:
+    """Критерий приёмки: копия шва без фронта, нейтральный набор правил — ревью зелёное.
+
+    Секция `web` набора и `require_public` — неприменимы по построению.
+    Четыре библиотечных отсева `dotnet` на бэке фикстуры не решают ничего
+    и законно мертвы: тестов, генерата, `*Dto` и перечислений там нет.
+    Адрес каждого — `dotnet.exclude.rules[].unused_reason`; с причиной
+    человека они в `kept_unused`, и `--fail-on-changes` — код 0.
+    """
+    neutral: dict[str, Any] = yaml.safe_load(BUNDLE_RULES.read_text(encoding="utf-8"))
+    assert neutral["dotnet"]["exclude"]["require_public"] is True  # набор как есть
+    root = workspace(tmp_path / "repo", front=False, web_roots=NO_KEY, rules=neutral)
+    args = ["setup", "review", "--root", str(root), "--config", config_label(root), "--no-cache"]
+
+    report = review(root)
+    library = {"data.contracts", "enums", "generated.code", "tests"}
+    assert {item.value for item in report.dead_decisions} == library
+    assert {item.keep_key for item in report.dead_decisions} == {
+        "dotnet.exclude.rules[].unused_reason"
+    }
+    why = {item.value: item.why for item in report.inapplicable}
+    web_rules = {rule["id"] for rule in neutral["web"]["exclude"]["rules"]}
+    assert why == {"exclude.require_public": "switch"} | dict.fromkeys(
+        [*web_rules, "seam-web"], "no_front"
+    )
+    assert runner.invoke(app, [*args, "--fail-on-changes"]).exit_code == 1
+
+    for rule in neutral["dotnet"]["exclude"]["rules"]:
+        rule["unused_reason"] = "набор поставки: держим на случай тестов и генерата"
+    (root / "setup" / "rules.yaml").write_text(
+        yaml.safe_dump(neutral, allow_unicode=True), encoding="utf-8"
+    )
+    commit(root, "причины держать отсевы набора без охвата")
+    kept = review(root)
+    assert kept.dead_decisions == []
+    assert {item.value for item in kept.kept_unused} == library
+    assert {item.unused_reason for item in kept.kept_unused} == {
+        "набор поставки: держим на случай тестов и генерата"
+    }
+    assert "Держатся без охвата с причиной (`unused_reason`): 4." in format_review(kept)
+    assert runner.invoke(app, [*args, "--fail-on-changes"]).exit_code == 0
+
+
+def test_exclusion_rule_whose_files_exclude_took_is_under_exclude(tmp_path: Path) -> None:
+    """`exclude` спеков отсёк всё, что решал `web.spec`: правило — `under_exclude`.
+
+    По файлам, а не по глобам: без `exclude` тот же спек читается и правило
+    его выигрывает; с `exclude` прочитанных спеков нет, отсечённый — есть.
+    """
+    spec = "frontend/src/app/x.spec.ts"
+    root = workspace(tmp_path / "repo", init=False, rules=_rules(("web.environment", "web.spec")))
+    write(root, spec, "export class XSpecHarness {}\n")
+    git(root, "init", "-q", "-b", "main")
+    commit(root, "спек")
+    rule = decision_id(rules_label(root), "web.exclude", "web.spec")
+    [read] = [item for item in status_detail(context(root)).coverage if item.id == rule]
+    assert read.count == 1  # без `exclude` спек читается, правило его выигрывает
+
+    edit_config(root, exclude=[{"glob": "frontend/**/*.spec.ts", "reason": "тесты не продукт"}])
+    commit(root, "спеки исключены обходом")
+    report = review(root)
+    [cut] = [item for item in report.inapplicable if item.id == rule]
+    assert (cut.why, cut.detail) == ("under_exclude", ["frontend/**/*.spec.ts"])
+    assert rule not in {item.id for item in report.dead_decisions}
+
+
+def test_require_public_without_coverage_is_a_switch(tmp_path: Path) -> None:
+    """`exclude.require_public` — переключатель секции, а не запись о группе типов."""
+    rules = _rules()
+    rules["dotnet"]["exclude"]["require_public"] = True
+    root = workspace(tmp_path / "repo", rules=rules)  # все типы бэка фикстуры — public
+    report = review(root)
+    [switch] = report.inapplicable
+    assert (switch.key, switch.value, switch.why) == (
+        "dotnet.exclude",
+        "exclude.require_public",
+        "switch",
+    )
+    assert report.dead_decisions == [] and not has_changes(report)
+
+
+def test_unused_reason_keeps_an_idle_rule_and_dead_ones_have_an_address(tmp_path: Path) -> None:
+    """Мёртвое правило отсева — с адресом причины, удержанное — в `kept_unused`.
+
+    У мёртвой записи `docpipe.yaml` адреса причины нет: шаблон, который не
+    отсекает ничего, правят или удаляют.
+    """
+    root = workspace(tmp_path / "repo", init=False, rules=_rules(("web.environment", "web.mock")))
+    edit_config(root, exclude=[{"glob": "nothing/**", "reason": "на всякий случай"}])
+    git(root, "init", "-q", "-b", "main")
+    commit(root, "настройка")
+    mock = decision_id(rules_label(root), "web.exclude", "web.mock")
+    pattern = decision_id(config_label(root), "exclude", "nothing/**")
+
+    report = review(root)
+    dead = {item.id: item for item in report.dead_decisions}
+    assert dead[mock].keep_key == "web.exclude.rules[].unused_reason"
+    assert dead[pattern].keep_key is None
+    text = format_review(report)
+    assert f"удалить запись: {rules_label(root)} → web.exclude, web.mock; или держать" in text
+    assert f"удалить запись: {config_label(root)} → exclude, nothing/**\n" in text
+
+    edit_web_rules(root, "web.mock", unused_reason="моки появятся вместе с тестами фронта")
+    commit(root, "моки держим")
+    kept = review(root)
+    assert mock not in {item.id for item in kept.dead_decisions}
+    [item] = kept.kept_unused
+    assert (item.id, item.unused_reason) == (mock, "моки появятся вместе с тестами фронта")
+    # Запись `docpipe.yaml` по-прежнему мертва: ревью красное, пока её не уберут.
+    assert has_changes(kept)
 
 
 def test_uncommitted_config_edit_is_config_dirty(tmp_path: Path) -> None:

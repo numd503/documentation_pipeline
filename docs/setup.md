@@ -831,7 +831,7 @@ uv run docpipe setup status --root . --config docpipe.yaml --fail-on-unexplained
 | `dotnet.rules`, `web.rules` | символов, которые правило классификации **выиграло** |
 | `di_methods` | вызовов с типом, ставших регистрацией |
 | `dispatch_interfaces` | обработчиков |
-| `web.url_rewrite` | восстановленных вызовов модуля |
+| `web.url_rewrite` | вызовов модуля — восстановленных и невосстановленных (S35): запись нужна модулю с любыми вызовами (`link.module_without_rewrite`), и охват считает те же вызовы; `setup explain` — тот же счёт |
 | `web.registry_calls` | вызовов к маршруту |
 | `web.http_wrappers`, `web.url_builders` | вызовов через обёртку и её тел; адресов от построителя |
 | `web.not_wrappers` | вызовов-кандидатов, которые запись сняла (тем же `declined_calls`, что у отчёта кандидатов и `setup explain`) |
@@ -935,7 +935,8 @@ uv run docpipe setup review --root . --config docs/ml/docpipe/docpipe.yaml --fai
 файлов, файлов у решения, примеров у находки; по умолчанию 20, `0` — все),
 `--fail-on-changes`, `--no-cache`. Код 0 — отчёт построен; с
 `--fail-on-changes` — 1 при непустых `new_findings` или `dead_decisions`
-или при дефектах (`defects > 0`); 2 — не git, ревизии `--since` нет, база
+или при дефектах (`defects > 0`); `inapplicable` и `kept_unused` код
+не меняют (S35); 2 — не git, ревизии `--since` нет, база
 на границе неглубокого клона, неверный аргумент, настройка не читается.
 Git зовётся подпроцессом с `GIT_OPTIONAL_LOCKS=0`: команда не переписывает
 даже индекс.
@@ -949,7 +950,9 @@ Git зовётся подпроцессом с `GIT_OPTIONAL_LOCKS=0`: кома�
 | `outside_area`, `outside_area_total` | новые файлы вне `roots` и `web.roots`: обход их не читает, но решения о них бывают (`exclude`, фронт вне корней) |
 | `applied` | решения с охватом в новых файлах: `id`, `file`, `key`, `value`, `reason`, `count` (решено в новых файлах — сумма разбивки «файл → сколько» `setup status`), `total` (охват во всём репозитории), `files` и `files_total`. Порядок — от решения, забравшего больше нового кода |
 | `new_findings` | находки `setup status` с местами в новых файлах: `code`, `category`, `title`, `decision_home`, `count` (число находки во всём репозитории), `places` (мест в новых файлах), `examples` (эти места, до `--limit`) |
-| `dead_decisions` | решения без охвата во всём репозитории (`id`, `file`, `key`, `value`, `reason`), кроме правил классификации |
+| `dead_decisions` | решения без охвата во всём репозитории (`id`, `file`, `key`, `value`, `reason`), кроме правил классификации и двух списков ниже; `keep_key` — адрес причины держать запись без охвата: у правила отсева набора `dotnet.exclude.rules[].unused_reason` или `web.exclude.rules[].unused_reason`, у записей `docpipe.yaml`, `pages.yaml`, `ownership.yaml` и краткой формы `exclude` — `null` (их правят или удаляют) |
+| `inapplicable` | записи без охвата, которым нечего решать по построению (S35): поля `dead_decisions` без `keep_key`, `why` и `detail`. `why`: `no_front` — фронта нет (шаг `web` без модулей, а `web.roots` не задан или `[]`), запись решает о фронте (`web.*`, `link.unresolvable`, `link.external_targets`); `under_exclude` — `path_glob` правила отсева совпал с файлами, которые отсёк `exclude`, и ни с одним прочитанным файлом шага (`detail` — шаблоны `exclude`, накрывшие эти файлы); `switch` — `exclude.require_public`, переключатель секции |
+| `kept_unused` | правила отсева без охвата с причиной держать их (`unused_reason`): поля `dead_decisions` без `keep_key` и `unused_reason` |
 | `unexplained`, `defects` | те же суммы, что у `setup status` |
 | `notes` | пометки: `config.uncommitted`, `config.outside_repository`, `git.submodules`, `status.defects` |
 | `status` | только без базы: отчёт `setup status` целиком |
@@ -973,10 +976,20 @@ Git зовётся подпроцессом с `GIT_OPTIONAL_LOCKS=0`: кома�
   без побед — запас набора: нейтральный набор несёт правила на виды,
   которых в репозитории может не быть (`web.guard`, `ignite.compute`).
   Правило отсева без охвата — здесь: «не документируем» — решение
-  человека с причиной, и на нейтральном наборе их тоже бывает несколько
-  (`tests`, `generated.code` на репозитории без тестов и генерата) — их
-  удаляют из копии набора в репозитории продукта, иначе
-  `--fail-on-changes` красный всегда.
+  человека с причиной. У каждой записи — адрес решения: удалить
+  (`file` → `key`, `value`, по слову человека) или держать с причиной
+  (`keep_key`); текст печатает его строкой под записью.
+- **`inapplicable` и `kept_unused` — сведения, а не работа** (S35).
+  Без них ревью нейтрального набора не зеленело никогда: в прогоне S31
+  на всех четырёх репозиториях `dead_decisions` состоял в основном
+  из правил набора, которым нечего решать (шесть `web.exclude` без фронта,
+  `web.spec` после `exclude` спеков, `require_public`). Правило отсева
+  набора, которое человек решил держать (`tests` на репозитории, где тесты
+  сняты `not_enrolled`; `generated.code` на свежем клоне без `obj/`), —
+  `unused_reason` в самом правиле; текст печатает оба списка строкой
+  с числом. «Фронта нет» и «фронт исчез» различает только `web.roots`:
+  явный непустой список без модулей — решение, которое перестало работать,
+  и его записи остаются в `dead_decisions`.
 - **Без базы.** Файлы настройки ни разу не коммитились (или в репозитории
   нет коммитов) — `base: null`, пометка `config.uncommitted`, а `status` —
   отчёт `setup status` целиком; `--fail-on-changes` — по его находкам

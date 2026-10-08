@@ -76,6 +76,16 @@ class ExcludeRule:
     # а описать вспомогательные положительно удаётся не всегда.
     unless: dict[str, Any] | None = None
 
+    # Почему правило держится, когда не отсеивает ничего (S35): ревью кладёт
+    # такое правило в `kept_unused`, а не в `dead_decisions`. Нейтральный набор
+    # несёт отсевы на случай, которого в репозитории может не быть (`tests`
+    # без тестов, `generated.code` на свежем клоне без `obj/`), и без места
+    # для причины их оставалось только удалить — или терпеть вечно красное
+    # ревью. Пустая строка — «причины нет»: заданный пустым ключ — отказ
+    # загрузки. На классификацию ключ не влияет и в хэши не входит: правка
+    # формулировки не должна менять ни манифест, ни кэш разбора.
+    unused_reason: str = ""
+
 
 @dataclass(frozen=True)
 class Exclusion:
@@ -270,7 +280,7 @@ RULE_SECTIONS: Final[tuple[str, ...]] = ("dotnet", "web")
 _FILE_KEYS: Final[frozenset[str]] = frozenset({"version", *RULE_SECTIONS})
 _SECTION_KEYS: Final[frozenset[str]] = frozenset({"ruleset_version", "exclude", "rules"})
 _EXCLUDE_RULE_KEYS: Final[frozenset[str]] = frozenset(
-    {"id", "reason", "priority", "when", "unless"}
+    {"id", "reason", "priority", "when", "unless", "unused_reason"}
 )
 _RULE_KEYS: Final[frozenset[str]] = frozenset({"id", "kind", "template", "priority", "when"})
 
@@ -286,7 +296,9 @@ _RULE_HINTS: Final[dict[str, str]] = {
 
 # Префикс зарезервирован за развёрнутой краткой формой: иначе в таблице причин
 # появились бы две строки с одним id, и понять, какая из них сработала, было бы нельзя.
-_RESERVED_PREFIX: Final = "exclude."
+# Публичный: ревью (S35) по нему узнаёт правило краткой формы — у него нет
+# места для `unused_reason`, и держать его с причиной нечем.
+RESERVED_PREFIX: Final = "exclude."
 
 
 def condition_values(when: dict[str, Any], predicate: str) -> list[str]:
@@ -300,6 +312,25 @@ def condition_values(when: dict[str, Any], predicate: str) -> list[str]:
     if key in COMBINATORS:
         return [item for child in value for item in condition_values(child, predicate)]
     return list(value) if key == predicate else []
+
+
+def _unused_reason(item: dict[str, Any], path: Path) -> str:
+    """`unused_reason` правила отсева: нет ключа — `""`, пустой или не строка — отказ.
+
+    У `reason` пустая строка пока принимается (бэклог, «Молчаливые места
+    загрузки»), и новый ключ эту дыру не повторяет: `unused_reason: ""`
+    или `unused_reason:` без значения — почти наверняка недописанная причина,
+    а принятая, она молча вернула бы правило в `dead_decisions`.
+    """
+    if "unused_reason" not in item:
+        return ""
+    value = item["unused_reason"]
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"{path}: правило отсева {item['id']!r}: `unused_reason` задан, но пуст —"
+            " причину держать правило без охвата называет человек; нет причины — нет ключа"
+        )
+    return value
 
 
 def _load_exclusion(raw: Any, path: Path) -> Exclusion:
@@ -316,7 +347,7 @@ def _load_exclusion(raw: Any, path: Path) -> Exclusion:
 
     rules = [
         ExcludeRule(
-            id=f"{_RESERVED_PREFIX}{field_name}",
+            id=f"{RESERVED_PREFIX}{field_name}",
             reason=reason,
             priority=priority,
             when={predicate: list(raw[field_name])},
@@ -331,10 +362,10 @@ def _load_exclusion(raw: Any, path: Path) -> Exclusion:
         {"id", "reason", "when"},
         allowed=_EXCLUDE_RULE_KEYS,
     ):
-        if item["id"].startswith(_RESERVED_PREFIX):
+        if item["id"].startswith(RESERVED_PREFIX):
             raise ValueError(
                 f"{path}: id правила отсева {item['id']!r} начинается с "
-                f"{_RESERVED_PREFIX!r} — префикс зарезервирован за краткой формой"
+                f"{RESERVED_PREFIX!r} — префикс зарезервирован за краткой формой"
             )
         rules.append(
             ExcludeRule(
@@ -343,6 +374,7 @@ def _load_exclusion(raw: Any, path: Path) -> Exclusion:
                 priority=int(item.get("priority", 0)),
                 when=item["when"],
                 unless=item.get("unless"),
+                unused_reason=_unused_reason(item, path),
             )
         )
 

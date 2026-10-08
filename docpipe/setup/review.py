@@ -19,6 +19,11 @@
   файлах, с этими местами;
 - `dead_decisions` — решения без охвата во всём репозитории: `url_rewrite`
   модуля, которого нет, обёртка без вызовов, правило владения без побед;
+  у каждого — адрес: удалить запись или держать с причиной (`keep_key`);
+- `inapplicable` и `kept_unused` — записи без охвата, которые ревью
+  не красят (S35): нечего решать по построению (фронта нет, файлы отсёк
+  `exclude`, переключатель `require_public`) и правила отсева, которые
+  человек держит с причиной `unused_reason`;
 - `config_dirty` — файлы настройки изменены и не закоммичены: ревью
   сравнивает код, а несохранённые решения ещё не решения.
 
@@ -29,21 +34,30 @@ Git зовётся подпроцессом (`git -C <root> …`), как у р�
 
 import os
 import subprocess
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from docpipe.discovery import in_scope, normalize_scope
+from docpipe.classify import REQUIRE_PUBLIC, RESERVED_PREFIX, ExcludeRule, condition_values
+from docpipe.discovery import file_field, in_scope, matches_glob, normalize_scope
 from docpipe.hashing import stable_json_dumps
 from docpipe.setup.candidates import DEFAULT_LIMIT
 from docpipe.setup.context import InputError, SetupContext
-from docpipe.setup.status import SetupStatus, build_status, format_status, status_detail
+from docpipe.setup.status import (
+    CoverageDetail,
+    SetupStatus,
+    build_status,
+    format_status,
+    status_detail,
+)
 from docpipe.stats import plural
 
-SCHEMA_VERSION: Final = "1.0"
+# 1.1 — `inapplicable`, `kept_unused`, `DeadDecision.keep_key` (S35).
+SCHEMA_VERSION: Final = "1.1"
 
 # Ключи охвата, которых нет в `dead_decisions`: правило классификации без побед
 # не решение, переставшее работать, а запас набора. Нейтральный набор несёт
@@ -54,6 +68,24 @@ SCHEMA_VERSION: Final = "1.0"
 # `undecided`, и об этом говорит находка. Правило отсева без охвата остаётся:
 # «не документируем» — решение человека с причиной.
 NOT_DEAD_KEYS: Final = frozenset({"dotnet.rules", "web.rules"})
+
+# Правила отсева набора: ключ охвата → секция файла правил и адрес причины
+# держать правило без охвата (`unused_reason`).
+EXCLUSION_KEYS: Final[dict[str, Literal["dotnet", "web"]]] = {
+    "dotnet.exclude": "dotnet",
+    "web.exclude": "web",
+}
+KEEP_KEYS: Final[dict[str, str]] = {key: f"{key}.rules[].unused_reason" for key in EXCLUSION_KEYS}
+
+# Записи, которые решают о вызовах и символах фронта: без фронта им нечего
+# решать (`no_front`). Кроме `web.*` — две записи секции `link` о вызовах:
+# `link.external_callers` решает об эндпоинтах .NET и сюда не входит.
+FRONT_LINK_KEYS: Final = frozenset({"link.unresolvable", "link.external_targets"})
+
+# Коды `why` у `inapplicable`.
+WHY_NO_FRONT: Final = "no_front"
+WHY_UNDER_EXCLUDE: Final = "under_exclude"
+WHY_SWITCH: Final = "switch"
 
 # Коды пометок отчёта. Стабильные: по ним скилл (S29) выбирает, что сказать.
 NOTE_UNCOMMITTED: Final = "config.uncommitted"
@@ -123,14 +155,50 @@ class NewFinding(_Base):
     examples: list[str]
 
 
-class DeadDecision(_Base):
-    """Решение без охвата во всём репозитории: оно больше не решает ничего."""
+class _Decision(_Base):
+    """Запись настройки без охвата: где лежит и почему её писали."""
 
     id: str
     file: str
     key: str
     value: str
     reason: str
+
+
+class DeadDecision(_Decision):
+    """Решение без охвата во всём репозитории: оно больше не решает ничего.
+
+    Адрес решения: удалить запись (`file` → `key`, `value`) — по слову
+    человека — или держать с причиной в `keep_key`. `keep_key` есть только
+    у правил отсева набора (`dotnet.exclude.rules[].unused_reason`,
+    `web.exclude.rules[].unused_reason`); у записей `docpipe.yaml`,
+    `pages.yaml`, `ownership.yaml` и у краткой формы `exclude` — `None`:
+    обёртку без вызовов и модуль без кода правят или удаляют, держать их
+    незачем.
+    """
+
+    keep_key: str | None
+
+
+class InapplicableDecision(_Decision):
+    """Запись без охвата, которой нечего решать по построению: не мёртвая и не красит ревью.
+
+    `why`: `no_front` — фронта нет (`web.roots` не задан или `[]`, шаг `web`
+    без модулей), а запись решает о фронте; `under_exclude` — файлы, которые
+    правило отсева решило бы, отсёк `exclude`, а среди прочитанных шагом
+    его файлов нет (`detail` — шаблоны `exclude`, накрывшие эти файлы);
+    `switch` — `exclude.require_public`, переключатель секции, а не запись
+    о группе.
+    """
+
+    why: Literal["no_front", "under_exclude", "switch"]
+    detail: list[str]
+
+
+class KeptDecision(_Decision):
+    """Правило отсева без охвата, которое человек держит с причиной (`unused_reason`)."""
+
+    unused_reason: str
 
 
 class Review(_Base):
@@ -147,9 +215,14 @@ class Review(_Base):
     `outside_area` — те из них, что вне `roots` и `web.roots`: обход их
     не читает, но решения о них есть (`exclude`, фронт вне корней).
     `unexplained` и `defects` — те же суммы, что у `setup status`.
+
+    Записи без охвата — тремя списками (S35): `dead_decisions` — перестали
+    решать то, что решали, и у каждой адрес; `inapplicable` — нечего решать
+    по построению; `kept_unused` — человек держит их с причиной. Красит
+    ревью (`has_changes`) только первый.
     """
 
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["1.1"] = SCHEMA_VERSION
     base: str | None
     since: str | None
     config_files: list[str]
@@ -162,6 +235,8 @@ class Review(_Base):
     applied: list[AppliedDecision]
     new_findings: list[NewFinding]
     dead_decisions: list[DeadDecision]
+    inapplicable: list[InapplicableDecision]
+    kept_unused: list[KeptDecision]
     unexplained: int
     defects: int
     notes: list[Note]
@@ -470,6 +545,133 @@ def _notes(ctx: SetupContext, history: _History, defects: int) -> list[Note]:
     return notes
 
 
+# --------------------------------------------------------------------------------------
+# Записи без охвата: мёртвые, неприменимые, удержанные
+# --------------------------------------------------------------------------------------
+
+
+class _Idle:
+    """Разбор записей без охвата на три списка ревью.
+
+    Прогоны и наборы правил — из контекста: `status_detail` их уже собрал,
+    и `cached_property` отдаёт готовое. Запись шага, который не собрался,
+    в охват не попала вовсе (`status._coverage`), поэтому здесь каждое
+    обращение к прогону — к прогону, который есть.
+    """
+
+    def __init__(self, ctx: SetupContext) -> None:
+        self._ctx = ctx
+        self._no_front: bool | None = None
+
+    def no_front(self) -> bool:
+        """Фронта нет: шаг `web` без модулей **и** `web.roots` не перечисляет каталогов.
+
+        «Фронта нет» и «фронт исчез» выглядят одинаково — пустой шаг `web`.
+        Различает их только `web.roots`: явный непустой список без модулей —
+        решение, которое перестало работать, и его записи остаются мёртвыми.
+        Ключ не задан (умолчание `["."]`) или задан `[]` — каталога фронта
+        человек не называл, и записям фронта нечего решать.
+        """
+        if self._no_front is None:
+            web = self._ctx.settings.web
+            named = "roots" in web.model_fields_set and bool(web.root_paths)
+            try:
+                self._no_front = not named and not self._ctx.web.manifest.modules
+            except InputError:
+                # Шаг `web` не собрался — о нём `load.errors`, а «фронта нет»
+                # неизвестно: записи остаются мёртвыми, ревью не зеленеет молча.
+                self._no_front = False
+        return self._no_front
+
+    def rule(self, key: str, value: str) -> ExcludeRule | None:
+        """Правило отсева набора по ключу охвата и `id`; не правило отсева — `None`."""
+        section = EXCLUSION_KEYS.get(key)
+        if section is None:
+            return None
+        ruleset = self._ctx.ruleset if section == "dotnet" else self._ctx.web_ruleset
+        return next((rule for rule in ruleset.exclude.rules if rule.id == value), None)
+
+    def under_exclude(self, key: str, rule: ExcludeRule) -> list[str]:
+        """Шаблоны `exclude`, отсёкшие все файлы, которые правило отсева решило бы.
+
+        Решают файлы, которые есть, а не сравнение глобов: «шаблон `exclude`
+        поглощает глоб правила» в общем виде не решается (`**` проходит
+        через `/`, `matches_glob`). Правило — под `exclude`, когда его
+        `path_glob` совпал хотя бы с одним отсечённым файлом и ни с одним
+        файлом, который шаг читает. Оба множества — файлы языка шага под его
+        корнями: `ctx.discovered` обходит весь `--root` без `roots`, а файл
+        вне корней шаг не прочёл бы и без `exclude`. Пусто — не под `exclude`.
+        """
+        globs = condition_values(rule.when, "path_glob")
+        if not globs:
+            return []
+        ctx, found = self._ctx, self._ctx.discovered
+        dotnet = EXCLUSION_KEYS[key] == "dotnet"
+        field = "cs_files" if dotnet else "ts_files"
+        scope = normalize_scope(ctx.settings.roots if dotnet else ctx.settings.web.root_paths)
+
+        def decided(path: str) -> bool:
+            return in_scope(path, scope) and any(matches_glob(path, glob) for glob in globs)
+
+        read: list[str] = found.cs_files if dotnet else found.ts_files
+        if any(decided(path) for path in read):
+            return []
+        return sorted(
+            {
+                pattern
+                for path, patterns in (found.excluded or {}).items()
+                if file_field(path.rsplit("/", 1)[-1]) == field and decided(path)
+                for pattern in patterns
+            }
+        )
+
+
+def _idle(
+    ctx: SetupContext, coverage: list[CoverageDetail]
+) -> tuple[list[DeadDecision], list[InapplicableDecision], list[KeptDecision]]:
+    """Записи без охвата — на мёртвые, неприменимые по построению и удержанные с причиной.
+
+    Порядок проверок: причина человека (`unused_reason`) — первой, это его
+    слово; затем переключатель, «фронта нет», «под `exclude`»; что осталось —
+    мёртвое, с адресом. Правила классификации (`NOT_DEAD_KEYS`) не идут
+    никуда: это запас набора.
+    """
+    idle = _Idle(ctx)
+    dead: list[DeadDecision] = []
+    inapplicable: list[InapplicableDecision] = []
+    kept: list[KeptDecision] = []
+    for item in coverage:
+        if item.count or item.key in NOT_DEAD_KEYS:
+            continue
+        fields: dict[str, Any] = {
+            "id": item.id,
+            "file": item.file,
+            "key": item.key,
+            "value": item.value,
+            "reason": item.reason,
+        }
+        rule = idle.rule(item.key, item.value)
+        if rule is not None and rule.unused_reason:
+            kept.append(KeptDecision(**fields, unused_reason=rule.unused_reason))
+        elif item.key in EXCLUSION_KEYS and item.value == REQUIRE_PUBLIC.id:
+            inapplicable.append(InapplicableDecision(**fields, why=WHY_SWITCH, detail=[]))
+        elif (item.key.startswith("web.") or item.key in FRONT_LINK_KEYS) and idle.no_front():
+            inapplicable.append(InapplicableDecision(**fields, why=WHY_NO_FRONT, detail=[]))
+        elif rule is not None and (cut := idle.under_exclude(item.key, rule)):
+            inapplicable.append(InapplicableDecision(**fields, why=WHY_UNDER_EXCLUDE, detail=cut))
+        else:
+            # Краткая форма `exclude` (`exclude.path_glob`…) места для причины
+            # не имеет: её запись правят или удаляют.
+            short = item.value.startswith(RESERVED_PREFIX)
+            keep = KEEP_KEYS.get(item.key) if rule is not None and not short else None
+            dead.append(DeadDecision(**fields, keep_key=keep))
+    return (
+        sorted(dead, key=lambda entry: entry.id),
+        sorted(inapplicable, key=lambda entry: entry.id),
+        sorted(kept, key=lambda entry: entry.id),
+    )
+
+
 def build_review(
     ctx: SetupContext, *, since: str | None = None, limit: int = DEFAULT_LIMIT
 ) -> Review:
@@ -501,6 +703,8 @@ def build_review(
             applied=[],
             new_findings=[],
             dead_decisions=[],
+            inapplicable=[],
+            kept_unused=[],
             unexplained=status.unexplained,
             defects=status.defects,
             notes=_notes(ctx, history, status.defects),
@@ -554,11 +758,7 @@ def build_review(
                 )
             )
 
-    dead = [
-        DeadDecision(id=item.id, file=item.file, key=item.key, value=item.value, reason=item.reason)
-        for item in detail.coverage
-        if item.count == 0 and item.key not in NOT_DEAD_KEYS
-    ]
+    dead, inapplicable, kept = _idle(ctx, detail.coverage)
     status = detail.status
     return Review(
         base=history.base,
@@ -572,7 +772,9 @@ def build_review(
         outside_area_total=len(outside),
         applied=applied,
         new_findings=new_findings,
-        dead_decisions=sorted(dead, key=lambda item: item.id),
+        dead_decisions=dead,
+        inapplicable=inapplicable,
+        kept_unused=kept,
         unexplained=status.unexplained,
         defects=status.defects,
         notes=_notes(ctx, history, status.defects),
@@ -586,6 +788,9 @@ def has_changes(review: Review) -> bool:
     Новые находки, решения без охвата и дефекты: ревью по прогону, который
     не собрался, неполно, и «зелёный» ответ по нему был бы молчанием.
     Без базы — любая находка или дефект `setup status`: не принято ничего.
+    `inapplicable` и `kept_unused` не смотрит (S35): записи, которым нечего
+    решать по построению, и записи, которые человек держит с причиной, —
+    не работа, и с ними ревью нейтрального набора было бы красным всегда.
     """
     if review.status is not None:
         return bool(review.status.unexplained or review.status.defects)
@@ -661,9 +866,26 @@ def format_review(review: Review) -> str:
             if more:
                 lines.append(f"   {more}")
     if review.dead_decisions:
-        lines += ["", "Решения без охвата во всём репозитории:"]
+        lines += ["", "Решения без охвата во всём репозитории (удалить или держать с причиной):"]
         for dead in review.dead_decisions:
             lines.append(f"  {dead.id}" + (f" — {dead.reason}" if dead.reason else ""))
+            address = f"    удалить запись: {dead.file} → {dead.key}, {dead.value}"
+            if dead.keep_key is not None:
+                address += f"; или держать с причиной: {dead.keep_key}"
+            lines.append(address)
+    # Не работа, а сведения: по строке с числом, без вопросов (S35, п. 6).
+    idle: list[str] = []
+    if review.inapplicable:
+        why = Counter(item.why for item in review.inapplicable)
+        idle.append(
+            f"Неприменимо по построению: {len(review.inapplicable)} (фронта нет — "
+            f"{why[WHY_NO_FRONT]}, под `exclude` — {why[WHY_UNDER_EXCLUDE]}, "
+            f"переключатель — {why[WHY_SWITCH]})."
+        )
+    if review.kept_unused:
+        idle.append(f"Держатся без охвата с причиной (`unused_reason`): {len(review.kept_unused)}.")
+    if idle:
+        lines += ["", *idle]
 
     shown = review.new_files
     if shown:
@@ -680,14 +902,22 @@ def format_review(review: Review) -> str:
 
 
 __all__ = [
+    "EXCLUSION_KEYS",
+    "FRONT_LINK_KEYS",
+    "KEEP_KEYS",
     "NOTE_DEFECTS",
     "NOTE_OUTSIDE",
     "NOTE_SUBMODULES",
     "NOTE_UNCOMMITTED",
     "NOT_DEAD_KEYS",
+    "WHY_NO_FRONT",
+    "WHY_SWITCH",
+    "WHY_UNDER_EXCLUDE",
     "AppliedDecision",
     "DeadDecision",
     "HistoryError",
+    "InapplicableDecision",
+    "KeptDecision",
     "NewFinding",
     "Note",
     "Review",

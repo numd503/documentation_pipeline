@@ -636,6 +636,15 @@ def _cover_calls(ctx: SetupContext, web: WebScanResult, ledger: _Ledger) -> None
         found = settings.web.rewrite_for(item.module)
         if found is not None:
             ledger.hit(config, "web.url_rewrite", found.module, [item.call.file])
+    # Невосстановленные — тоже (S35): запись требует модуль с **любыми** вызовами
+    # (`web/link._unconfigured`), и охват по одним восстановленным противоречил
+    # бы находке. На abp у модуля единственный вызов, объявленный
+    # `link.unresolvable`: пустая запись выглядела мёртвой, без неё возвращалась
+    # `link.module_without_rewrite`. Тот же счёт — у `setup explain` (`_calls`).
+    for unresolved in web.manifest.unresolved_calls:
+        found = settings.web.rewrite_for(unresolved.module)
+        if found is not None:
+            ledger.hit(config, "web.url_rewrite", found.module, [unresolved.file])
 
     registry = [(normalize_route(rule.route), rule) for rule in settings.web.registry_calls]
     for _, rule in registry:

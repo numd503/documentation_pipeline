@@ -40,6 +40,12 @@ from docpipe.setup.status import (
     status_json,
 )
 from tests.test_setup_link import S19_WEB
+from tests.test_setup_review import (
+    WIDGETS_FILE,
+    WIDGETS_REWRITE,
+    WIDGETS_UNRESOLVABLE,
+    add_widgets,
+)
 
 runner = CliRunner()
 
@@ -621,6 +627,37 @@ def test_seam_rules_close_the_seam_findings(tmp_path: Path) -> None:
     assert by_key[("link.unresolvable", "**/links.service.ts")] == 1
     assert by_key[("web.url_rewrite", "seam-web")] > 0
     assert by_key[("web.url_builders", "apiUrl.buildUrl")] > 0
+
+
+def test_module_with_only_unresolved_calls_needs_its_rewrite_and_covers_it(
+    tmp_path: Path,
+) -> None:
+    """Охват `url_rewrite` и находка `link.module_without_rewrite` — об одних вызовах (S35).
+
+    Модуль `widgets`, чей единственный вызов невосстановим и объявлен
+    `link.unresolvable`: без записи — находка (вызов у модуля есть), с пустой
+    записью — находки нет, а у записи охват 1, а не 0.
+    """
+    root = _copy_seam(tmp_path / "ws", rules=True, link=True)
+    add_widgets(root)
+    config = root / "docpipe.yaml"
+    raw = yaml.safe_load(config.read_text(encoding="utf-8"))
+    raw["link"]["unresolvable"].append(WIDGETS_UNRESOLVABLE)
+    config.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+
+    without = build_status(_context(root))
+    finding = _finding(without, "link.module_without_rewrite")
+    assert finding is not None and finding.count == 1
+    [cluster] = finding.clusters
+    assert (cluster.key, cluster.count) == ("widgets", 1)
+    assert cluster.examples[0].startswith(f"{WIDGETS_FILE}:")
+
+    raw["web"]["url_rewrite"].append(WIDGETS_REWRITE)
+    config.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+    report = build_status(_context(root))
+    assert "link.module_without_rewrite" not in _codes(report)
+    by_key = {(item.key, item.value): item.count for item in report.coverage}
+    assert by_key[("web.url_rewrite", "widgets")] == 1
 
 
 def test_coverage_matches_setup_explain_on_the_whole_repository(tmp_path: Path) -> None:

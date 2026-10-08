@@ -13,6 +13,7 @@
 """
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Final
 
@@ -41,6 +42,13 @@ from docpipe.setup.explain import (
     explain_path,
     format_explain,
     normalize_target,
+)
+from docpipe.setup.status import decision_coverage
+from tests.test_setup_review import (
+    WIDGETS_DIR,
+    WIDGETS_REWRITE,
+    WIDGETS_UNRESOLVABLE,
+    add_widgets,
 )
 
 runner = CliRunner()
@@ -464,7 +472,9 @@ def test_seam_rules_that_touch_the_file_are_decisions() -> None:
     report = _explain(settings, APPS_SERVICE, SEAM)
 
     ref = _decision(report, "web.url_rewrite", "seam-web")
-    assert (ref.reason, ref.count) == ("proxy.conf: pathRewrite нет", 2)
+    # Два восстановленных и три невосстановленных вызова файла: запись модуля
+    # решает о каждом его вызове, как у охвата `setup status` (S35).
+    assert (ref.reason, ref.count) == ("proxy.conf: pathRewrite нет", 5)
     assert ref.effect == "strip_prefix '', add_prefix ''"
     registry_ref = _decision(report, "web.registry_calls", "api/apps/archived")
     assert (registry_ref.reason, registry_ref.effect, registry_ref.count) == (
@@ -472,6 +482,38 @@ def test_seam_rules_that_touch_the_file_are_decisions() -> None:
         "различитель query.kind",
         1,
     )
+    assert "link.module_without_rewrite" not in _codes(report)
+
+
+def test_rewrite_of_a_module_with_only_unresolved_calls_counts_like_status(
+    tmp_path: Path,
+) -> None:
+    """Запись `url_rewrite` модуля, все вызовы которого невосстановлены: счёт — как у охвата.
+
+    `setup status` (`_cover_calls`) и `setup explain` (`_calls`) считают охват
+    записи в двух местах; правка одного назвала бы у одной записи два числа
+    (S35, ловушка «охват `url_rewrite` считается в двух местах»).
+    """
+    root = tmp_path / "ws"
+    shutil.copytree(SEAM, root, ignore=shutil.ignore_patterns(".docpipe"))
+    add_widgets(root)
+    config = root / "docpipe.yaml"
+    raw = yaml.safe_load(config.read_text(encoding="utf-8"))
+    raw["rules"] = raw["web"]["rules"] = str(RULES.resolve())
+    raw["web"]["url_rewrite"] = [WIDGETS_REWRITE]
+    raw["link"] = {"unresolvable": [WIDGETS_UNRESOLVABLE]}
+    config.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+    context = SetupContext.build(root, config, use_cache=False)
+
+    report = explain_path(context, WIDGETS_DIR)
+    assert report.calls["resolved"] == 0 and report.calls["unresolved"] == 1
+    ref = _decision(report, "web.url_rewrite", "widgets")
+    [covered] = [
+        item
+        for item in decision_coverage(context)
+        if (item.key, item.value) == ("web.url_rewrite", "widgets")
+    ]
+    assert ref.count == covered.count == 1
     assert "link.module_without_rewrite" not in _codes(report)
 
 

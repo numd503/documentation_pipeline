@@ -63,7 +63,7 @@ def _write(tmp_path: Path, name: str, text: str) -> Path:
         pytest.param(
             {"version": "1", "dotnet": _section(exclude={"rules": [EXCLUDE_RULE | {"unles": {}}]})},
             r"rules\.yaml:dotnet:exclude: правило #0 \(e\): неизвестный ключ 'unles'",
-            "id, priority, reason, unless, when",
+            "id, priority, reason, unless, unused_reason, when",
             id="exclude.rules[]",
         ),
         pytest.param(
@@ -104,6 +104,38 @@ def test_unless_in_a_classification_rule_names_where_it_belongs(tmp_path: Path) 
     with pytest.raises(ValueError, match="неизвестный ключ 'unless'") as failure:
         load_ruleset(path, "dotnet")
     assert "`unless` есть только у правил отсева (`exclude.rules`)" in str(failure.value)
+
+
+@pytest.mark.parametrize("section", RULE_SECTIONS)
+@pytest.mark.parametrize("value", ["", "   ", None, 5], ids=["empty", "blank", "null", "number"])
+def test_empty_unused_reason_is_refused(tmp_path: Path, section: str, value: object) -> None:
+    """`unused_reason` (S35) — причина держать правило без охвата; пустая — отказ.
+
+    У `reason` пустая строка пока принимается (бэклог), новый ключ эту дыру
+    не повторяет: принятая пустой, причина молча вернула бы правило
+    в `dead_decisions`.
+    """
+    rule = EXCLUDE_RULE | {"unused_reason": value}
+    path = _rules_file(tmp_path, {"version": "1", section: _section(exclude={"rules": [rule]})})
+    with pytest.raises(ValueError, match=r"правило отсева 'e': `unused_reason` задан, но пуст"):
+        load_ruleset(path, section)
+
+
+def test_unused_reason_loads_and_misspelled_key_is_refused(tmp_path: Path) -> None:
+    """Ключа нет — причины нет (`""`); есть — читается как есть; опечатка — отказ."""
+    plain = _rules_file(tmp_path, {"version": "1", "web": _section()})
+    [without] = load_ruleset(plain, "web").exclude.rules
+    assert without.unused_reason == ""
+
+    rule = EXCLUDE_RULE | {"unused_reason": "держим на случай тестов"}
+    path = _rules_file(tmp_path, {"version": "1", "web": _section(exclude={"rules": [rule]})})
+    [loaded] = load_ruleset(path, "web").exclude.rules
+    assert (loaded.unused_reason, loaded.reason) == ("держим на случай тестов", "так решили")
+
+    typo = EXCLUDE_RULE | {"unused_reasn": "держим"}
+    path = _rules_file(tmp_path, {"version": "1", "web": _section(exclude={"rules": [typo]})})
+    with pytest.raises(ValueError, match=r"неизвестный ключ 'unused_reasn'"):
+        load_ruleset(path, "web")
 
 
 def test_version_inside_a_section_is_refused_with_a_hint(tmp_path: Path) -> None:
