@@ -917,22 +917,29 @@ http-wrappers` (счётчик `declared_not_wrappers`). Обёртка и «н�
 Проблема настройки (`config check`) · дефект. Вопроса нет: чинится.
 
 **Материал.** `docpipe config check --config … --root … --format json` —
-коды `placeholder-left`, `input-missing`, `root-missing`,
-`adapter-input-missing`, `engine-missing`; `docpipe setup status` —
-кластер `code`.
+коды `placeholder-left`, `input-missing`, `input-shadowed`, `root-missing`,
+`adapter-input-missing`, `engine-missing`; у входа с `input-shadowed` поле
+`shadowed` — второй кандидат; `docpipe setup status` — кластер `code`.
 
 **Починка.** По коду проблемы. Вход не найден — путь входа пишется от
-каталога `docpipe.yaml`; цель записи — существующий каталог; плейсхолдер
+каталога `docpipe.yaml`; вход нашёлся в каталоге продукта (`input-shadowed`:
+короткое имя совпало с каталогом или файлом продукта, на abp — `templates/`)
+— путь от корня продукта, как его называет текст проблемы
+(`docs/docpipe/templates`); с каталогом настройки такой путь не переедет,
+и это сказать человеку; цель записи — существующий каталог; плейсхолдер
 установщика — значение. Спросить можно только о факте машины («где лежит
 движок»), а не о решении.
 
-- правка: `docpipe.yaml` → `rules`, `templates`, `ownership`, `registries`, `web.rules`, `web.pages`
+- правка: `docpipe.yaml` → `rules`, `templates`, `ownership`, `registries`, `arch`, `web.rules`, `web.pages`, `arch_adapters[].options.spec`
 - правка: `docpipe.yaml` → `out`, `worklist`, `web.out`, `web.link_out`, `graph.engine_path`
 - вне настройки: плейсхолдер `@ENGINE@` — повторить установщик с `--engine ПУТЬ`
 
 **Пример.** `tests/fixtures/SampleSolution` с `templates` на несуществующий
 каталог: кластер `input-missing`
-(`tests/test_setup_status.py::test_without_templates_the_plan_is_a_defect_not_a_failure`).
+(`tests/test_setup_status.py::test_without_templates_the_plan_is_a_defect_not_a_failure`);
+`templates/` в текущем каталоге и `cfg/templates/` рядом с `cfg/docpipe.yaml`:
+кластер `input-shadowed`
+(`tests/test_setup_status.py::test_short_name_found_in_the_product_is_a_config_problem`).
 
 ### docs.broken
 
@@ -1018,7 +1025,9 @@ front matter (`tests/test_setup_status.py::test_documents_orphan_broken_and_shad
 План шага 2 не собрался · дефект. Остальные находки есть, команда не падает.
 
 **Материал.** `docpipe setup status` — кластер `step` с текстом ошибки;
-`docpipe config check` (`templates`, `ownership` — `input-missing`);
+`docpipe config check` (`templates`, `ownership` — `input-missing`,
+`input-shadowed`: «не найдено ни одного шаблона» у шага 2 бывает и тогда,
+когда короткое имя нашло одноимённый каталог продукта);
 `docpipe docs owners МАНИФЕСТ --lint`.
 
 **Починка.** Скелеты, раскладка, файл владения. Раскладку — окончательно до

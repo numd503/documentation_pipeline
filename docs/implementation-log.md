@@ -10761,3 +10761,28 @@ squidex, abp, eshoponweb, semantic-kernel; человека играла пол�
 загружается, а карта называет пустой список отказом. Отклонение от плана: S32 теперь ждёт S33–S36.
 
 **Проверка:** полная — 3205 passed (код не менялся).
+
+---
+
+## S36 — короткое имя входа, нашедшееся в каталоге продукта (08.10.2026)
+
+**Изменено:** `docpipe/configcheck.py`, `docpipe/cli.py` (справка `config check`),
+`tests/test_config_check.py`, `tests/test_setup_status.py`, `docs/configuration.md`,
+`docs/setup-interview.md`, `docs/setup-map.md`, `docs/setup.md`, фазы 00 и 50 скилла `setup`.
+
+На abp в прогоне S31 `templates: "templates"` молча разрешился первой ступенью `resolve_input`
+(текущий каталог) в собственный `templates/` ABP, а `config check` ответил `problems: []`.
+Порядок ступеней менять нельзя (CLAUDE.md), поэтому `config check` теперь даёт проблему
+`input-shadowed` (`ConfigReport` 1.2), когда у входа существуют оба кандидата
+`candidate_inputs` с разным `resolve()`; поле `shadowed` у `InputCheck` и `AdapterInput`.
+Существование кандидата — тем же предикатом, что у чтения: `is_file()` у `web.pages`,
+`exists()` у остальных (каталог `pages.yaml/` в корне больше не «найденный вход»).
+В `setup status` находка приходит через `config.problems` без правки статуса.
+
+**Трудности.** Конфигурация в корне по абсолютному `--config` (так её пишет установщик
+серверу) даёт двух кандидатов на один каталог — без сравнения `resolve()` красным был бы
+каждый корень. Цикл адаптеров выходил ранним `continue` по `exists`, и проверка после него
+не сработала бы ни разу. `business new` столкновение не задевает: он перебирает обе ступени.
+
+**Проверка:** копия abp S31 с `templates: "templates"` — код 1, совет `docs/docpipe/templates`;
+squidex, eshoponweb, semantic-kernel — код 0, ложных срабатываний нет. Полная — 3216 passed.

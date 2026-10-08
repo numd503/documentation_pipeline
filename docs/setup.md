@@ -778,7 +778,7 @@ uv run docpipe setup status --root . --config docpipe.yaml --fail-on-unexplained
 | `owners.unowned` | решение | узел с документом без победившего правила владения | `module` | `ownership.yaml` |
 | `owners.not_configured` | решение | ключ `ownership` не задан; число — узлов с документом | `module` | `ownership` и `ownership.yaml` |
 | `parse.errors` | решение | `parse_error_files` обоих шагов | `directory` | `exclude` с причиной или правка исходника |
-| `config.problems` | дефект | `config check` (S04, в том числе `placeholder-left`) | `code` | — |
+| `config.problems` | дефект | `config check` (S04, в том числе `placeholder-left` и `input-shadowed` — S36) | `code` | — |
 | `docs.broken` | дефект | документ со статусом `broken`, кроме невидимых | `directory` | — |
 | `docs.shadowed` | дефект | `shadowed_docs`: файл на пути узла есть, обход документов его не видит | `directory` | — |
 | `link.duplicate_endpoints` | дефект | один ключ у двух узлов бэкенда (единственный дефект `web link`) | `route` | — |

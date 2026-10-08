@@ -310,6 +310,36 @@ def test_without_templates_the_plan_is_a_defect_not_a_failure(tmp_path: Path) ->
     assert runner.invoke(app, [*args, "--fail-on-unexplained"]).exit_code == 1
 
 
+def test_short_name_found_in_the_product_is_a_config_problem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S36: `templates/` продукта (на abp — шаблоны стартовых решений) выиграл
+    первую ступень у скелетов рядом с `docpipe.yaml`. Находка — та же
+    `config.problems`, сборка из `check_config` без правки, кластер — код.
+
+    Правила — абсолютным путём: команды зовутся из корня продукта, а там
+    `rules/rules.yaml` этого репозитория нет.
+    """
+    repo = tmp_path / "repo"
+    (repo / "templates").mkdir(parents=True)
+    shutil.copytree(TEMPLATES, repo / "cfg" / "templates")
+    rules = str(RULES.resolve())
+    config = Path("cfg/docpipe.yaml")
+    (repo / config).write_text(
+        yaml.safe_dump({"templates": "templates", "rules": rules, "web": {"rules": rules}}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo)
+
+    report = build_status(SetupContext.build(SAMPLE, config, use_cache=False))
+
+    problems = _finding(report, "config.problems")
+    assert problems is not None and problems.category == "defect"
+    [cluster] = problems.clusters
+    assert cluster.key == "input-shadowed"
+    assert "cfg/templates" in cluster.examples[0]
+
+
 def test_module_undecided_only_with_explicit_enrolled() -> None:
     """Ловушка: при умолчании `["**"]` находки нет; явный `enrolled` — модуль без решения."""
     assert _finding(_status(SAMPLE, DocpipeConfig()), "scope.module_undecided") is None

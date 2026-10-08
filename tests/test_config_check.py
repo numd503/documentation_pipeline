@@ -11,6 +11,7 @@
 import json
 import shutil
 from pathlib import Path
+from typing import get_args
 
 import pytest
 from typer.testing import CliRunner
@@ -19,10 +20,13 @@ from docpipe.arch.adapters import ADAPTERS
 from docpipe.cli import app
 from docpipe.config import DocpipeConfig, load_config
 from docpipe.configcheck import (
+    _PROBLEM_ORDER,
     ADAPTER_INPUTS,
     INPUT_KEYS,
     ConfigReport,
+    ProblemCode,
     check_config,
+    format_problems,
     format_report,
 )
 
@@ -80,7 +84,7 @@ def test_json_is_a_valid_report_and_agrees_with_the_text(nested: Path) -> None:
     assert code == 0, output
 
     report = ConfigReport.model_validate_json(output)
-    assert report.schema_version == "1.1"
+    assert report.schema_version == "1.2"
     assert report.problems == []
     by_key = {item.key: item for item in report.inputs}
     assert [item.key for item in report.inputs] == list(INPUT_KEYS)
@@ -464,3 +468,185 @@ def test_defaults_without_a_config_file(tmp_path: Path) -> None:
         ("input-missing", "web.rules"),
     ]
     assert "не задана" in format_report(report)
+
+
+# --------------------------------------------------------------------------------------
+# Короткое имя, нашедшееся в каталоге продукта (S36)
+# --------------------------------------------------------------------------------------
+
+PRODUCT_CONFIG = Path("cfg/docpipe.yaml")
+
+
+@pytest.fixture
+def product(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Раскладка abp из прогона S31: настройка в `cfg/`, команды зовутся из корня.
+
+    Скелеты и правила лежат рядом с настройкой, в корне их нет: единственное
+    столкновение в отчёте — то, которое ставит тест.
+    """
+    repo = tmp_path / "repo"
+    (repo / "cfg" / "templates").mkdir(parents=True)
+    shutil.copy(Path("rules/rules.yaml"), repo / "cfg" / "rules.yaml")
+    (repo / PRODUCT_CONFIG).write_text(
+        'templates: "templates"\nrules: "rules.yaml"\nweb:\n  rules: "rules.yaml"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo)
+    return repo
+
+
+def _product_check(repo: Path, config: Path = PRODUCT_CONFIG) -> ConfigReport:
+    return check_config(load_config(repo / PRODUCT_CONFIG), config, Path("."), repo)
+
+
+def _add_to_product(repo: Path, text: str) -> None:
+    config = repo / PRODUCT_CONFIG
+    config.write_text(config.read_text(encoding="utf-8") + text, encoding="utf-8")
+
+
+@pytest.mark.parametrize("absolute", [False, True], ids=["relative", "absolute"])
+def test_short_name_found_in_the_product_is_shadowed(product: Path, absolute: bool) -> None:
+    """Ловушка S31, 22: `templates/` abp — шаблоны стартовых решений, скелетов
+    в нём нет, а отчёт отвечал `step: cwd` и `problems: []`.
+
+    Порядок ступеней прежний (первым — текущий каталог), меняется молчание.
+    Совет — путь от корня продукта: абсолютный путь к конфигурации даёт
+    абсолютного кандидата, но значение для настройки — всё равно от `cwd`.
+    """
+    (product / "templates").mkdir()
+    config = product / PRODUCT_CONFIG if absolute else PRODUCT_CONFIG
+
+    report = _product_check(product, config)
+
+    assert [(item.code, item.key) for item in report.problems] == [("input-shadowed", "templates")]
+    item = {item.key: item for item in report.inputs}["templates"]
+    assert (item.step, item.found) == ("cwd", "templates")
+    assert item.shadowed == str(product / "cfg/templates" if absolute else "cfg/templates")
+    message = report.problems[0].message
+    assert "(`cfg/templates`)" in message
+    assert "прогон возьмёт первый" in message
+    # Цена починки названа: путь от корня с каталогом настройки не переедет.
+    assert "не переедет" in message
+
+
+def test_shadowed_input_is_code_one_and_named_in_the_text(product: Path) -> None:
+    """Критерий приёмки: код 1. Вход найден, поэтому сводка не говорит «сломано»."""
+    (product / "templates").mkdir()
+
+    result = runner.invoke(app, ["config", "check", "--config", str(PRODUCT_CONFIG), "--root", "."])
+    report = _product_check(product)
+
+    assert result.exit_code == 1
+    line = next(line for line in result.output.splitlines() if line.startswith("  templates "))
+    assert "(от текущего каталога)" in line
+    assert "рядом с конфигурацией лежит другой" in line
+    assert "cfg/templates" in line
+    problems = format_problems(report)
+    assert "Короткое имя нашлось в каталоге продукта" in problems
+    assert "Сломано в настройке" not in problems
+
+
+def test_only_the_second_candidate_is_not_a_collision(product: Path) -> None:
+    """В корне имени нет — нашла вторая ступень, выбора не было."""
+    report = _product_check(product)
+
+    assert report.problems == []
+    item = {item.key: item for item in report.inputs}["templates"]
+    assert (item.step, item.found, item.shadowed) == ("config", "cfg/templates", None)
+
+
+@pytest.mark.parametrize("absolute", [False, True], ids=["relative", "absolute"])
+def test_config_in_the_root_has_nothing_to_shadow(tmp_path: Path, absolute: bool) -> None:
+    """Конфигурация в корне: кандидат один, а названная абсолютным путём —
+    два, но это один и тот же каталог (`resolve()` совпадает)."""
+    (tmp_path / "templates").mkdir()
+    config = tmp_path / "docpipe.yaml"
+    config.write_text('templates: "templates"\n', encoding="utf-8")
+
+    report = check_config(
+        load_config(config), config if absolute else Path("docpipe.yaml"), Path("."), tmp_path
+    )
+
+    item = {item.key: item for item in report.inputs}["templates"]
+    assert len(item.candidates) == (2 if absolute else 1)
+    assert (item.step, item.shadowed) == ("cwd", None)
+    assert "input-shadowed" not in {problem.code for problem in report.problems}
+
+
+def test_link_to_the_same_directory_is_not_a_collision(product: Path) -> None:
+    """Ссылка из корня на каталог настройки — тот же путь, выбор ни на что не влияет."""
+    (product / "templates").symlink_to(product / "cfg/templates", target_is_directory=True)
+
+    report = _product_check(product)
+
+    assert report.problems == []
+    assert {item.key: item for item in report.inputs}["templates"].step == "cwd"
+
+
+def test_pages_directory_in_the_product_is_not_the_pages_file(product: Path) -> None:
+    """`pages.yaml` читается файлом (`web/overrides.configured_pages`, `is_file()`):
+    каталог с этим именем в корне чтение пропускает — и отчёт тоже.
+
+    До S36 отчёт брал `exists()` и называл найденным каталог, которого прогон
+    не прочтёт.
+    """
+    (product / "pages.yaml").mkdir()
+    (product / "cfg/pages.yaml").write_text("version: '1'\n", encoding="utf-8")
+    config = product / PRODUCT_CONFIG
+    config.write_text(
+        config.read_text(encoding="utf-8").replace("web:\n", 'web:\n  pages: "pages.yaml"\n'),
+        encoding="utf-8",
+    )
+
+    report = _product_check(product)
+
+    pages = {item.key: item for item in report.inputs}["web.pages"]
+    assert (pages.step, pages.found, pages.shadowed) == ("config", "cfg/pages.yaml", None)
+    assert report.problems == []
+
+    # Файл в корне — уже столкновение: прогон прочтёт его.
+    (product / "pages.yaml").rmdir()
+    (product / "pages.yaml").write_text("version: '1'\n", encoding="utf-8")
+
+    report = _product_check(product)
+
+    assert [(item.code, item.key) for item in report.problems] == [("input-shadowed", "web.pages")]
+
+
+def test_adapter_spec_found_in_the_product_is_shadowed(product: Path) -> None:
+    """`options.spec` ищется теми же двумя ступенями (`resolve_input`); модуль
+    Python (`options.path`) — от `--root`, второй ступени у него нет."""
+    (product / "cfg/registries.yaml").write_text("registries: []\n", encoding="utf-8")
+    (product / "cfg/registry.py").write_text("X = {}\n", encoding="utf-8")
+    (product / "registry.py").write_text("X = {}\n", encoding="utf-8")
+    _add_to_product(
+        product,
+        "arch_adapters:\n"
+        '  - {id: regs, adapter: registries, options: {spec: "registries.yaml"}}\n'
+        '  - {id: code, adapter: python_code, options: {path: "registry.py"}}\n',
+    )
+
+    assert _product_check(product).problems == []
+
+    (product / "registries.yaml").write_text("registries: []\n", encoding="utf-8")
+    report = _product_check(product)
+
+    key = "arch_adapters[regs].options.spec"
+    assert [(item.code, item.key) for item in report.problems] == [("input-shadowed", key)]
+    adapters = {item.adapter_id: item for item in report.adapter_inputs}
+    assert adapters["regs"].shadowed == "cfg/registries.yaml"
+    assert adapters["regs"].resolved == str(product / "registries.yaml")
+    assert adapters["code"].shadowed is None
+    assert report.problems[0].message.startswith(f"{key}: ")
+    assert "рядом с конфигурацией лежит другой" in format_report(report)
+
+
+def test_every_problem_code_is_ordered_and_documented() -> None:
+    """Код без места в `_PROBLEM_ORDER` роняет сортировку отчёта (`index`),
+    а код без строки в таблице `docs/configuration.md` агент не найдёт
+    в справочнике — новый код (S36) добавляется в оба места сразу."""
+    codes = get_args(ProblemCode)
+    table = Path("docs/configuration.md").read_text(encoding="utf-8")
+
+    assert set(codes) == set(_PROBLEM_ORDER)
+    assert [code for code in codes if f"| `{code}` |" not in table] == []

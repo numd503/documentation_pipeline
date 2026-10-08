@@ -26,11 +26,13 @@ from pydantic import BaseModel, ConfigDict
 from docpipe.config import DocpipeConfig, candidate_inputs
 
 # 1.1 — код проблемы `placeholder-left` (S08 плана настройки).
-SCHEMA_VERSION: Final = "1.1"
+# 1.2 — код `input-shadowed` и поле `shadowed` у входов (S36).
+SCHEMA_VERSION: Final = "1.2"
 
 ProblemCode = Literal[
     "placeholder-left",
     "input-missing",
+    "input-shadowed",
     "root-missing",
     "adapter-input-missing",
     "engine-missing",
@@ -51,6 +53,13 @@ INPUT_KEYS: Final[tuple[str, ...]] = (
     "web.rules",
     "web.pages",
 )
+# Входы, которые читаются как файл, а не как любой существующий путь.
+# `pages.yaml` ищет `web/overrides.configured_pages` предикатом `is_file()`:
+# каталог `pages.yaml/` в текущем каталоге чтение пропускает и берёт файл
+# рядом с конфигурацией. Отчёт, проверяющий `exists()`, назвал бы найденным
+# не тот кандидат, который прочтёт прогон. Остальные входы читаются через
+# `resolve_input` — предикатом `exists()`, и `templates` из них — каталог.
+FILE_INPUTS: Final[frozenset[str]] = frozenset({"web.pages"})
 TARGET_KEYS: Final[tuple[str, ...]] = (
     "out",
     "worklist",
@@ -91,6 +100,7 @@ PLACEHOLDER: Final = re.compile(r"@[A-Z][A-Z0-9_]*@")
 _PROBLEM_ORDER: Final[tuple[ProblemCode, ...]] = (
     "placeholder-left",
     "input-missing",
+    "input-shadowed",
     "root-missing",
     "adapter-input-missing",
     "engine-missing",
@@ -104,6 +114,7 @@ _BASE_TEXT: Final[dict[str, str]] = {
     "config": "от текущего каталога, затем от каталога конфигурации",
     "root": "от корня репозитория",
 }
+_SHADOWED_TEXT: Final = "рядом с конфигурацией лежит другой, его прогон не прочтёт"
 _INPUT_HINT: Final = (
     "Путь входа пишут относительно каталога конфигурации — тогда он "
     "не зависит от того, откуда зовут команду."
@@ -121,6 +132,10 @@ class InputCheck(_Frozen):
     относительно `cwd` отчёта: `found` — всегда один из кандидатов, и отказ
     называет первого, потому что его человек и написал. Пустой `value` —
     ключ не задан, кандидатов нет.
+
+    `shadowed` — второй кандидат, когда есть оба и это разные пути: прогон
+    возьмёт первый (`step: cwd`), а одноимённый вход рядом с конфигурацией
+    останется непрочитанным. Записан так же, как `found`.
     """
 
     key: str
@@ -128,6 +143,7 @@ class InputCheck(_Frozen):
     candidates: list[str]
     found: str | None
     step: Literal["cwd", "config"] | None
+    shadowed: str | None = None
 
 
 class TargetCheck(_Frozen):
@@ -173,6 +189,8 @@ class AdapterInput(_Frozen):
     """Файл, который читает адаптер реестра, и база, от которой он отсчитан.
 
     Пустой `value` — обязательный параметр не задан: адаптер откажет на сборке.
+    `shadowed` — как у `InputCheck`: у базы `config` два кандидата, и второй
+    есть, но прочитан будет первый. У базы `root` второй ступени нет.
     """
 
     adapter_id: str
@@ -181,6 +199,7 @@ class AdapterInput(_Frozen):
     value: str
     resolved: str
     exists: bool
+    shadowed: str | None = None
 
 
 class EngineCheck(_Frozen):
@@ -200,7 +219,7 @@ class ConfigProblem(_Frozen):
 
 
 class ConfigReport(_Frozen):
-    schema_version: Literal["1.1"] = SCHEMA_VERSION
+    schema_version: Literal["1.2"] = SCHEMA_VERSION
     config: str | None
     cwd: str
     root: str
@@ -278,30 +297,98 @@ def _placeholders(settings: DocpipeConfig) -> list[ConfigProblem]:
     return found
 
 
-def _first_existing(candidates: list[Path], cwd: Path) -> Path | None:
-    """Кандидат, который выберет `resolve_input`, запущенный из `cwd`.
+def _present(path: Path, cwd: Path, file_only: bool) -> bool:
+    """Есть ли кандидат — тем предикатом, каким его ищет читатель входа.
 
     Существование — от `cwd` отчёта, а не от текущего каталога процесса:
     сервер настройки зовёт проверку за каталог, из которого будут звать
     команду, и ответ обязан быть тем, что увидит она.
     """
-    return next((path for path in candidates if (cwd / path).exists()), None)
+    target = cwd / path
+    return target.is_file() if file_only else target.exists()
+
+
+def _first_existing(candidates: list[Path], cwd: Path, file_only: bool = False) -> Path | None:
+    """Кандидат, который выберет читатель входа, запущенный из `cwd`."""
+    return next((path for path in candidates if _present(path, cwd, file_only)), None)
+
+
+def _shadowed(candidates: list[Path], cwd: Path, file_only: bool = False) -> Path | None:
+    """Второй кандидат, если есть оба и это разные пути; иначе `None`.
+
+    Порядок ступеней `resolve_input` не меняется (его docstring, `CLAUDE.md`):
+    конфигурации в корне писались от текущего каталога. Лечится не порядок,
+    а молчание: короткое имя `templates` на abp нашлось собственным каталогом
+    продукта, и отчёт ответил `step: cwd` без единой проблемы.
+
+    Одинаковый `resolve()` — один и тот же путь, увиденный дважды: конфигурация
+    в корне, названная абсолютным путём, или ссылка на каталог настройки.
+    Выбор тут ни на что не влияет, и проблемы нет.
+    """
+    if len(candidates) < 2:
+        return None
+    first, second = candidates[0], candidates[1]
+    if not (_present(first, cwd, file_only) and _present(second, cwd, file_only)):
+        return None
+    if (cwd / first).resolve() == (cwd / second).resolve():
+        return None
+    return second
 
 
 def _check_input(key: str, value: str, config: Path | None, cwd: Path) -> InputCheck:
     if not value:
         return InputCheck(key=key, value="", candidates=[], found=None, step=None)
+    file_only = key in FILE_INPUTS
     candidates = candidate_inputs(value, config)
-    found = _first_existing(candidates, cwd)
+    found = _first_existing(candidates, cwd, file_only)
     step: Literal["cwd", "config"] | None = None
     if found is not None:
         step = "cwd" if found == candidates[0] else "config"
+    shadowed = _shadowed(candidates, cwd, file_only)
     return InputCheck(
         key=key,
         value=value,
         candidates=[str(path) for path in candidates],
         found=None if found is None else str(found),
         step=step,
+        shadowed=None if shadowed is None else str(shadowed),
+    )
+
+
+def _from_cwd(path: Path, cwd: Path) -> str:
+    """Значение, по которому вход найдёт первая ступень: путь от `cwd`, если он внутри.
+
+    Второй кандидат относителен, когда относителен путь к `docpipe.yaml`
+    (`--config docs/docpipe/docpipe.yaml`), и тогда он и есть готовое значение.
+    Абсолютный путь к конфигурации даёт абсолютного кандидата; внутри `cwd`
+    он переводится в путь от него — абсолютный в настройке привязал бы её
+    к этой машине.
+    """
+    if not path.is_absolute():
+        return path.as_posix()
+    for base, target in ((cwd, path), (cwd.resolve(), path.resolve())):
+        try:
+            return target.relative_to(base).as_posix()
+        except ValueError:
+            continue
+    return path.as_posix()
+
+
+def _shadow_message(key: str, value: str, shadowed: str, cwd: Path) -> str:
+    """Текст `input-shadowed`: что выбрал прогон, что осталось и чего стоит починка.
+
+    Переносимой записи, которая обошла бы первую ступень, нет: короткое имя
+    находит от текущего каталога, путь от корня продукта — тоже. Путь от корня
+    не переезжает вместе с каталогом настройки — это цена, и в тексте она
+    не прячется.
+    """
+    fix = _from_cwd(Path(shadowed), cwd)
+    return (
+        f"{key}: короткое имя нашлось от текущего каталога (`{value}` — в каталоге "
+        f"продукта), а рядом с docpipe.yaml лежит одноимённый `{shadowed}`; прогон "
+        "возьмёт первый. Если нужен второй — напишите путь от корня продукта "
+        f"(`{fix}`): так его найдёт первая ступень, но вместе с каталогом настройки "
+        "он уже не переедет"
     )
 
 
@@ -333,10 +420,14 @@ def _check_adapter(
             resolved="",
             exists=False,
         )
+    shadowed: Path | None = None
     if base == "config":
+        # Тем же предикатом, что у `resolve_input`, через который файл читает
+        # адаптер (`arch/collect.collect_configured`): `exists()`.
         candidates = candidate_inputs(value, config)
         chosen = _first_existing(candidates, cwd) or candidates[0]
         resolved = (cwd / chosen).resolve()
+        shadowed = _shadowed(candidates, cwd)
     else:
         resolved = (root / value).resolve()
     return AdapterInput(
@@ -346,6 +437,7 @@ def _check_adapter(
         value=value,
         resolved=str(resolved),
         exists=resolved.exists(),
+        shadowed=None if shadowed is None else str(shadowed),
     )
 
 
@@ -355,7 +447,8 @@ def check_config(
     """Разрешить каждый путь настройки так, как его разрешит команда из `cwd` с `--root`.
 
     Проблема — только то, что действительно ломает прогон: незаменённый
-    плейсхолдер установщика, ненайденный вход, корень обхода без каталога,
+    плейсхолдер установщика, ненайденный вход, вход, нашедшийся от текущего
+    каталога при одноимённом рядом с конфигурацией, корень обхода без каталога,
     вход адаптера без файла, названный, но отсутствующий движок. Каталог цели
     записи, которого ещё нет, проблемой не считается: его создаст первый прогон.
 
@@ -382,6 +475,14 @@ def check_config(
                         f"{item.key}: {item.value!r} не найден; искали: "
                         + ", ".join(item.candidates)
                     ),
+                )
+            )
+        if item.shadowed is not None and not placeholder(item.value):
+            problems.append(
+                ConfigProblem(
+                    code="input-shadowed",
+                    key=item.key,
+                    message=_shadow_message(item.key, item.value, item.shadowed, cwd),
                 )
             )
 
@@ -443,9 +544,19 @@ def check_config(
         if checked is None:
             continue
         adapter_inputs.append(checked)
-        if checked.exists or placeholder(checked.value):
+        if placeholder(checked.value):
             continue
         key = f"arch_adapters[{checked.adapter_id}].options.{checked.option}"
+        if checked.shadowed is not None:
+            problems.append(
+                ConfigProblem(
+                    code="input-shadowed",
+                    key=key,
+                    message=_shadow_message(key, checked.value, checked.shadowed, cwd),
+                )
+            )
+        if checked.exists:
+            continue
         if not checked.value:
             message = f"{key}: обязательный параметр не задан; адаптер откажет на сборке"
         else:
@@ -519,7 +630,10 @@ def format_report(report: ConfigReport) -> str:
         elif item.found is None or item.step is None:
             lines.append(f"  {item.key:16} {item.value}  → НЕ НАЙДЕН: {item.candidates[0]}")
         else:
-            lines.append(f"  {item.key:16} {item.value}  → {item.found} ({_STEP_TEXT[item.step]})")
+            line = f"  {item.key:16} {item.value}  → {item.found} ({_STEP_TEXT[item.step]})"
+            if item.shadowed is not None:
+                line += f"; {_SHADOWED_TEXT}: {item.shadowed}"
+            lines.append(line)
 
     lines += ["", "Цели записи — только от текущего каталога:"]
     for target in report.targets:
@@ -542,10 +656,13 @@ def format_report(report: ConfigReport) -> str:
                 lines.append(f"  {name:16} не задан")
                 continue
             state = "есть" if adapter.exists else "НЕ НАЙДЕН"
-            lines.append(
+            line = (
                 f"  {name:16} {adapter.value}  → {adapter.resolved}"
                 f" ({_BASE_TEXT[adapter.base]}; {state})"
             )
+            if adapter.shadowed is not None:
+                line += f"; {_SHADOWED_TEXT}: {adapter.shadowed}"
+            lines.append(line)
 
     lines.append("")
     if report.engine.configured:
@@ -572,7 +689,15 @@ def format_problems(report: ConfigReport) -> str:
     missing = [item.key for item in report.problems if item.code == "input-missing"]
     if missing:
         lines += ["Не найдено: " + ", ".join(missing) + ".", _INPUT_HINT]
-    others = [item for item in report.problems if item.code != "input-missing"]
+    # Вход здесь найден, и «сломано» о нём было бы неправдой: прогон прочтёт
+    # файл — возможно, не тот.
+    shadowed = [item for item in report.problems if item.code == "input-shadowed"]
+    if shadowed:
+        lines.append("Короткое имя нашлось в каталоге продукта, а не рядом с конфигурацией:")
+        lines += [f"  {item.message}" for item in shadowed]
+    others = [
+        item for item in report.problems if item.code not in ("input-missing", "input-shadowed")
+    ]
     if others:
         lines.append("Сломано в настройке:")
         lines += [f"  {item.message}" for item in others]

@@ -54,7 +54,7 @@
 
 ## Контрольная точка
 
-- `setup_config_check` — без `input-missing` у `templates`;
+- `setup_config_check` — без `input-missing` и `input-shadowed` у `templates`;
 - `setup_status` — нет `docs.orphan`, `docs.broken`, `docs.shadowed`,
   `docs.unavailable`;
 - `setup_docs` — все `doc_path` под префиксом `docs_root`/`modules_dir`,
