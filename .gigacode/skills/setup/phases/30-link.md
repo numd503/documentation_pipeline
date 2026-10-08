@@ -35,11 +35,18 @@
      `getVersioned(this.http, url)`: первым идёт сам `HttpClient`, `0.url` —
      поле `url` первого аргумента), метод — `http_method`: `arg`, `field`,
      `from_name` или `fixed`, ровно один способ;
+   - `http.request` — получатель сам `HttpClient`
+     (`this.http.request(method, url)`): это обёртка, а не `not_wrappers` —
+     `web.http_wrappers` с `url: {arg: 1}` и `http_method: {arg: 0}`
+     (обход `request` не понимает намеренно: первый аргумент — метод);
    - HTTP в теле нет (`window.open`, `url.startsWith`, `req.clone`,
      `form.patchValue`) — вопрос «Обёртка?»; ответ «не обёртка» —
      `web.not_wrappers` с причиной человека;
    - первыми по числу идут тесты (`httpMock.expectOne` в `*.spec.ts`) —
-     это вопрос `exclude` с причиной человека, а не обёртки.
+     вопрос «Обёртка?» с двумя вариантами: `exclude` спеков
+     (`<фронт>/**/*.spec.ts`) с причиной человека или `web.not_wrappers`
+     по каждой паре «получатель.метод» теста. Цену первого скажи
+     в описании варианта: правило набора `id: web.spec` останется без охвата.
 2. **Построители** — `setup_candidates`, `kind: url-builders`: группа,
    результат которой стал адресом (`apiUrl.buildUrl('/api/apps')`). Пишешь
    `web.url_builders` с `path.arg` из `positions`. После записи — снова
@@ -61,8 +68,9 @@
 
    После записи — `setup_link`, `category: external_targets`: маска
    `route`, записанная до правки `url_rewrite`, перестаёт совпадать.
-5. **Вызовы без эндпоинта**, оставшиеся после 4 — вопрос «Без бэка»:
-   внешний хост, внешний путь, бэк вне `roots`, ошибка в коде.
+5. **Вызовы без эндпоинта** (`link.calls_without_endpoint`), оставшиеся
+   после 4, — вопрос «Без бэка»: внешний хост, внешний путь, бэк вне
+   `roots`, ошибка в коде.
 6. **«Почти»** (`link.almost`) — разница в голове адреса, видная в прокси,
    закрывается `web.url_rewrite`; иначе вопрос «Почти». Ответ «та же
    точка, параметр передан иначе» — пробел формата: скажи вслух.
@@ -71,11 +79,11 @@
    `web.registry_calls` с маршрутом **как напечатан** (после
    `url_rewrite`). Остаток `link.registry_unresolved` с различителем из
    данных (`listInnerName=${type}`) — пробел формата: скажи вслух.
-8. **Эндпоинты без вызывающего** — последними. `setup_link`,
-   `category: endpoints_without_caller`, `by: controller`, вопрос
-   «Кто зовёт»: зовут извне — `link.external_callers` с причиной
-   человека; служебный — та же запись с `document: false`; фронт зовёт,
-   но вызов не виден — назад к шагу 1.
+8. **Эндпоинты без вызывающего** (`link.endpoints_without_caller`) —
+   последними. `setup_link`, `category: endpoints_without_caller`,
+   `by: controller`, вопрос «Кто зовёт»: зовут извне —
+   `link.external_callers` с причиной человека; служебный — та же запись
+   с `document: false`; фронт зовёт, но вызов не виден — назад к шагу 1.
 
 ## Контрольная точка
 

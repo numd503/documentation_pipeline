@@ -19,12 +19,15 @@
 
 ## Шаги
 
-1. **Раскладка — вопрос человеку, один раз и до записи документов.**
-   Покажи два-три `doc_path` из `setup_docs` и спроси «Раскладка»: где
-   дерево документов (`docs_root`), каталог технической документации
-   (`modules_dir`, фронт — `web.modules_dir`), порядок сегментов
-   (`doc_layout`: `kind-first` — `controllers/<модуль>/…`, `module-first` —
-   `<модуль>/controllers/…`). Умолчания — `docs`, `modules`, `kind-first`.
+1. **Раскладка — вслух, один раз и до записи документов.** Кода находки
+   у неё нет — вопроса нет. Скажи умолчания: дерево документов
+   `docs_root` — `docs`, каталог технической документации `modules_dir` —
+   `modules`, порядок сегментов `doc_layout` — `kind-first`
+   (`controllers/<модуль>/…`; `module-first` — `<модуль>/controllers/…`),
+   и два-три `doc_path` из `setup_docs`; с `lang: ts` — у фронта своя
+   ветка `web.modules_dir`. И цену: после первого `materialize` смена
+   раскладки — переезд документов. Правка `docs_root`, `modules_dir`,
+   `doc_layout` — только по слову человека.
 2. **`docs_scan_exclude`** накрывает КАТАЛОГ (в его `templates/examples/`
    лежат образцы с настоящим front matter) и не накрывает дерево
    документов. Сверь шаблоны с `doc_path` из `setup_docs`: ни один
@@ -57,9 +60,9 @@
 - `setup_config_check` — без `input-missing` и `input-shadowed` у `templates`;
 - `setup_status` — нет `docs.orphan`, `docs.broken`, `docs.shadowed`,
   `docs.unavailable`;
-- `setup_docs` — все `doc_path` под префиксом `docs_root`/`modules_dir`,
-  который назвал человек; статусы до первой записи — `missing` с действием
-  `create`.
+- `setup_docs` (и с `lang: ts`) — все `doc_path` под префиксом
+  `docs_root`/`modules_dir`, который ты назвал вслух (умолчание или слово
+  человека); статусы до первой записи — `missing` с действием `create`.
 
 ## Ловушки
 

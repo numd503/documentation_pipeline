@@ -760,6 +760,7 @@ uv run docpipe setup status --root . --config docpipe.yaml --fail-on-unexplained
 
 | Код | Категория | Источник | Срез кластеров | Где решение |
 |---|---|---|---|---|
+| `scope.not_configured` | решение | область по умолчанию: при неявном `enrolled` — модули шага 1, кроме `not_enrolled`; при неявном `web.roots` — модули шага `web`. Явность — `model_fields_set`, а не значение; число — модулей обоих срезов | `directory` (каталог над модулем), `front` (каталог файла объявления) | `enrolled` / `not_enrolled` с причиной; фронт — `web.roots` или `exclude` с причиной |
 | `scope.module_undecided` | решение | `config.scope_of` = `undecided` — только при явном `enrolled` | `directory` (каталог над модулем) | `enrolled` / `not_enrolled` с причиной |
 | `scope.front_undecided` | решение | фронты разведки (`recon.collect_projects`), чей файл объявления вне `web.roots` и не под `exclude` | `front` | `web.roots` / `exclude` с причиной |
 | `dotnet.undecided`, `web.undecided` | решение | `decide` по всем символам шага — тот же, что у `--stats` и `symbols` | `module`, `last_word` | `rules.yaml`: правило или отсев с причиной |
@@ -804,7 +805,11 @@ uv run docpipe setup status --root . --config docpipe.yaml --fail-on-unexplained
 - **`scope.module_undecided` — только при явном `enrolled`.** При умолчании
   `["**"]` включено всё, и находка была бы на каждом модуле каждого
   репозитория, где область не настраивали. То же у фронтов: при умолчании
-  `web.roots: ["."]` вне корней не бывает ничего.
+  `web.roots: ["."]` вне корней не бывает ничего. Об умолчании говорит
+  `scope.not_configured` (S33): одна находка на всю область, пока ключи
+  не заданы явно, — с ней коды не пересекаются по построению. Явный
+  `["**"]` или `["."]` — тоже решение, а `web.roots: []` — «фронта нет»:
+  чужой фронт разведки после него — `scope.front_undecided`.
 - **Отказ прогона — дефект, и решения его прогона в охват не идут:** ноль
   у них читался бы как «решение не решило ничего», а это неизвестно.
 

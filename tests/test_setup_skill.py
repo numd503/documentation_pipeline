@@ -209,6 +209,30 @@ def test_skill_lists_every_tool_of_the_table() -> None:
     assert in_body == PLAN_TOOLS.keys(), sorted(PLAN_TOOLS.keys() - in_body)
 
 
+def _table_arguments() -> dict[str, set[str]]:
+    """Таблица инструментов `SKILL.md`: инструмент → имена из колонки «Аргументы»."""
+    rows: dict[str, set[str]] = {}
+    for line in BODY.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) == 4 and re.fullmatch(r"`setup_[a-z_]+`", cells[0]):
+            rows[cells[0].strip("`")] = set(_SPAN.findall(cells[1]))
+    return rows
+
+
+def test_skill_tool_table_matches_server_params() -> None:
+    """Колонка «Аргументы» равна параметрам сервера (S33, ловушка 5 прогона S31).
+
+    Без `offset` агент не прочтёт `next_offset`, без `lang` `setup_docs`
+    покажет только .NET (squidex: 118 документов при 583 ничьих фронта) —
+    и «не показали» станет «нет».
+    """
+    server = importlib.import_module("docpipe.setup.server")
+    table = _table_arguments()
+    assert table.keys() == {tool.name for tool in server.TOOLS}
+    for tool in server.TOOLS:
+        assert table[tool.name] == {param.name for param in tool.params}, tool.name
+
+
 def test_every_named_tool_is_served_by_the_setup_server() -> None:
     """Каждый упомянутый `setup_*` есть в `SetupTools.tools()` (S27)."""
     try:
@@ -360,6 +384,58 @@ def test_inline_code_does_not_cross_lines() -> None:
             assert line.count("`") % 2 == 0, f"{name}:{number}: {line!r}"
 
 
+_STEP: Final = re.compile(r"^\d+\. ", re.MULTILINE)
+_QUESTION: Final = re.compile(r"[Вв]опрос(?:ом)?\s+«")
+# Законные формы слова «вопрос» в шагах: вопрос с заголовком раздела каталога
+# и отрицания. Всё остальное — «вопрос человеку», «вопрос по разделу»,
+# «Вопрос:» — вопрос без кода находки, тот самый, что задал прогон S31.
+_ALLOWED: Final = re.compile(r"[Вв]опрос(?:ом)?\s+«|[Вв]опроса нет|[Вв]опросов нет|до вопросов")
+_ANY_QUESTION: Final = re.compile(r"[Вв]опрос\w*")
+_ASK: Final = re.compile(r"\b[Сс]проси\b")
+# Код, по которому строится вопрос: находка `setup status` или новая находка ревью.
+QUESTION_CODES: Final = frozenset(CODES) | {"new_findings"}
+
+
+def _phase_steps(text: str) -> tuple[str, list[str]]:
+    """Раздел `## Шаги` одной строкой и его шаги верхнего уровня (перевод строки — пробел)."""
+    section = _prose(text.split("\n## Шаги\n", 1)[1].split("\n## ", 1)[0])
+    starts = [match.start() for match in _STEP.finditer(section)]
+    ends = [*starts[1:], len(section)]
+    steps = [" ".join(section[start:end].split()) for start, end in zip(starts, ends, strict=True)]
+    return " ".join(section.split()), steps
+
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_every_question_in_phase_steps_names_a_finding_code(phase: str) -> None:
+    """Вопрос человеку — только из находки с кодом (S33, п. 11).
+
+    Шаг, где стоит `вопрос «…»`, называет код находки во вставке; других
+    форм вопроса и повелительного «спроси» в шагах нет. Без второй половины
+    правило обходилось бы словом «спроси» — ровно так фазы 40, 50, 60
+    и 90 велели вопросы без кода в прогоне S31. Факт машины (какой
+    `docpipe.yaml`, где движок) — «уточни у человека».
+    """
+    text = TEXTS[f"phases/{phase}"]
+    assert "\n## Шаги\n" in text, phase
+    section, steps = _phase_steps(text)
+    assert steps, phase
+    for step in steps:
+        if _QUESTION.search(step):
+            named = set(_SPAN.findall(step)) & QUESTION_CODES
+            assert named, f"{phase}: вопрос без кода находки — {step[:80]!r}"
+    rest = _ALLOWED.sub("", section)
+    assert not _ANY_QUESTION.findall(rest), f"{phase}: {_ANY_QUESTION.findall(rest)}"
+    assert not _ASK.search(section), phase
+
+
+def test_question_rule_catches_the_old_forms() -> None:
+    """Разбор правила вопросов не вырожден: старые формы фаз S29 он ловит."""
+    for old in ("спроси человека", "вопрос человеку", "вопрос по разделу", "Вопрос: удалить"):
+        assert _ASK.search(old) or _ANY_QUESTION.findall(_ALLOWED.sub("", old)), old
+    for fine in ("вопроса нет", "до вопросов", "уже спросили", "вопросом «Маршрут»"):
+        assert not _ASK.search(fine) and not _ANY_QUESTION.findall(_ALLOWED.sub("", fine)), fine
+
+
 def test_skill_states_the_boundary_and_points_at_the_protocol() -> None:
     """Граница S29 п. 1 и запрет дописывать причину (ловушка S28) — в теле,
     протокол вопросов — ссылкой, а не копией каталога."""
@@ -476,6 +552,32 @@ LOADERS: Final[dict[str, Callable[[Path, dict[str, Any]], None]]] = {
     "pages.yaml": _load_pages,
     "ownership.yaml": _load_ownership,
 }
+
+
+def test_positive_rule_examples_carry_evidence_as_comment() -> None:
+    """У правила вида поля `reason` нет — доказательство идёт комментарием (S33, п. 6).
+
+    `classify._RULE_KEYS`: `id`, `kind`, `template`, `priority`, `when`;
+    лишний ключ роняет загрузку набора, а `setup status` без набора теряет
+    `dotnet.undecided` целиком — `unexplained` падает и выглядит успехом
+    (abp в прогоне S31: 2249 → 1342). Поэтому над каждым элементом `rules:`
+    примера — строка `# доказательство:`, а `reason` в нём нет.
+    """
+    checked = 0
+    for where, mark, body in EXAMPLES:
+        if not mark.startswith("rules.yaml#"):
+            continue
+        section = mark.split("#", 1)[1]
+        document = yaml.safe_load(body)
+        lines = body.splitlines()
+        for item in (document.get(section) or {}).get("rules") or []:
+            assert "reason" not in item, f"{where}: у правила вида {item['id']} — reason"
+            line = re.compile(rf'^\s*- id: "?{re.escape(item["id"])}"?\s*$')
+            [index] = [number for number, text in enumerate(lines) if line.match(text)]
+            above = lines[index - 1].strip()
+            assert above.startswith("# доказательство:"), f"{where}: {item['id']}"
+            checked += 1
+    assert checked >= 2  # примеры фаз 10 (`dotnet`) и 20 (`web`)
 
 
 @pytest.mark.parametrize(

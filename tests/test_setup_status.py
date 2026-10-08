@@ -53,6 +53,10 @@ TEMPLATES: Final = Path("templates")
 PRICING_CSPROJ: Final = "src/Sample.Pricing.Api/Sample.Pricing.Api.csproj"
 COMMON_CSPROJ: Final = "src/Sample.Common/Sample.Common.csproj"
 
+# Явная область `SampleSolution`: без неё «всё решено» не бывает (S33,
+# `scope.not_configured` на умолчании `enrolled`).
+ENROLLED_SRC: Final[list[Any]] = [{"glob": "src/**", "reason": "продукт команды"}]
+
 # Правило отсева на `Program` — решение «не документируем» с причиной.
 PROGRAM_RULE: Final[dict[str, Any]] = {
     "id": "entry.program",
@@ -170,6 +174,7 @@ def test_finding_codes_are_unique_and_defects_have_no_decision_home() -> None:
 def test_codes_of_the_plan_are_all_there() -> None:
     """Таблица спецификации S24 целиком — каталог вопросов (S28) читает эти коды."""
     planned = {
+        "scope.not_configured",  # S33: умолчание области — тоже место без решения
         "scope.module_undecided",
         "scope.front_undecided",
         "dotnet.undecided",
@@ -221,9 +226,15 @@ def test_sample_defaults_give_program_undecided_clustered_by_module() -> None:
 
 
 def test_exclusion_with_reason_closes_the_finding_and_has_coverage(tmp_path: Path) -> None:
-    """Критерий приёмки: правило отсева на `Program` — находки нет, у правила охват 1."""
+    """Критерий приёмки: правило отсева на `Program` — находки нет, у правила охват 1.
+
+    «Всё решено» включает область: без явного `enrolled` осталась бы
+    `scope.not_configured` (S33), поэтому область задана явно.
+    """
     rules = _rules_with(tmp_path, PROGRAM_RULE)
-    settings = DocpipeConfig(rules=str(rules), ownership=str(_ownership(tmp_path)))
+    settings = DocpipeConfig(
+        rules=str(rules), ownership=str(_ownership(tmp_path)), enrolled=ENROLLED_SRC
+    )
     report = _status(SAMPLE, settings)
 
     assert report.findings == []
@@ -247,6 +258,7 @@ def test_fail_on_unexplained_is_zero_when_everything_is_decided(tmp_path: Path) 
                 "rules": str(rules),
                 "ownership": str(_ownership(tmp_path)),
                 "templates": str(TEMPLATES.resolve()),
+                "enrolled": ENROLLED_SRC,
             }
         ),
         encoding="utf-8",
@@ -351,6 +363,77 @@ def test_module_undecided_only_with_explicit_enrolled() -> None:
     assert (cluster.slice, cluster.key, cluster.examples) == ("directory", "src", [PRICING_CSPROJ])
     [enrolled] = [item for item in report.coverage if item.key == "enrolled"]
     assert (enrolled.value, enrolled.count) == ("src/Sample.Common/**", 1)
+
+
+def test_scope_not_configured_until_enrolled_is_explicit() -> None:
+    """S33: умолчание области — находка `scope.not_configured`; явный `enrolled` — нет.
+
+    Вопрос «Область» онбординга строится из неё: до S33 он задавался без кода
+    на всех четырёх репозиториях прогона S31. Фронта у `SampleSolution` нет —
+    среза `front` нет, а не «фронт без решения».
+    """
+    report = _status(SAMPLE, DocpipeConfig())
+    finding = _finding(report, "scope.not_configured")
+    assert finding is not None and finding.category == "decision"
+    assert finding.count == 2
+    assert [(c.slice, c.key, c.count, c.examples) for c in finding.clusters] == [
+        ("directory", "src", 2, [COMMON_CSPROJ, PRICING_CSPROJ])
+    ]
+    assert finding.count <= report.unexplained
+    # Явность — по `model_fields_set`, а не по значению: `["**"]` — тоже ответ.
+    for enrolled in (ENROLLED_SRC, ["**"]):
+        explicit = _status(SAMPLE, DocpipeConfig.model_validate({"enrolled": enrolled}))
+        assert _finding(explicit, "scope.not_configured") is None, enrolled
+        assert _finding(explicit, "scope.module_undecided") is None, enrolled
+
+    # Модуль под `not_enrolled` решён: ответ «не берём» уменьшает число.
+    dropped = DocpipeConfig.model_validate(
+        {"not_enrolled": [{"glob": "src/Sample.Pricing.Api/**", "reason": "чужой сервис"}]}
+    )
+    partial = _finding(_status(SAMPLE, dropped), "scope.not_configured")
+    assert partial is not None and partial.count == 1
+    assert partial.clusters[0].examples == [COMMON_CSPROJ]
+
+
+def test_scope_not_configured_front_slice(tmp_path: Path) -> None:
+    """Срез `front` — пока `web.roots` не задан явно; `[]` — ответ «фронта нет».
+
+    Копия шва с явным `enrolled` и без `web.roots`: шаг `web` по умолчанию
+    обходит весь корень и берёт `frontend` молча. С `web.roots: [frontend]`
+    находки нет; с `web.roots: []` её тоже нет, а фронт разведки становится
+    `scope.front_undecided` — вопрос о нём по её разделу.
+    """
+    root = _copy_seam(tmp_path / "seam", rules=False, link=False)
+    config = root / "docpipe.yaml"
+    raw = yaml.safe_load(config.read_text(encoding="utf-8"))
+    raw["enrolled"] = [{"glob": "backend/**", "reason": "бэк команды"}]
+
+    def report(**web: Any) -> SetupStatus:
+        changed = {
+            **raw,
+            "web": {key: value for key, value in raw["web"].items() if key != "roots"},
+        }
+        changed["web"].update(web)
+        config.write_text(yaml.safe_dump(changed, allow_unicode=True), encoding="utf-8")
+        return build_status(_context(root))
+
+    finding = _finding(report(), "scope.not_configured")
+    assert finding is not None
+    clusters = [(c.slice, c.key, c.count) for c in finding.clusters]
+    assert clusters == [("front", "frontend", 1)]
+    assert finding.count == 1
+    [example] = finding.clusters[0].examples
+    assert example.startswith("frontend/angular.json  ")
+
+    assert _finding(report(roots=["frontend"]), "scope.not_configured") is None
+
+    none = report(roots=[])
+    assert _finding(none, "scope.not_configured") is None
+    front = _finding(none, "scope.front_undecided")
+    assert front is not None
+    assert [(c.key, c.examples) for c in front.clusters] == [
+        ("frontend", ["frontend/angular.json"])
+    ]
 
 
 def test_not_enrolled_is_out_of_scope_and_not_a_finding() -> None:
@@ -678,10 +761,12 @@ def test_limit_cuts_clusters_but_keeps_totals() -> None:
 def test_text_starts_with_the_summary_line() -> None:
     text = format_status(_status(SAMPLE, DocpipeConfig()))
     first = text.splitlines()[0]
+    # 1 `dotnet.undecided` + 6 `owners.not_configured` + 2 `scope.not_configured` (S33).
     assert first == (
-        "В области: 7 находок без решения, 0 дефектов; вне области: модулей 0, фронтов 0."
+        "В области: 9 находок без решения, 0 дефектов; вне области: модулей 0, фронтов 0."
     )
     assert "символ .NET без решения (dotnet.undecided): 1" in text
+    assert "(scope.not_configured): 2" in text
 
 
 def test_command_json_equals_the_function() -> None:

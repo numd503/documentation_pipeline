@@ -30,8 +30,9 @@
    или интерфейс (`when.inherits`), суффикс имени (`when.name_suffix`),
    путь (`when.path_glob`).
    - Признак доказуем кодом и вид объявлен в секции `web` — правило пишешь
-     сам и показываешь разницу `web.undecided`.
-   - Иначе — вопрос по разделу `web.undecided` каталога
+     сам (доказательство — строкой `# доказательство: …` над `- id:`)
+     и показываешь разницу `web.undecided`.
+   - Иначе — вопрос «Типы фронта» по разделу `web.undecided` каталога
      (`docs/setup-interview.md`). Частые группы: функции HTTP-каркаса
      (`getVersioned`, `buildQuery`), интерфейсы `State` и `Snapshot`
      в `*.state.ts`, модели транспорта — «не документируем ли».
@@ -73,7 +74,9 @@
 ## Правка файлов
 
 `rules.yaml`, секция `web`: правило вида — в `web.rules` (`id`, `kind`,
-`priority`, `when`; `template` — скелет из КАТАЛОГ/templates), отсев —
+`priority`, `when`; `template` — скелет из КАТАЛОГ/templates; `reason`
+нет — лишний ключ роняет загрузку набора, доказательство — строкой
+`# доказательство: …` над `- id:`), отсев —
 в `web.exclude.rules` с причиной человека. `id` — с префиксом `web.`,
 чтобы не спутать с правилами секции `dotnet`. После правки подними
 `web.ruleset_version`.
@@ -82,6 +85,7 @@
 # file: rules.yaml#web
 web:
   rules:
+    # доказательство: setup_symbols lang ts — 9 классов *Resolver, у всех @Injectable
     - id: web.resolver
       kind: service
       template: service

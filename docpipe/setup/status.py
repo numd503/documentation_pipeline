@@ -104,6 +104,13 @@ class FindingCode:
 # ключ: его читают каталог вопросов (S28) и тест карты настройки (S09).
 FINDING_CODES: Final[tuple[FindingCode, ...]] = (
     FindingCode(
+        "scope.not_configured",
+        "decision",
+        "область не задана: по умолчанию документируется всё",
+        "docpipe.yaml: `enrolled` и `not_enrolled` с причиной;"
+        " фронт — `web.roots` или `exclude` с причиной",
+    ),
+    FindingCode(
         "scope.module_undecided",
         "decision",
         "модуль без решения об области",
@@ -949,9 +956,62 @@ def _fronts(ctx: SetupContext) -> tuple[list[dict[str, Any]], list[dict[str, Any
     return undecided, excluded
 
 
+def _not_configured(ctx: SetupContext, runs: _Runs, limit: int) -> _Found:
+    """Область не задана: модули, которые документируются только по умолчанию.
+
+    Умолчания `enrolled: ["**"]` и `web.roots: ["."]` — не решение человека
+    (Р-6), а находки о них по построению нет: `scope_of` даёт `undecided`
+    только при явном `enrolled`, а вне корня `.` не лежит ни один фронт.
+    Без этой находки первый вопрос онбординга — об области — задавался бы
+    без кода (прогон S31, все четыре репозитория).
+
+    Явность — по `model_fields_set`, а не по значению: явный `["**"]`
+    и явный `web.roots: ["."]` — тоже ответы человека, а `web.roots: []` —
+    ответ «фронта нет». Модуль под `not_enrolled` решён и в срез не идёт:
+    иначе ответ «не берём» по каталогу не уменьшал бы число.
+
+    Срез `front` — по модулям манифеста `web`: при пустом шаге (TypeScript
+    нет) находки «фронт есть, решения нет» нет, а «фронта нет» находкой
+    не бывает. Пример фронта — файл объявления и имя модуля: в одном
+    `angular.json` бывает два десятка проектов (abp `npm/ng-packs`), и пример
+    из одного пути повторил бы его трижды. `count` — места обоих срезов:
+    `_found` по умолчанию считает только первый.
+    """
+    modules: list[tuple[str, str]] = []
+    if runs.scan is not None and not ctx.settings.enrolled_is_explicit:
+        modules = sorted(
+            (_parent(_parent(module.project_file)), module.project_file)
+            for module in runs.scan.manifest.modules
+            if scope_of(module.project_file, ctx.settings) != "not_enrolled"
+        )
+    fronts: list[tuple[str, str, str]] = []
+    if runs.web is not None and "roots" not in ctx.settings.web.model_fields_set:
+        fronts = sorted(
+            (
+                _parent(module.project_file),
+                f"{module.project_file}  {module.name}",
+                module.project_file,
+            )
+            for module in runs.web.manifest.modules
+        )
+    return _found(
+        "scope.not_configured",
+        [
+            ("directory", modules),
+            ("front", [(key, example) for key, example, _ in fronts]),
+        ],
+        limit,
+        count=len(modules) + len(fronts),
+        places=[
+            *_in_file(path for _, path in modules),
+            *(FindingPlace(example, (path,)) for _, example, path in fronts),
+        ],
+    )
+
+
 def _scope_findings(ctx: SetupContext, runs: _Runs, limit: int) -> list[_Found]:
-    """Модули без решения об области (только при явном `enrolled`) и фронты вне корней."""
-    found: list[_Found] = []
+    """Область не задана, модули без решения (только при явном `enrolled`), фронты вне корней."""
+    found: list[_Found] = [_not_configured(ctx, runs, limit)]
     if runs.scan is not None:
         undecided = sorted(
             module.project_file
