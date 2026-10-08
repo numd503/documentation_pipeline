@@ -228,11 +228,12 @@ def _files_on_disk(root: Path, target: str) -> list[str]:
     return sorted(path for path in found if match(path))
 
 
-def _covering(path: str, entries: Iterable[str]) -> str | None:
+def covering_root(path: str, entries: Iterable[str]) -> str | None:
     """Самая длинная запись корней, под которой лежит файл. `.` и пустая накрывают всё.
 
     Сравнение по границе каталога, как у `discovery.in_scope`: `backend`
-    не накрывает `backend-legacy/…`.
+    не накрывает `backend-legacy/…`. Её же зовёт `setup status` (S24) для
+    охвата записей корней: «какая запись накрыла файл» у двух команд одно.
     """
     covers = [
         entry
@@ -243,7 +244,8 @@ def _covering(path: str, entries: Iterable[str]) -> str | None:
     return max(covers, key=len, default=None)
 
 
-def _shown(entry: str) -> str:
+def shown_root(entry: str) -> str:
+    """Запись корней так, как её пишут: пустая — `.`. Общая с `setup status` (S24)."""
     return entry or "."
 
 
@@ -523,7 +525,7 @@ def _dotnet(ctx: SetupContext, target: str, seen: list[str], draft: _Draft) -> N
 
 def _web_module_of(path: str, keys: Iterable[str]) -> str | None:
     """Модуль фронта файла: самая длинная граница, как у `web.modules.module_of`."""
-    return _covering(path, keys)
+    return covering_root(path, keys)
 
 
 def _web(ctx: SetupContext, target: str, seen: list[str], draft: _Draft) -> None:
@@ -542,14 +544,14 @@ def _web(ctx: SetupContext, target: str, seen: list[str], draft: _Draft) -> None
     touched |= {key for key, module in modules.items() if module.project_file in seen}
     for key in sorted(touched):
         module = modules[key]
-        entry = _covering(module.project_file, [item.path for item in root_entries])
+        entry = covering_root(module.project_file, [item.path for item in root_entries])
         by = None
         if entry is not None:
             reason = next((item.reason for item in root_entries if item.path == entry), "")
             by = DecisionRef(
                 file=roots_file,
                 key="web.roots",
-                value=_shown(entry),
+                value=shown_root(entry),
                 reason=reason,
                 effect="фронт в обходе",
                 count=1,
@@ -1006,7 +1008,7 @@ def explain_path(ctx: SetupContext, target: str, *, limit: int = DEFAULT_LIMIT) 
     outside = 0
     for path in kept:
         key = "web.roots" if file_field(path.rsplit("/", 1)[-1]) in WEB_FIELDS else "roots"
-        entry = _covering(path, entries[key])
+        entry = covering_root(path, entries[key])
         if entry is None:
             outside += 1
             continue
@@ -1047,7 +1049,7 @@ def explain_path(ctx: SetupContext, target: str, *, limit: int = DEFAULT_LIMIT) 
                 DecisionRef(
                     file=ctx.config_label,
                     key=key,
-                    value=_shown(entry),
+                    value=shown_root(entry),
                     reason=web_reasons.get(entry, "") if key == "web.roots" else "",
                     effect="обход читает файл",
                     count=count,
@@ -1081,8 +1083,8 @@ def explain_path(ctx: SetupContext, target: str, *, limit: int = DEFAULT_LIMIT) 
         target=target,
         matched_files=len(files),
         excluded_by=None,
-        roots=sorted({_shown(entry) for key, entry in covering if key == "roots"}),
-        web_roots=sorted({_shown(entry) for key, entry in covering if key == "web.roots"}),
+        roots=sorted({shown_root(entry) for key, entry in covering if key == "roots"}),
+        web_roots=sorted({shown_root(entry) for key, entry in covering if key == "web.roots"}),
         modules=sorted(draft.modules, key=lambda item: (item.lang, item.project_file)),
         symbols=dict(sorted(Counter(row.decision.state for row in rows).items())),
         symbol_rows=symbols.symbols,
@@ -1240,8 +1242,10 @@ __all__ = [
     "ModuleScope",
     "Note",
     "PathExplain",
+    "covering_root",
     "explain_json",
     "explain_path",
     "format_explain",
     "normalize_target",
+    "shown_root",
 ]

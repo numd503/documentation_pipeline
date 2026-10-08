@@ -16,15 +16,18 @@ from docpipe.arch import load as arch_load
 from docpipe.config import DocpipeConfig
 from docpipe.registry import config as registry_config
 from docpipe.registry.model import RegistrySpec
+from docpipe.setup.status import CODES
 from docpipe.web import overrides
 from tests.setup_map_support import (
     COLUMNS,
     DOCPIPE,
     FILES,
     MAP,
+    RULES,
     all_map_keys,
     arch_keys,
     code_keys,
+    map_findings,
     map_keys,
     map_rows,
     model_keys,
@@ -76,6 +79,30 @@ def test_rows_have_every_column() -> None:
         if cells != COLUMNS
     )
     assert not broken
+
+
+def test_finding_column_names_only_known_codes() -> None:
+    """«Находка» — «—» или коды `FINDING_CODES` через запятую (S24).
+
+    Код, которого `setup status` не выдаёт, отправил бы агента искать в отчёте
+    находку, которой там не будет никогда; переименованный код без правки
+    карты — то же самое.
+    """
+    found = map_findings(MAP.read_text(encoding="utf-8"))
+    unknown = sorted(
+        (title, key, cell)
+        for title, rows in found.items()
+        for key, cell in rows
+        if cell != "—"
+        and not all(
+            re.fullmatch(r"`([a-z_.]+)`", part) and part.strip("`") in CODES
+            for part in cell.split(", ")
+        )
+    )
+    assert not unknown
+    # Колонка заполнена: хоть одна находка у ключей `docpipe.yaml` и у правил.
+    assert any(cell != "—" for _, cell in found[DOCPIPE])
+    assert any(cell != "—" for _, cell in found[RULES])
 
 
 def test_group_keys_exist_in_map() -> None:

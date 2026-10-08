@@ -6,6 +6,7 @@
 """
 
 import os
+from collections import Counter
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
@@ -60,7 +61,15 @@ def file_field(filename: str) -> str | None:
 
 @dataclass(frozen=True)
 class Discovered:
-    """Найденные файлы. Пути репо-относительные POSIX, каждый список отсортирован."""
+    """Найденные файлы. Пути репо-относительные POSIX, каждый список отсортирован.
+
+    `excluded` — исходники, которые отсекли шаблоны исключения: путь → все
+    совпавшие с ним шаблоны в порядке `exclude_globs`. Заполняется только
+    при `discover(..., count_excluded=True)`, иначе `None`: отсечённые каталоги
+    обход не открывает, и счёт без них был бы меньше настоящего — у `**/obj/**`
+    на свежем клоне ноль при сотне файлов под `obj/`. `None`, а не пустой
+    словарь, — чтобы «не считали» не читалось как «не отсекли ничего».
+    """
 
     cs_files: list[str]
     csproj_files: list[str]
@@ -69,6 +78,20 @@ class Discovered:
     html_files: list[str]
     sql_files: list[str]
     web_project_files: list[str]  # angular.json, nx.json, project.json, package.json
+    excluded: dict[str, tuple[str, ...]] | None = None
+
+    @property
+    def excluded_by(self) -> dict[str, int] | None:
+        """Шаблон → сколько исходников он отсёк; файл под двумя шаблонами — у обоих.
+
+        Охват шаблона `exclude` (S24): правка одного из двух совпавших файл
+        не вернёт, поэтому счёт у каждого свой, а не «первому совпавшему».
+        Шаблона, не отсёкшего ничего, в словаре нет.
+        """
+        if self.excluded is None:
+            return None
+        counts = Counter(glob for globs in self.excluded.values() for glob in globs)
+        return dict(sorted(counts.items()))
 
 
 def matches_glob(path: str, glob: str) -> bool:
@@ -133,11 +156,45 @@ def in_scope(path: str, scope: list[tuple[str, ...]] | None) -> bool:
     return any(segments[: len(prefix)] == prefix for prefix in scope)
 
 
+def _matched(path: str, exclude_globs: list[str]) -> tuple[str, ...]:
+    """Все шаблоны исключения, совпавшие с путём, в порядке списка."""
+    return tuple(glob for glob in exclude_globs if matches_glob(path, glob))
+
+
+def _record_pruned(
+    root: Path, directory: str, exclude_globs: list[str], excluded: dict[str, tuple[str, ...]]
+) -> None:
+    """Исходники под отсечённым каталогом — в `excluded`, без сбора в результат.
+
+    Отдельный проход внутрь каталога, в который основной обход не заходит:
+    иначе охват шаблона, отсёкшего каталог целиком, был бы нулём. Тот же
+    отбор исходников (`file_field`), те же шаблоны и тот же отказ разыменовывать
+    ссылки, что у основного обхода, — счёт не зависит от того, отсечён каталог
+    или пройден (`test_pruned_and_walked_count_the_same`).
+
+    Каталог-ссылку не открывает: `os.walk` разыменовывает сам корень прохода,
+    а основной обход в ссылку не зашёл бы.
+    """
+    if (root / directory).is_symlink():
+        return
+    for dirpath, _, filenames in os.walk(root / directory, followlinks=False):
+        relative_dir = Path(dirpath).relative_to(root).as_posix()
+        for filename in filenames:
+            if file_field(filename) is None:
+                continue
+            relative_path = f"{relative_dir}/{filename}"
+            matched = _matched(relative_path, exclude_globs)
+            if matched:
+                excluded[relative_path] = matched
+
+
 def discover(
     root: Path,
     exclude_globs: list[str],
     scope: list[str] | None = None,
     roots: list[str] | None = None,
+    *,
+    count_excluded: bool = False,
 ) -> Discovered:
     """Найти исходники под `root` — и .NET, и фронта, одним обходом.
 
@@ -152,6 +209,13 @@ def discover(
     и приходит из конфигурации, второй задаётся флагом на один прогон. Оба
     отсеивают файлы, а не каталоги: каталог может быть предком нужного
     и обязан быть пройден, даже если сам ничего не даёт.
+
+    `count_excluded` — записать отсечённые исходники в `Discovered.excluded`
+    (охват шаблонов `exclude`, S24). Отсечённые каталоги тогда открываются
+    отдельным проходом только ради счёта: в `node_modules` на сотню тысяч
+    файлов это заметно, поэтому `scan` и `web scan` флаг не ставят. Отсев
+    проверяется раньше `scope` и `roots` — как и при сборе: шаблон отсёк
+    и файл вне корней.
     """
     if not root.is_dir():
         raise NotADirectoryError(f"Корень обхода не является директорией: {root}")
@@ -161,6 +225,7 @@ def discover(
     normalized_roots = normalize_scope(roots)
     found: dict[str, list[str]] = {field: [] for field in _EXTENSIONS}
     found["web_project_files"] = []
+    excluded: dict[str, tuple[str, ...]] | None = {} if count_excluded else None
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         relative_dir = Path(dirpath).relative_to(root).as_posix()
@@ -169,9 +234,13 @@ def discover(
         # Отсечение каталогов правим на месте — os.walk читает dirnames после yield.
         # Сортировка здесь только ради предсказуемости обхода при отладке:
         # итоговый порядок всё равно задаётся sorted() ниже.
-        dirnames[:] = sorted(
-            name for name in dirnames if not is_excluded(f"{prefix}{name}", dir_globs)
-        )
+        walked: list[str] = []
+        for name in sorted(dirnames):
+            if not is_excluded(f"{prefix}{name}", dir_globs):
+                walked.append(name)
+            elif excluded is not None:
+                _record_pruned(root, f"{prefix}{name}", exclude_globs, excluded)
+        dirnames[:] = walked
 
         for filename in sorted(filenames):
             field = file_field(filename)
@@ -179,7 +248,12 @@ def discover(
                 continue
 
             relative_path = f"{prefix}{filename}"
-            if is_excluded(relative_path, exclude_globs):
+            if excluded is not None:
+                matched = _matched(relative_path, exclude_globs)
+                if matched:
+                    excluded[relative_path] = matched
+                    continue
+            elif is_excluded(relative_path, exclude_globs):
                 continue
             if not in_scope(relative_path, normalized_scope):
                 continue
@@ -196,6 +270,7 @@ def discover(
         html_files=sorted(found["html_files"]),
         sql_files=sorted(found["sql_files"]),
         web_project_files=sorted(found["web_project_files"]),
+        excluded=dict(sorted(excluded.items())) if excluded is not None else None,
     )
 
 

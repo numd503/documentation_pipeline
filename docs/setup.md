@@ -22,14 +22,17 @@
   --offset 20.».
 - **Коды возврата**: 0 — отчёт построен (в том числе пустой), 2 —
   неверный аргумент или вход не читается (конфигурация, файл правил,
-  `pages.yaml`).
+  `pages.yaml`). Исключение — `setup status`: отказ одного прогона там
+  дефект в отчёте, а не код 2, и `--fail-on-unexplained` даёт код 1.
 - **Пути входов** (`rules` и прочие) разрешаются так же, как у `scan`:
   от текущего каталога, затем от каталога `--config`.
 - **Прогоны — в памяти, по текущей настройке.** Манифесты с диска команды
   не читают: агент правит настройку и сразу зовёт команду, а манифест
   на диске собран прошлой. Прогоны собирает одно место —
   `docpipe/setup/context.py` (`SetupContext`): шаг 1, шаг `web` с
-  `pages.yaml`, план шага 2 по манифесту в памяти, владение. Каждый
+  `pages.yaml`, отчёт связи, план шага 2 по манифесту в памяти, владение,
+  обход всего `--root` с отсеянным (`discovered`) и проекты разведки
+  (`projects`). Каждый
   прогон ленивый и считается один раз: команде, которой нужен шаг 1,
   шаг `web` не нужен вовсе.
 
@@ -693,3 +696,179 @@ web:
 > `GetUserResources` с `[Route("")]` есть: пустой ключ склеил бы все
 > неразрешённые (`web/link.py`).
 > `would_link` это учитывает — он считает по тем же ключам.
+
+## `setup status`
+
+```bash
+uv run docpipe setup status --root tests/fixtures/SampleSolution --format json
+uv run docpipe setup status --root . --config docpipe.yaml --out /tmp/status-a.json
+uv run docpipe setup status --root . --config docpipe.yaml --baseline /tmp/status-a.json
+uv run docpipe setup status --root . --config docpipe.yaml --fail-on-unexplained --no-cache
+```
+
+«Что в области ещё без решения и что сломано» (S24) — проверяемое состояние
+Р-6: в области нет находки без решения и нет дефектов. Остановку решает
+человек; команда показывает, на чём он останавливается. Функция —
+`setup/status.py:build_status(ctx, *, baseline, limit)`, её же позовёт
+сервер настройки (S27).
+
+Флаги: `--root`, `--config`, `--format`, `--limit` (кластеров на срез
+находки и примеров «вне области», по умолчанию 20, `0` — все), `--out PATH`
+(записать отчёт JSON), `--baseline PATH` (взять из такого файла `previous`),
+`--fail-on-unexplained`, `--no-cache`. Код 0 — отчёт построен; с
+`--fail-on-unexplained` — 1, если `unexplained > 0` или `defects > 0`;
+2 — неверный аргумент, настройка не читается, `--baseline` не читается как
+отчёт этой же версии, `--out` не записать. Отказ **одного прогона** (нет
+скелетов, нечитаемый набор правил, неоднозначный `pages.yaml`, противоречие
+`enrolled`/`not_enrolled`) — не код 2, а дефект `load.errors` или
+`docs.unavailable` с причиной: остальные находки агенту нужны и тогда.
+
+| Поле | Что значит |
+|---|---|
+| `findings` | находки с `count > 0` в порядке `FINDING_CODES`; при `--baseline` ещё и исчезнувшие с прошлого прогона — `count: 0`, `previous` больше нуля |
+| `findings[].code`, `category`, `title`, `decision_home` | код, `decision` (место без решения) или `defect` (сломано), заголовок и где лежит решение (у дефекта — «—») |
+| `findings[].count`, `previous` | мест сейчас и в базе сравнения; `previous: null` — сравнения нет, `0` — в базе находки не было |
+| `findings[].clusters`, `clusters_total` | до `--limit` кластеров каждого среза и сколько кластеров всего. Кластер: `slice` (по чему сложено: `module`, `reason`, `directory`, …), `key`, `count`, `examples` (до трёх мест) |
+| `coverage` | охват **каждого** решения настройки, нулевые тоже: `id`, `file`, `key`, `value`, `count`, `previous`, `reason`. Не усекается: это база сравнения следующего прогона |
+| `out_of_scope` | решённое «не брать»: `modules` (под `not_enrolled`), `fronts` (фронты разведки под `exclude`), `symbols` (их символы), `examples` |
+| `without_reason` | `id` решений без причины — подсказка, не находка: короткая форма законна, но через полгода «почему так» спросить будет некого |
+| `unexplained`, `defects` | сумма мест в находках-решениях и в дефектах |
+
+Текст: первая строка — «В области: N находок без решения, M дефектов; вне
+области: модулей A, фронтов B», дальше по находке — заголовок, код, число
+с разницей («было 3, -2»), где решение и до трёх кластеров; в конце —
+сколько решений настройки и сколько без охвата, решения без причины,
+символы вне области.
+
+### Коды находок
+
+`FINDING_CODES` в `docpipe/setup/status.py`; их читают каталог вопросов
+интервью (S28) и колонка «Находка» карты [`setup-map.md`](setup-map.md)
+(тест не пускает туда код вне таблицы).
+
+| Код | Категория | Источник | Срез кластеров | Где решение |
+|---|---|---|---|---|
+| `scope.module_undecided` | решение | `config.scope_of` = `undecided` — только при явном `enrolled` | `directory` (каталог над модулем) | `enrolled` / `not_enrolled` с причиной |
+| `scope.front_undecided` | решение | фронты разведки (`recon.collect_projects`), чей файл объявления вне `web.roots` и не под `exclude` | `front` | `web.roots` / `exclude` с причиной |
+| `dotnet.undecided`, `web.undecided` | решение | `decide` по всем символам шага — тот же, что у `--stats` и `symbols` | `module`, `last_word` | `rules.yaml`: правило или отсев с причиной |
+| `link.calls_unresolved` | решение | отчёт связи: невосстановленные без `link.unresolvable` | `reason` (кластеры `setup link`) | `web.http_wrappers`, `web.url_builders`, `link.unresolvable` |
+| `link.calls_invisible` | решение | кандидаты `http-wrappers` без записи (`configured: false`); число — вызовов | `wrapper` | `web.http_wrappers` |
+| `link.calls_without_endpoint` | решение | отчёт связи | `module` (кластеры `setup link`) | `web.url_rewrite`, `link.external_targets` |
+| `link.endpoints_without_caller` | решение | отчёт связи | `controller` (кластеры `setup link`) | `link.external_callers` |
+| `link.almost` | решение | отчёт связи, `match: almost` | `controller` | `web.url_rewrite` |
+| `link.module_without_rewrite` | решение | `unconfigured_modules`; число находки — модулей, кластера — мест вызова в модуле | `module` | `web.url_rewrite` (пустая запись — «проверено») |
+| `link.registry_unresolved` | решение | вызовы к маршруту `registry_calls` без различителя | `route` | `web.registry_calls` |
+| `pages.route_unresolved` | решение | страница с якорем, у которой часть записей маршрута не собрана, а записи `pages.yaml` нет | `module` | `pages.yaml`: `add` с маршрутом |
+| `pages.unanchorable` | решение | заметка `NOTE_UNANCHORABLE` `web pages` | `module` | `pages.yaml`: `add` или `remove` |
+| `pages.layout` | решение | `NOTE_NO_FEATURES`, либо пустой маршрут **и** ни одного члена | `module` | `pages.yaml`: `remove` |
+| `pages.stale_overrides` | решение | `OverrideReport.stale` | `kind` | `pages.yaml` |
+| `docs.orphan` | решение | документ, который сиротой считают **оба** плана шага 2 | `directory` | `docs adopt` или удаление |
+| `owners.unowned` | решение | узел с документом без победившего правила владения | `module` | `ownership.yaml` |
+| `owners.not_configured` | решение | ключ `ownership` не задан; число — узлов с документом | `module` | `ownership` и `ownership.yaml` |
+| `parse.errors` | решение | `parse_error_files` обоих шагов | `directory` | `exclude` с причиной или правка исходника |
+| `config.problems` | дефект | `config check` (S04, в том числе `placeholder-left`) | `code` | — |
+| `docs.broken` | дефект | документ со статусом `broken`, кроме невидимых | `directory` | — |
+| `docs.shadowed` | дефект | `shadowed_docs`: файл на пути узла есть, обход документов его не видит | `directory` | — |
+| `link.duplicate_endpoints` | дефект | один ключ у двух узлов бэкенда (единственный дефект `web link`) | `route` | — |
+| `load.errors` | дефект | прогон шага 1 или `web` не собрался; предупреждения «бизнес-ссылки:» шага 2 | `step` | — |
+| `docs.unavailable` | дефект | план шага 2 не собрался (`Step2Error`) или собрался с блокирующей ошибкой (`MaterializePlan.errors`) | `step` | — |
+
+Как читать:
+
+- **Шов считается, когда у него обе стороны.** Концы без пары
+  (`calls_without_endpoint`, `endpoints_without_caller`, `almost`),
+  `module_without_rewrite` и `duplicate_endpoints` — только когда в области
+  есть и модули .NET, и модули фронта: без фронта каждый эндпоинт «без
+  вызывающего», и решения у такой находки нет (на `SampleSolution` их было
+  бы столько, сколько действий в контроллерах). Факты одного фронта —
+  `calls_unresolved`, `calls_invisible`, `registry_unresolved` — считаются
+  при любом бэке.
+- **Кластеры шва — те же, что у `setup link`** (`clusters_of`, ключ по
+  умолчанию категории): за подсказкой правила префикса — туда.
+- **`docs.orphan` — сирота обоих планов.** Дерево документов у шага 1 и
+  шага `web` общее: документ фронта — сирота для плана .NET и наоборот.
+  Если какой-то план не собрался, сирот не считаем вовсе — о плане говорит
+  `docs.unavailable`.
+- **`scope.module_undecided` — только при явном `enrolled`.** При умолчании
+  `["**"]` включено всё, и находка была бы на каждом модуле каждого
+  репозитория, где область не настраивали. То же у фронтов: при умолчании
+  `web.roots: ["."]` вне корней не бывает ничего.
+- **Отказ прогона — дефект, и решения его прогона в охват не идут:** ноль
+  у них читался бы как «решение не решило ничего», а это неизвестно.
+
+### Охват решений
+
+У каждого решения настройки — сколько единиц кода оно решило во всём
+репозитории. `id` — `файл::ключ::значение`, как `file`, `key` и `value`
+у `decisions` в `setup explain` (подсчёт тот же: сторож — тест
+`test_coverage_matches_setup_explain_on_the_whole_repository`). Решения,
+которых человек не принимал (встроенный отсев, умолчание `enrolled` и
+корней), в охват не идут.
+
+| `key` | `count` — чего |
+|---|---|
+| `exclude` | исходников, которые шаблон отсёк (файл под двумя шаблонами — у обоих) |
+| `roots`, `web.roots` (только если ключ задан) | исходников, которые накрыла запись (самая длинная накрывшая) |
+| `enrolled` (только явный), `not_enrolled` | модулей, область которых решила запись (первая совпавшая) |
+| `dotnet.exclude`, `web.exclude` | символов, которые правило отсева **выиграло** (`exclude.require_public` — своей строкой) |
+| `dotnet.rules`, `web.rules` | символов, которые правило классификации **выиграло** |
+| `di_methods` | вызовов с типом, ставших регистрацией |
+| `dispatch_interfaces` | обработчиков |
+| `web.url_rewrite` | восстановленных вызовов модуля |
+| `web.registry_calls` | вызовов к маршруту |
+| `web.http_wrappers`, `web.url_builders` | вызовов через обёртку и её тел; адресов от построителя |
+| `link.external_targets`, `link.external_callers`, `link.unresolvable` | концов шва, которые запись решила |
+| `add`, `remove`, `features` (`pages.yaml`) | страниц или узлов |
+| `rules` (`ownership.yaml`) | узлов с документом, которые правило выиграло |
+
+Ноль — решение, которое не решило ничего: шаблон `exclude` без `/**`,
+`url_rewrite` модуля, которого нет, правило владения без побед. Разбивку
+«файл → сколько решено» (символы — по каждому файлу `sources`, вызовы — по
+файлу вызова, эндпоинты — по файлу действия, модули — по `.csproj`) отдаёт
+`decision_coverage(ctx)`; в отчёт идёт только сумма, разбивку берёт ревью
+(S25). Обход для `exclude` — `SetupContext.discovered`: `discover(...,
+count_excluded=True)` заходит в отсечённые каталоги ради счёта
+(`Discovered.excluded`, `excluded_by`), поэтому `scan` и `web scan` флаг
+не ставят.
+
+### Сравнение прогонов
+
+`--out PATH` пишет отчёт JSON, `--baseline PATH` берёт из такого файла
+`previous` — у находки по коду, у охвата по `id`. Это инструмент агента
+внутри сессии: правило → прогон → разница. Файл лежит где угодно вне
+настройки и не коммитится; принятого состояния в нём нет (П-1 плана) —
+его роль играет коммит настройки, и с ним работает ревью (S25). Сервер
+настройки (S27) помнит прошлый ответ сам. Находка, закрытая с прошлого
+прогона, остаётся в отчёте строкой с `count: 0` — иначе правка, которая
+её закрыла, не была бы видна разницей.
+
+Замер 08.10 (`--no-cache`, настройки — `findings-seam.md`, «Как
+воспроизвести», с обёртками S19 и `exclude: ["**/*.spec.ts"]`):
+
+| Прогон | Время | Без решения | Дефектов | Решений / без охвата |
+|---|---|---|---|---|
+| squidex | 8,7 с | 3250: `dotnet.undecided` 1494, `owners.not_configured` 921, `web.undecided` 589, `link.endpoints_without_caller` 162, `link.calls_unresolved` 70 (гипермедиа `link.href`), `link.calls_invisible` 9, `link.calls_without_endpoint` 4, `link.module_without_rewrite` 1 | 21: `docs.unavailable` — 21 пара узлов фронта на один `doc_path` | 40 / 7 |
+| abp | 5,1 с | 2081: `owners.not_configured` 830, `dotnet.undecided` 701, `web.undecided` 443, `link.calls_without_endpoint` 58, `link.endpoints_without_caller` 18, `link.calls_invisible` 14, `link.module_without_rewrite` 9, `scope.front_undecided` 6, `link.calls_unresolved` 2 | 13: `docs.unavailable` — тот же дефект фронта | 39 / 8 |
+
+> **Ловушка. У `link.calls_invisible` нет записи «это не обёртка».** Кандидат
+> `http-wrappers` — вызов члена с аргументом, похожим на адрес, и на squidex
+> все девять — не HTTP: `window.open`, `url.startsWith`, `L.tileLayer`,
+> `resourceLoader.loadScript`; на abp — `form.patchValue`, `location.replace`.
+> Закрыть такую находку решением нельзя: `web.http_wrappers` объявил бы
+> обёрткой то, что HTTP не делает, а `link.unresolvable` — про
+> невосстановленные вызовы, не про кандидатов. Пока у ключа нет пары
+> «не обёртка, причина», находка остаётся до правки отбора кандидатов.
+
+> **Ловушка. Пустой маршрут — не layout.** Заметка `NOTE_EMPTY_ROUTE` стоит
+> и у настоящей страницы: на squidex на `/` — `HomePageComponent`, экран
+> входа с членами и шаблоном. Закрыть находку можно только снятием, а снять
+> страницу было бы ошибкой; записи «проверено, это страница» в `pages.yaml`
+> нет (`add` того же маршрута — протухшее `add-redundant`). Поэтому
+> `pages.layout` — без признаков функционала или пустой маршрут **без
+> членов**; у страницы без функционала, которая всё-таки страница, та же
+> дыра остаётся.
+
+> **Ловушка. Ответ больше бюджета сервера.** JSON на squidex — 42 КБ, на abp —
+> 54 КБ при `--limit 20`: `dotnet.undecided` даёт два среза по двадцать
+> кластеров. Ответ инструмента S27 — не больше 20 000 символов; серверу
+> нужен свой `limit` или сводка без кластеров.

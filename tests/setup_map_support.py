@@ -245,6 +245,27 @@ def map_rows(text: str) -> dict[str, list[tuple[str, int]]]:
     return rows
 
 
+def map_findings(text: str) -> dict[str, list[tuple[str, str]]]:
+    """Ячейка «Находка» каждой строки таблиц карты: ключ и текст последней ячейки.
+
+    Разбор тот же, что у `map_rows`: раздел — заголовок из `FILES`, ячейки —
+    по `|`. Число ячеек держит отдельный тест, поэтому последняя здесь — та самая.
+    """
+    found: dict[str, list[tuple[str, str]]] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        if line.startswith("## "):
+            title = line[3:].strip()
+            current = title if title in FILES else None
+            if current is not None:
+                found.setdefault(current, [])
+            continue
+        match = _ROW.match(line)
+        if current is not None and match:
+            found[current].append((match.group(1), line.strip().strip("|").split("|")[-1].strip()))
+    return found
+
+
 def map_keys(path: Path = MAP) -> dict[str, set[str]]:
     """Ключи, записанные в карте, по разделам файлов."""
     rows = map_rows(path.read_text(encoding="utf-8"))

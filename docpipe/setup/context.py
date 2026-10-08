@@ -19,13 +19,16 @@
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import ValidationError
 
+from docpipe import recon
 from docpipe.classify import Ruleset, load_ruleset
 from docpipe.config import DocpipeConfig, ScopeConflict, load_config, resolve_input
-from docpipe.emit import ScanResult
+from docpipe.discovery import Discovered, discover
+from docpipe.emit import ScanResult, exclude_globs
 from docpipe.emit import run as run_scan
 from docpipe.materialize.ownership import Ownership, load_ownership
 from docpipe.step2 import Step2Error, Step2Inputs, prepare
@@ -84,6 +87,34 @@ class SetupContext:
     def config_label(self) -> str:
         """Как назвать файл настройки в ответе: путь, по которому его прочитали."""
         return self.config.as_posix() if self.config is not None else "docpipe.yaml"
+
+    # ----------------------------------------------------------------------------------
+    # Обход и разведка
+    # ----------------------------------------------------------------------------------
+
+    @cached_property
+    def discovered(self) -> Discovered:
+        """Обход всего `--root` с отсеянным: охват шаблонов `exclude` и корней (S24).
+
+        Тот же `discover` и те же шаблоны (`exclude_globs`), что у шага 1
+        и шага `web`, но без `roots`: шаблон отсёк и файл вне корней, а корни
+        у шагов разные — каждый потребитель сужает список своими. Отсечённые
+        каталоги открываются ради счёта (`count_excluded`), поэтому прогоны
+        шагов этот обход не переиспользуют.
+        """
+        return discover(self.root, exclude_globs(self.settings), count_excluded=True)
+
+    @cached_property
+    def projects(self) -> dict[str, Any]:
+        """Проекты и фронты репозитория по разведке (S10): `fronts`, `dotnet_projects`, ….
+
+        Тот же `recon.collect_projects`, что у `docpipe recon`: фронт, который
+        разведка назвала, и фронт, о котором спрашивает `setup status`
+        (`scope.front_undecided`), обязаны быть одним списком. Под git список
+        файлов — `git ls-files`, как у разведки: новый фронт виден после `git add`.
+        """
+        paths = recon.list_build_paths(self.root, recon.git_available(self.root), [])
+        return recon.collect_projects(self.root, recon.match_build_files(paths))
 
     # ----------------------------------------------------------------------------------
     # Шаг 1

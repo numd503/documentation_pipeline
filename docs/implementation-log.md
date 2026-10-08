@@ -10522,3 +10522,45 @@ squidex без эндпоинта: **опечатка в самом squidex** (�
 - Эндпоинт — запись, а не строка: `AcceptVerbs("GET","POST")` — два эндпоинта.
 
 **Проверка:** команда S21 — проходит; два прогона — байт в байт.
+
+---
+
+## S24 — необъяснённое в области (`setup status`) (08.10.2026)
+
+**Создано:** `docpipe/setup/status.py`, `tests/test_setup_status.py` (36). **Изменено:**
+`docpipe/discovery.py` (`discover(..., count_excluded=True)` — `excluded`/`excluded_by`),
+`docpipe/setup/context.py` (`discovered`, `projects`), `docpipe/setup/explain.py`
+(`covering_root`/`shown_root` публичные), `docpipe/cli.py` (`setup status`),
+`tests/setup_map_support.py`, `tests/test_setup_map.py` (колонка «Находка» — только коды
+`FINDING_CODES`), `docs/setup.md`, `docs/setup-map.md` (70 ячеек «Находка»),
+`docs/module-review.md`.
+
+`FINDING_CODES` — 25 кодов (24 из плана и дефект `link.duplicate_endpoints`);
+`build_status(ctx, *, baseline, limit)`; `decision_coverage(ctx)` — охват каждого решения
+с разбивкой «файл → сколько решено» для ревью (S25). Принятого состояния в файле нет (П-1):
+`--out`/`--baseline` — сравнение между прогонами агента. Кластеры шва — `setup/link`,
+символы — `explain.select`; охват сверен с `setup explain .` тестом.
+
+| | Без решения | Дефектов | Время / память |
+|---|---|---|---|
+| SampleSolution, умолчания | 7 (`dotnet.undecided` 1, `owners.not_configured` 6) | 0 | — |
+| SampleSolution, отсев `Program` + владение | 0, `--fail-on-unexplained` — код 0 | 0 | — |
+| SeamWorkspace: без правил → S19 → S20 и пустой `url_rewrite` | 58 → 45 → 38 | — | — |
+| squidex (`--no-cache`) | 3250 | 21 | 8,7 с / 225 МБ |
+| abp (`--no-cache`) | 2081 | 13 | 5,1 с / 144 МБ |
+
+**Отклонения и находки.**
+- Шов считается только при модулях с обеих сторон — иначе на чистом .NET каждый эндпоинт
+  был бы находкой.
+- `pages.layout` сужен: на squidex `/` — `HomePageComponent`, настоящая страница.
+- `parse.errors` закрывается `exclude` в `docpipe.yaml`: у файла без объявлений нет символов,
+  правило отсева его не уберёт.
+- Отказ прогона — дефект `load.errors`, а не код 2; закрытая находка при `--baseline`
+  остаётся строкой с `count: 0` — иначе разницы не видно.
+- **Два пробела, без которых Р-6 на реальном коде недостижимо**, — задача S24b ниже:
+  `link.calls_invisible` нечем закрыть (все кандидаты squidex и abp — не HTTP, записи
+  «не обёртка» нет); у шага `web` нет разведения коллизий `doc_path` (squidex — 21 пара,
+  abp — 13, план шага 2 фронта не собирается — `docs.unavailable`).
+- JSON на squidex/abp при `--limit 20` — 42–54 КБ: серверу S27 нужен свой бюджет ответа.
+
+**Проверка:** команда S24 — 63 passed.

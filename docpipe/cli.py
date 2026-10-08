@@ -138,6 +138,8 @@ from docpipe.setup.link import (
     link_clusters,
     link_clusters_json,
 )
+from docpipe.setup.status import build_status, load_baseline, status_json, write_status
+from docpipe.setup.status import format_status as format_setup_status
 from docpipe.stats import (
     STATE_TITLES,
     TOP,
@@ -3659,6 +3661,87 @@ def setup_link(
 
     text = link_clusters_json(report) if output_format == "json" else format_link_clusters(report)
     typer.echo(text.rstrip("\n"))
+
+
+@setup_app.command("status")
+def setup_status(
+    root: Annotated[Path, typer.Option("--root", help="Корень репозитория с исходниками.")] = Path(
+        "."
+    ),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Файл конфигурации docpipe.yaml.")
+    ] = None,
+    output_format: Annotated[str, typer.Option("--format", help="text или json.")] = "text",
+    baseline: Annotated[
+        Path | None,
+        typer.Option("--baseline", help="Прошлый отчёт (--out): откуда взять previous."),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Записать отчёт JSON для --baseline следующего прогона."),
+    ] = None,
+    limit: Annotated[
+        int, typer.Option("--limit", help="Кластеров на срез находки; 0 — все.")
+    ] = SETUP_LIMIT,
+    fail_on_unexplained: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-unexplained",
+            help="Код 1, если в области есть находка без решения или дефект.",
+        ),
+    ] = False,
+    no_cache: Annotated[
+        bool, typer.Option("--no-cache", help="Не использовать кэш разобранных файлов.")
+    ] = False,
+) -> None:
+    """Что в области ещё без решения и что сломано — проверяемое состояние настройки.
+
+    Находки по кодам (`scope.*`, `dotnet.undecided`, `link.*`, `pages.*`,
+    `docs.*`, `owners.*`, `parse.errors`) — места без решения человека:
+    у каждой названо, где лежит решение. Дефекты (`config.problems`,
+    `docs.broken`, `docs.shadowed`, `link.duplicate_endpoints`, `load.errors`,
+    `docs.unavailable`) решением «не беру» не закрываются. Рядом — охват
+    каждого решения настройки (сколько чего оно решило) и что решено не брать.
+
+    Сравнение — только между своими прогонами: `--out` пишет отчёт, `--baseline`
+    берёт из такого файла `previous`. Файл не часть настройки и не коммитится:
+    принятое состояние — коммит настройки.
+
+    Прогоны — в памяти, по текущей настройке; манифесты с диска не читаются.
+    Отказ одного прогона (нет скелетов, неоднозначный `pages.yaml`) — дефект
+    в отчёте, а не код 2. Код 0; с `--fail-on-unexplained` — 1 при находках
+    без решения или дефектах; 2 — неверный аргумент, настройка или база
+    не читаются.
+    """
+    output_format = _format(output_format, ("text", "json"))
+    if limit < 0:
+        raise typer.BadParameter("не бывает отрицательным", param_hint="--limit")
+    if not root.is_dir():
+        raise typer.BadParameter(f"каталог не найден: {root}", param_hint="--root")
+
+    try:
+        previous = load_baseline(baseline) if baseline is not None else None
+    except InputError as exc:
+        # До прогонов: опечатка в пути к базе не должна стоить разбора репозитория.
+        typer.echo(f"Ошибка аргумента --baseline: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    try:
+        context = SetupContext.build(root, config, use_cache=not no_cache)
+        report = build_status(context, baseline=previous, limit=limit)
+    except InputError as exc:
+        typer.echo(f"Ошибка конфигурации: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    if out is not None:
+        try:
+            write_status(report, out)
+        except OSError as exc:
+            typer.echo(f"Отчёт не записан в --out {out}: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+    text = status_json(report) if output_format == "json" else format_setup_status(report)
+    typer.echo(text.rstrip("\n"))
+    if fail_on_unexplained and (report.unexplained or report.defects):
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
