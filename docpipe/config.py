@@ -327,6 +327,38 @@ def _receiver(value: str, key: str) -> str:
     return value
 
 
+def _check_method_name(key: str, who: str, method: str, method_regex: str) -> None:
+    """Ровно одно из `method` и `method_regex`; регулярка компилируется.
+
+    Общая проверка `web.http_wrappers` и `web.not_wrappers`: имя вызова у обеих
+    записей задаётся одинаково, и расхождение формы между ними значило бы, что
+    одна и та же строка совпадает в одном ключе и не совпадает в другом.
+    """
+    if bool(method) == bool(method_regex):
+        raise ValueError(
+            f"{key}: у {who} ровно одно из `method` и `method_regex`"
+            + ("; дано оба" if method else "; не дано ни одного")
+        )
+    if method_regex:
+        try:
+            re.compile(method_regex)
+        except re.error as exc:
+            raise ValueError(
+                f"{key}: `method_regex` {method_regex!r} не компилируется: {exc}"
+            ) from exc
+
+
+def method_matches(method: str, method_regex: str, name: str) -> bool:
+    """Имя совпало с записью: `method` точно, `method_regex` целиком (`re.fullmatch`)."""
+    if method:
+        return name == method
+    return re.fullmatch(method_regex, name) is not None
+
+
+def _method_label(receiver: str, method: str, method_regex: str) -> str:
+    return f"{receiver}.{method or '/' + method_regex + '/'}"
+
+
 class HttpWrapper(_Decision):
     """Обёртка над `HttpClient`: где у её вызова адрес и откуда метод.
 
@@ -353,25 +385,15 @@ class HttpWrapper(_Decision):
 
     @model_validator(mode="after")
     def _one_name(self) -> "HttpWrapper":
-        if bool(self.method) == bool(self.method_regex):
-            raise ValueError(
-                f"web.http_wrappers: у обёртки {self.receiver!r} ровно одно из `method`"
-                " и `method_regex`" + ("; дано оба" if self.method else "; не дано ни одного")
-            )
-        if self.method_regex:
-            try:
-                re.compile(self.method_regex)
-            except re.error as exc:
-                raise ValueError(
-                    f"web.http_wrappers: `method_regex` {self.method_regex!r}"
-                    f" не компилируется: {exc}"
-                ) from exc
+        _check_method_name(
+            "web.http_wrappers", f"обёртки {self.receiver!r}", self.method, self.method_regex
+        )
         return self
 
     @property
     def label(self) -> str:
         """`HTTP.getVersioned` или `HTTP./^(get|post)Versioned$/` — как запись в сообщениях."""
-        return f"{self.receiver}.{self.method or '/' + self.method_regex + '/'}"
+        return _method_label(self.receiver, self.method, self.method_regex)
 
 
 class UrlBuilder(_Decision):
@@ -396,9 +418,97 @@ class UrlBuilder(_Decision):
         return f"{self.receiver}.{self.method}"
 
 
+class NotWrapper(_Decision):
+    """«Это не обёртка»: вызов с аргументом-адресом, который HTTP не делает.
+
+    `window.open('/api/print')`, `url.startsWith('/api/')`, `L.tileLayer(url)`,
+    `form.patchValue({ url })` — вызовы члена с аргументом, похожим на адрес,
+    и потому кандидаты в `web.http_wrappers` (S18). Объявить их обёрткой нельзя,
+    а без записи они навсегда оставались находкой `link.calls_invisible`:
+    на squidex все 9 кандидатов и на abp все 14 — не HTTP (S24).
+
+    Запись — решение «не документируем как вызов», поэтому `reason`
+    обязательна и непуста: «не обёртка» без причины — то безымянное число,
+    от которого ушли в отчёте классификации. Получатель и имя метода — так же,
+    как у `HttpWrapper`: получатель — последний сегмент без регистра, имя —
+    `method` точно или `method_regex` целиком, ровно одно из двух. На разбор
+    запись не влияет: кандидат, совпавший с ней, не идёт в `http-wrappers`
+    и в `link.calls_invisible`, и только.
+    """
+
+    receiver: str
+    method: str = ""
+    method_regex: str = ""
+    reason: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reason_given(cls, value: Any) -> Any:
+        # Подсказка вместо «Field required»: строка на месте записи — самая
+        # естественная ошибка, и её нужно разложить на получатель и метод.
+        if isinstance(value, str):
+            receiver, _, method = value.rpartition(".")
+            raise ValueError(
+                f"web.not_wrappers: у записи {value!r} нет причины — короткой формы у ключа нет;"
+                f' пишите `- receiver: "{receiver or value}"`, `method: "{method}"`'
+                ' и `reason: "…"`'
+            )
+        if isinstance(value, dict) and "reason" not in value:
+            shown = _method_label(
+                str(value.get("receiver", "")),
+                str(value.get("method", "")),
+                str(value.get("method_regex", "")),
+            )
+            raise ValueError(
+                f"web.not_wrappers: у записи {shown!r} нет `reason` — решение «не документируем"
+                " как вызов» без причины не принимается"
+            )
+        return value
+
+    @field_validator("receiver")
+    @classmethod
+    def _check_receiver(cls, value: str) -> str:
+        return _receiver(value, "web.not_wrappers")
+
+    @model_validator(mode="after")
+    def _check(self) -> "NotWrapper":
+        _check_method_name(
+            "web.not_wrappers", f"записи {self.receiver!r}", self.method, self.method_regex
+        )
+        if not self.reason.strip():
+            raise ValueError(
+                f"web.not_wrappers: у записи {self.label!r} `reason` пустой — причина обязательна"
+            )
+        return self
+
+    @property
+    def label(self) -> str:
+        """`window.open` или `url./^(starts|ends)With$/` — как запись в сообщениях и охвате."""
+        return _method_label(self.receiver, self.method, self.method_regex)
+
+
 def receiver_key(receiver: str) -> str:
     """Получатель для сравнения: последний сегмент в нижнем регистре (`this.rest` → `rest`)."""
     return receiver.rsplit(".", 1)[-1].lower()
+
+
+def _same_call(wrapper: HttpWrapper, declined: NotWrapper) -> bool:
+    """Обёртка и «не обёртка» называют один вызов — насколько это видно без кода.
+
+    Точное имя против точного — равенство, точное против регулярки — `fullmatch`
+    регулярки на имени. Две регулярки сравнимы только текстом: пересекаются ли
+    `get.*` и `.*Url`, без вызова не сказать, — такое пересечение ловит прогон
+    (`NotWrapperConflict`), как пересечение регулярок двух обёрток.
+    """
+    if receiver_key(wrapper.receiver) != receiver_key(declined.receiver):
+        return False
+    if wrapper.method and declined.method:
+        return wrapper.method == declined.method
+    if wrapper.method:
+        return method_matches("", declined.method_regex, wrapper.method)
+    if declined.method:
+        return method_matches("", wrapper.method_regex, declined.method)
+    return wrapper.method_regex == declined.method_regex
 
 
 def _refuse_repeats(key: str, pairs: list[tuple[str, str]]) -> None:
@@ -458,6 +568,12 @@ class WebConfig(BaseModel):
     http_wrappers: list[HttpWrapper] = Field(default_factory=list)
     url_builders: list[UrlBuilder] = Field(default_factory=list)
 
+    # «Это не обёртка» (S24b): кандидат в `http_wrappers`, который HTTP не делает
+    # (`window.open`, `url.startsWith`). Причина обязательна — это решение
+    # «не документируем как вызов». На разбор не влияет: правка не требует
+    # повторного `web scan` ради связей, только ради отчёта кандидатов.
+    not_wrappers: list[NotWrapper] = Field(default_factory=list)
+
     @field_validator("http_wrappers")
     @classmethod
     def _check_http_wrappers(cls, value: list[HttpWrapper]) -> list[HttpWrapper]:
@@ -480,6 +596,45 @@ class WebConfig(BaseModel):
             "web.url_builders", [(receiver_key(item.receiver), item.method) for item in value]
         )
         return value
+
+    @field_validator("not_wrappers")
+    @classmethod
+    def _check_not_wrappers(cls, value: list[NotWrapper]) -> list[NotWrapper]:
+        """Одно имя — одна запись: сработала бы только первая, и правка второй не действовала бы.
+
+        Регулярка сравнивается текстом; пересечение двух разных регулярок
+        «не обёртки» отказом не считается — исход у них один (вызов не HTTP),
+        и решает первая совпавшая в порядке файла, как у секции `link`.
+        """
+        _refuse_repeats(
+            "web.not_wrappers",
+            [
+                (receiver_key(item.receiver), item.method or f"/{item.method_regex}/")
+                for item in value
+            ],
+        )
+        return value
+
+    @model_validator(mode="after")
+    def _check_wrapper_or_not(self) -> "WebConfig":
+        """Обёртка и «не обёртка» на один вызов — отказ: два решения человека противоречат.
+
+        Правило приоритета спрятало бы ошибку записи: какое из двух задумано,
+        инструмент знать не может (как `enrolled` против `not_enrolled`, S22).
+        """
+        clashes = sorted(
+            f"{wrapper.label} (web.http_wrappers) и {declined.label} (web.not_wrappers)"
+            for wrapper in self.http_wrappers
+            for declined in self.not_wrappers
+            if _same_call(wrapper, declined)
+        )
+        if clashes:
+            raise ValueError(
+                "вызов назван и обёрткой, и «не обёрткой»: "
+                + "; ".join(clashes)
+                + ". Вызов либо обёртка, либо нет — оставьте одну запись"
+            )
+        return self
 
     @field_validator("roots")
     @classmethod

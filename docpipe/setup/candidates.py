@@ -21,7 +21,7 @@ from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from docpipe.config import DocpipeConfig, HttpWrapper, UrlBuilder
+from docpipe.config import DocpipeConfig, HttpWrapper, NotWrapper, UrlBuilder
 from docpipe.dotnet.di import is_standard_method
 from docpipe.dotnet.facts import bare_type
 from docpipe.emit import ScanResult, dispatch_name, dispatch_names, split_type_arguments
@@ -48,6 +48,7 @@ from docpipe.web.calls import (
     address_positions,
     builder_for,
     discriminator_of,
+    not_wrapper_for,
     query_parameters,
     registry_rules,
     wrapper_matches,
@@ -1092,6 +1093,8 @@ WRAPPER_LIMITS: Final = (
     "передан сам `HttpClient` (`this.http`)",
     "группа, результат которой идёт адресом в другой вызов, — построитель адреса: "
     "она в `url-builders`, а здесь названа в `builders`",
+    "группа, совпавшая с записью `web.not_wrappers` («не обёртка», с причиной), "
+    "не показывается: она в `declared_not_wrappers`",
 )
 
 
@@ -1168,13 +1171,16 @@ class HttpWrapperCandidates(_Base):
     без пары «видно / не видно» число кандидатов не с чем сравнить.
     `builders` — группы, отнесённые к построителям адреса (их результат —
     адрес другого вызова), чтобы их отсутствие в списке не читалось как
-    «не найдено». `limits` — чего отбор не видит.
+    «не найдено». `declared_not_wrappers` — групп, снятых записями
+    `web.not_wrappers` (S24b, версия 1.1): по той же причине — снятая группа
+    иначе выглядела бы пропавшей. `limits` — чего отбор не видит.
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.1"] = "1.1"
     http_calls: int
     wrapper_calls: int
     builders: list[str]
+    declared_not_wrappers: int
     total: int
     offset: int
     limits: list[str]
@@ -1201,12 +1207,38 @@ def _wrapper_groups(
     return dict(groups)
 
 
+def declined_calls(
+    candidate_calls: list[CandidateCall],
+    builder_uses: list[BuilderUse],
+    not_wrappers: list[NotWrapper],
+) -> list[tuple[int, CandidateCall]]:
+    """Вызовы-кандидаты, снятые записями `web.not_wrappers`: номер записи и вызов.
+
+    Ровно те вызовы, которые без записи стояли бы в `http-wrappers` и в
+    `link.calls_invisible`: та же группировка, те же отсевы (построители,
+    вызовы без адреса). Одна функция на три потребителя — отчёт кандидатов,
+    охват `setup status` и `decisions` у `setup explain`: «что запись сняла»
+    обязано отвечать одинаково у всех трёх. Запись — первая совпавшая
+    в порядке файла (`not_wrapper_for`). Порядок — `(file, line)`.
+    """
+    if not not_wrappers:
+        return []
+    groups = _wrapper_groups(candidate_calls, _builder_groups(builder_uses))
+    found: list[tuple[int, CandidateCall]] = []
+    for (receiver, method), items in groups.items():
+        decided = not_wrapper_for(receiver, method, not_wrappers)
+        if decided is not None:
+            found += [(decided[0], call) for call, _ in items]
+    return sorted(found, key=lambda pair: (pair[1].file, pair[1].line, pair[0]))
+
+
 def http_wrapper_candidates(
     candidate_calls: list[CandidateCall],
     builder_uses: list[BuilderUse],
     calls: CallScan,
     *,
     wrappers: list[HttpWrapper] | None = None,
+    not_wrappers: list[NotWrapper] | None = None,
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
 ) -> HttpWrapperCandidates:
@@ -1216,13 +1248,19 @@ def http_wrapper_candidates(
     построила адрес другого вызова (`builder_uses`), — построитель, а не
     обёртка: `this.apiUrl.buildUrl('/api/apps')` сам похож на вызов-обёртку
     с аргументом-адресом, и без отсева встал бы первым там, где вызовов через
-    него больше всего. Порядок — `(-calls, receiver, method)`.
+    него больше всего. Группа, совпавшая с `web.not_wrappers`, — решение
+    человека «не HTTP»: в список не идёт, а считается в `declared_not_wrappers`.
+    Порядок — `(-calls, receiver, method)`.
     """
     builders = _builder_groups(builder_uses)
     groups = _wrapper_groups(candidate_calls, builders)
 
     found: list[HttpWrapperCandidate] = []
+    declined = 0
     for (receiver, method), items in groups.items():
+        if not_wrapper_for(receiver, method, not_wrappers or ()) is not None:
+            declined += 1
+            continue
         located = sorted((call.file, call.line) for call, _ in items)
         found.append(
             HttpWrapperCandidate(
@@ -1247,6 +1285,7 @@ def http_wrapper_candidates(
         http_calls=len(calls.calls) + len(calls.unresolved) + len(calls.inside_wrappers) - through,
         wrapper_calls=sum(item.calls for item in found),
         builders=sorted(_qualified(*group) for group in builders & seen),
+        declared_not_wrappers=declined,
         total=len(found),
         offset=offset,
         limits=list(WRAPPER_LIMITS),
@@ -1272,6 +1311,10 @@ def format_http_wrappers(report: HttpWrapperCandidates) -> str:
             "Построители адреса (см. url-builders), здесь не показаны: "
             + ", ".join(report.builders)
             + "."
+        )
+    if report.declared_not_wrappers:
+        lines.append(
+            f"Снято записями web.not_wrappers («не обёртка»): {report.declared_not_wrappers}."
         )
     for item in report.items:
         mark = "  [уже в web.http_wrappers]" if item.configured else ""
@@ -1453,6 +1496,7 @@ def _http_wrappers(inputs: SetupContext, limit: int, offset: int) -> CandidateRe
         web.builder_uses,
         web.calls,
         wrappers=inputs.settings.web.http_wrappers,
+        not_wrappers=inputs.settings.web.not_wrappers,
         limit=limit,
         offset=offset,
     )

@@ -374,6 +374,10 @@ web:
 3. **Построитель — не обёртка.** Группа, результат которой хоть раз стал
    адресом другого вызова, в список не идёт: `this.apiUrl.buildUrl('/api/apps')`
    сам похож на вызов с аргументом-адресом. Она названа в `builders`.
+4. **«Не обёртка» — решение человека** (S24b). Группа, совпавшая с записью
+   `web.not_wrappers` (получатель и имя — тем же сравнением, что у
+   `web.http_wrappers`), в список не идёт и в находку `link.calls_invisible`
+   тоже; сколько таких групп — `declared_not_wrappers`.
 
 Группа — получатель и метод как написаны. Порядок — `(-calls, receiver, method)`.
 
@@ -390,7 +394,8 @@ web:
 восстановленных, нет и в телах объявленных обёрток; вызовы через обёртки сюда
 не входят, и число от объявления не меняется) и `wrapper_calls` (вызовов во всех
 группах списка).
-`builders` — группы, отнесённые к построителям; `limits` — чего отбор не видит.
+`builders` — группы, отнесённые к построителям; `declared_not_wrappers` — групп,
+снятых записями `web.not_wrappers` (отчёт 1.1); `limits` — чего отбор не видит.
 
 Как читать:
 
@@ -400,7 +405,10 @@ web:
   `window.open('https://…')`, `httpMock.expectOne(…)` из тестов.
   Кандидат — находка; решает человек, открыв объявление метода. Тело обёртки
   обычно видно в `unresolved_calls` с причиной «значение переменной — параметр
-  функции»: `http.get(url)` внутри `getVersioned(http, url)`.
+  функции»: `http.get(url)` внутри `getVersioned(http, url)`. Решение «не HTTP»
+  записывается в `web.not_wrappers` с причиной (`window.open` — «открывает
+  вкладку браузера») — [`web.md`](web.md), «Это не обёртка»: иначе кандидат
+  остаётся находкой `link.calls_invisible` навсегда.
 - **Позиция обязательна.** У `HTTP.getVersioned(this.http, url)` адрес — `1`:
   первым идёт сам `HttpClient`, и объявление «первый аргумент — адрес» дало бы
   маршрут `this.http`. У `requestVersioned(this.http, 'PUT', url)` — `2`,
@@ -511,6 +519,7 @@ uv run docpipe setup explain "**/Migrations/**" --root . --limit 0
 | `web.registry_calls` | `docpipe.yaml` | маршрут | вызовов |
 | `web.http_wrappers` | `docpipe.yaml` | `получатель.method` или `получатель./method_regex/` | вызовов через обёртку и её тел (в `effect` — раздельно) |
 | `web.url_builders` | `docpipe.yaml` | `получатель.method` | адресов, построенных им |
+| `web.not_wrappers` | `docpipe.yaml` | `получатель.method` или `получатель./method_regex/` | вызовов-кандидатов, которые запись сняла («не вызов HTTP») |
 | `link.external_targets` | `docpipe.yaml` | хост или маршрут записи, как написан | вызовов без эндпоинта |
 | `link.external_callers` | `docpipe.yaml` | маршрут записи (с методом, если задан) | эндпоинтов без вызывающего |
 | `link.unresolvable` | `docpipe.yaml` | глоб файла | невосстановленных вызовов |
@@ -752,7 +761,7 @@ uv run docpipe setup status --root . --config docpipe.yaml --fail-on-unexplained
 | `scope.front_undecided` | решение | фронты разведки (`recon.collect_projects`), чей файл объявления вне `web.roots` и не под `exclude` | `front` | `web.roots` / `exclude` с причиной |
 | `dotnet.undecided`, `web.undecided` | решение | `decide` по всем символам шага — тот же, что у `--stats` и `symbols` | `module`, `last_word` | `rules.yaml`: правило или отсев с причиной |
 | `link.calls_unresolved` | решение | отчёт связи: невосстановленные без `link.unresolvable` | `reason` (кластеры `setup link`) | `web.http_wrappers`, `web.url_builders`, `link.unresolvable` |
-| `link.calls_invisible` | решение | кандидаты `http-wrappers` без записи (`configured: false`); число — вызовов | `wrapper` | `web.http_wrappers` |
+| `link.calls_invisible` | решение | кандидаты `http-wrappers` без записи (`configured: false`, не под `web.not_wrappers`); число — вызовов | `wrapper` | `web.http_wrappers` или `web.not_wrappers` с причиной |
 | `link.calls_without_endpoint` | решение | отчёт связи | `module` (кластеры `setup link`) | `web.url_rewrite`, `link.external_targets` |
 | `link.endpoints_without_caller` | решение | отчёт связи | `controller` (кластеры `setup link`) | `link.external_callers` |
 | `link.almost` | решение | отчёт связи, `match: almost` | `controller` | `web.url_rewrite` |
@@ -817,6 +826,7 @@ uv run docpipe setup status --root . --config docpipe.yaml --fail-on-unexplained
 | `web.url_rewrite` | восстановленных вызовов модуля |
 | `web.registry_calls` | вызовов к маршруту |
 | `web.http_wrappers`, `web.url_builders` | вызовов через обёртку и её тел; адресов от построителя |
+| `web.not_wrappers` | вызовов-кандидатов, которые запись сняла (тем же `declined_calls`, что у отчёта кандидатов и `setup explain`) |
 | `link.external_targets`, `link.external_callers`, `link.unresolvable` | концов шва, которые запись решила |
 | `add`, `remove`, `features` (`pages.yaml`) | страниц или узлов |
 | `rules` (`ownership.yaml`) | узлов с документом, которые правило выиграло |
@@ -847,17 +857,30 @@ count_excluded=True)` заходит в отсечённые каталоги р
 
 | Прогон | Время | Без решения | Дефектов | Решений / без охвата |
 |---|---|---|---|---|
-| squidex | 8,7 с | 3250: `dotnet.undecided` 1494, `owners.not_configured` 921, `web.undecided` 589, `link.endpoints_without_caller` 162, `link.calls_unresolved` 70 (гипермедиа `link.href`), `link.calls_invisible` 9, `link.calls_without_endpoint` 4, `link.module_without_rewrite` 1 | 21: `docs.unavailable` — 21 пара узлов фронта на один `doc_path` | 40 / 7 |
+| squidex | 8,7 с | 3250: `dotnet.undecided` 1494, `owners.not_configured` 921, `web.undecided` 589, `link.endpoints_without_caller` 162, `link.calls_unresolved` 70 (гипермедиа `link.href`), `link.calls_invisible` 9, `link.calls_without_endpoint` 4, `link.module_without_rewrite` 1 | 21: `docs.unavailable` — 21 путь фронта, на которые претендуют 104 узла (до S24b) | 40 / 7 |
 | abp | 5,1 с | 2081: `owners.not_configured` 830, `dotnet.undecided` 701, `web.undecided` 443, `link.calls_without_endpoint` 58, `link.endpoints_without_caller` 18, `link.calls_invisible` 14, `link.module_without_rewrite` 9, `scope.front_undecided` 6, `link.calls_unresolved` 2 | 13: `docs.unavailable` — тот же дефект фронта | 39 / 8 |
 
-> **Ловушка. У `link.calls_invisible` нет записи «это не обёртка».** Кандидат
-> `http-wrappers` — вызов члена с аргументом, похожим на адрес, и на squidex
-> все девять — не HTTP: `window.open`, `url.startsWith`, `L.tileLayer`,
-> `resourceLoader.loadScript`; на abp — `form.patchValue`, `location.replace`.
-> Закрыть такую находку решением нельзя: `web.http_wrappers` объявил бы
-> обёрткой то, что HTTP не делает, а `link.unresolvable` — про
-> невосстановленные вызовы, не про кандидатов. Пока у ключа нет пары
-> «не обёртка, причина», находка остаётся до правки отбора кандидатов.
+После S24b (тот же замер): у шага `web` коллизии `doc_path` разводит
+`tree.assign_doc_paths`, и дефектов **0** на обоих (21 → 0, 13 → 0; находки
+без решения не изменились — 3250 и 2081). С записями `web.not_wrappers`
+на всех кандидатов, которых S24 назвала «не HTTP» (squidex — 7 записей
+на 9 вызовов, abp — 7 на 14), `link.calls_invisible` закрыта: 3250 → 3241,
+2081 → 2067.
+
+> **Ловушка (закрыта S24b). У `link.calls_invisible` не было записи «это не
+> обёртка».** Кандидат `http-wrappers` — вызов члена с аргументом, похожим
+> на адрес, и на squidex все девять — не HTTP: `window.open`, `url.startsWith`,
+> `L.tileLayer`, `resourceLoader.loadScript`; на abp — `form.patchValue`,
+> `location.replace`. `web.http_wrappers` объявил бы обёрткой то, что HTTP
+> не делает, а `link.unresolvable` — про невосстановленные вызовы, не про
+> кандидатов. Решение — `web.not_wrappers` с обязательной причиной.
+
+> **Ловушка. Разведённый путь — не названный.** После S24b на squidex 38
+> интерфейсов `State` и 27 `Snapshot` (по одному в каждом `*.state.ts`)
+> получают файлы `state-1a2b3c4d.md` вида `dto`: план собирается, но имя файла
+> читателю ничего не говорит. Это вопрос классификации — отсев `State`
+> и `Snapshot` с причиной в секции `web` правил, — а не разведения: находки
+> о нём `setup status` не даёт, символы решены.
 
 > **Ловушка. Пустой маршрут — не layout.** Заметка `NOTE_EMPTY_ROUTE` стоит
 > и у настоящей страницы: на squidex на `/` — `HomePageComponent`, экран

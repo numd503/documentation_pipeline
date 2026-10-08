@@ -720,5 +720,6 @@ def test_command_prints_json_and_two_runs_give_the_same_bytes(kind: str, tmp_pat
     assert first.exit_code == 0, first.output
     assert first.output == second.output
     payload = json.loads(first.output)
-    assert payload["schema_version"] == "1.0"
+    # `http-wrappers` — 1.1: счётчик `declared_not_wrappers` (S24b, правило 7 плана).
+    assert payload["schema_version"] == ("1.1" if kind == "http-wrappers" else "1.0")
     assert payload["total"] == (3 if kind == "http-wrappers" else 1)

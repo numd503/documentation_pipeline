@@ -52,7 +52,7 @@ from docpipe.hashing import stable_json_dumps
 from docpipe.materialize.ownership import owner_of
 from docpipe.model import DocNode, Lang, Module, RouteEntry, Symbol
 from docpipe.route import normalize_route, route_key
-from docpipe.setup.candidates import DEFAULT_LIMIT
+from docpipe.setup.candidates import DEFAULT_LIMIT, declined_calls
 from docpipe.setup.context import InputError, SetupContext
 from docpipe.stats import STATE_TITLES
 from docpipe.step2 import Step2Error
@@ -782,9 +782,33 @@ def _wrapper_decisions(ctx: SetupContext, match: Callable[[str], bool], draft: _
     в невосстановленных; без счётчика сумма под целью молча меньше.
     Строка на запись одна (`_Decisions` сводит по записи), поэтому вызовы
     через обёртку и её тела посчитаны в одной строке раздельно.
+
+    «Не обёртка» (`web.not_wrappers`) — вызовы-кандидаты под целью, которые
+    запись сняла, тем же `declined_calls`, что у отчёта кандидатов и охвата.
     """
     web, settings, config = ctx.web, ctx.settings, ctx.config_label
     wrappers, builders = settings.web.http_wrappers, settings.web.url_builders
+    declined = settings.web.not_wrappers
+    if declined:
+        taken: Counter[int] = Counter(
+            index
+            for index, call in declined_calls(web.candidate_calls, web.builder_uses, declined)
+            if match(call.file)
+        )
+        for index, refusal in enumerate(declined):
+            if taken[index]:
+                draft.decisions.add(
+                    DecisionRef(
+                        file=config,
+                        key="web.not_wrappers",
+                        value=refusal.label,
+                        reason=refusal.reason,
+                        effect=(
+                            f"не вызов HTTP: из кандидатов в обёртки снято вызовов {taken[index]}"
+                        ),
+                        count=taken[index],
+                    )
+                )
     if not wrappers and not builders:
         return
 

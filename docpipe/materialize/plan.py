@@ -679,7 +679,7 @@ def layout_drift(manifest: Manifest, modules_root: str, key: str = "modules_dir"
 def _layout_dir(node: DocNode, layout: DocLayout, modules_root: str) -> PurePosixPath:
     """Каталог документа узла при данной раскладке.
 
-    Каталог, а не путь: суффикс коллизии (`_assign_doc_paths` шага 1) меняет
+    Каталог, а не путь: суффикс коллизии (`tree.assign_doc_paths`) меняет
     только имя файла, а формулы его не знают. Имя файла от раскладки не зависит,
     поэтому всё, что раскладка решает, видно по каталогу.
     """

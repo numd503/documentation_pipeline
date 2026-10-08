@@ -29,7 +29,14 @@ from typing import Final, Literal, NamedTuple
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
-from docpipe.config import ArgRef, HttpWrapper, UrlBuilder, receiver_key
+from docpipe.config import (
+    ArgRef,
+    HttpWrapper,
+    NotWrapper,
+    UrlBuilder,
+    method_matches,
+    receiver_key,
+)
 from docpipe.model import Confidence, WebCall
 from docpipe.route import RewriteRule, normalize_route, route_key
 
@@ -1295,26 +1302,70 @@ class WrapperConflict(ValueError):
     `ValueError` — ошибка настройки, код 2, как у опечатки в `docpipe.yaml`.
     """
 
-    def __init__(self, call: "CandidateCall", rules: Sequence[HttpWrapper]) -> None:
+    def __init__(
+        self, call: "CandidateCall", rules: Sequence[HttpWrapper], message: str = ""
+    ) -> None:
         self.call = call
         labels = ", ".join(sorted(rule.label for rule in rules))
         super().__init__(
-            f"web.http_wrappers: вызов {call.receiver}.{call.method} ({call.file}:{call.line})"
+            message
+            or f"web.http_wrappers: вызов {call.receiver}.{call.method} ({call.file}:{call.line})"
             f" совпал с несколькими записями: {labels}. Запись на вызов одна — сузьте"
             " `method_regex` или оставьте одну"
         )
 
 
-def name_matches(rule: HttpWrapper, name: str) -> bool:
+class NotWrapperConflict(WrapperConflict):
+    """Вызов совпал и с обёрткой, и с «не обёрткой» (`web.not_wrappers`) — отказ прогона.
+
+    Загрузка отвергает такую пару, когда её видно по записям (точное имя или
+    одинаковая регулярка); пересечение двух разных регулярок видно только
+    на вызове. Подкласс `WrapperConflict`: три места, ловящие отказ прогона
+    (`web scan`, `symbols --lang ts`, `SetupContext.web`), ловят его той же
+    веткой — «ошибка конфигурации», а не «ручной состав страниц».
+    """
+
+    def __init__(self, call: "CandidateCall", wrapper: HttpWrapper, declined: NotWrapper) -> None:
+        super().__init__(
+            call,
+            [wrapper],
+            f"вызов {call.receiver}.{call.method} ({call.file}:{call.line}) совпал и с обёрткой"
+            f" {wrapper.label} (web.http_wrappers), и с «не обёрткой» {declined.label}"
+            " (web.not_wrappers). Вызов либо обёртка, либо нет — сузьте `method_regex`"
+            " или оставьте одну запись",
+        )
+
+
+def name_matches(rule: HttpWrapper | NotWrapper, name: str) -> bool:
     """Имя метода (или функции-тела) совпало с записью: `method` точно, `method_regex` целиком."""
-    if rule.method:
-        return name == rule.method
-    return re.fullmatch(rule.method_regex, name) is not None
+    return method_matches(rule.method, rule.method_regex, name)
 
 
-def wrapper_matches(rule: HttpWrapper, receiver: str, method: str) -> bool:
-    """Вызов `receiver.method` — эта обёртка. Получатель — последний сегмент без регистра."""
+def wrapper_matches(rule: HttpWrapper | NotWrapper, receiver: str, method: str) -> bool:
+    """Вызов `receiver.method` — эта запись. Получатель — последний сегмент без регистра.
+
+    Одно сравнение у обёртки и у «не обёртки»: иначе запись `window.open`
+    совпадала бы в одном ключе и не совпадала в другом.
+    """
     return receiver_key(receiver) == receiver_key(rule.receiver) and name_matches(rule, method)
+
+
+def not_wrapper_for(
+    receiver: str, method: str, rules: Sequence[NotWrapper]
+) -> tuple[int, NotWrapper] | None:
+    """Первая запись `web.not_wrappers`, накрывшая вызов, и её номер (с нуля).
+
+    Первая в порядке файла, как у секции `link`: исход у всех «не обёрток»
+    один, и спорят они только о причине; точный повтор отвергла загрузка.
+    """
+    return next(
+        (
+            (index, rule)
+            for index, rule in enumerate(rules)
+            if wrapper_matches(rule, receiver, method)
+        ),
+        None,
+    )
 
 
 def wrapper_for(call: CandidateCall, wrappers: Sequence[HttpWrapper]) -> HttpWrapper | None:
@@ -1477,6 +1528,7 @@ def build_calls(
     candidates: Sequence[CandidateCall] = (),
     wrappers: Sequence[HttpWrapper] = (),
     builders: Sequence[UrlBuilder] = (),
+    not_wrappers: Sequence[NotWrapper] = (),
 ) -> CallScan:
     """Превратить факты в ключи связи с учётом конфигурации.
 
@@ -1488,6 +1540,9 @@ def build_calls(
     вызовом (`through_wrapper`), адрес от объявленного построителя получает
     путь (`with_builder`), тело обёртки уходит в `inside_wrappers`. Без
     записей результат байт в байт прежний.
+
+    `not_wrappers` здесь только сверяются: вызов, совпавший и с обёрткой,
+    и с «не обёрткой», — `NotWrapperConflict` (S24b). На ключи они не влияют.
     """
     registry_by_route = registry_rules(registry)
 
@@ -1495,8 +1550,12 @@ def build_calls(
     converted: list[RawCall] = []
     for candidate in candidates:
         wrapper = wrapper_for(candidate, wrappers)
-        if wrapper is not None:
-            converted.append(through_wrapper(candidate, wrapper, builders))
+        if wrapper is None:
+            continue
+        declined = not_wrapper_for(candidate.receiver, candidate.method, not_wrappers)
+        if declined is not None:
+            raise NotWrapperConflict(candidate, wrapper, declined[1])
+        converted.append(through_wrapper(candidate, wrapper, builders))
     if converted:
         # Порядок файла и строки, как у прямых вызовов: тот же ключ, которым
         # упорядочены факты одного файла, — существующие вызовы не переставятся.

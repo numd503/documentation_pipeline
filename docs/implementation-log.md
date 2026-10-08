@@ -10564,3 +10564,39 @@ squidex без эндпоинта: **опечатка в самом squidex** (�
 - JSON на squidex/abp при `--limit 20` — 42–54 КБ: серверу S27 нужен свой бюджет ответа.
 
 **Проверка:** команда S24 — 63 passed.
+
+---
+
+## S24b — коллизии `doc_path` у шага `web`; `web.not_wrappers` (08.10.2026)
+
+**Задача добавлена в план 08.10 по итогам S24**: на squidex и abp две находки `setup status`
+не закрывались никаким решением, и Р-6 на реальном фронте было недостижимо.
+
+**Создано:** `tests/test_web_doc_paths.py` (8), `tests/test_not_wrappers.py` (30). **Изменено:**
+`docpipe/tree.py` (`assign_doc_paths` публичная), `docpipe/web/tree.py`, `docpipe/config.py`
+(`NotWrapper`, `WebConfig.not_wrappers`), `docpipe/web/calls.py` (`not_wrapper_for`,
+`NotWrapperConflict`), `docpipe/setup/{candidates,status,explain}.py`,
+`tests/test_unresolved_calls.py` (`http-wrappers` 1.1), `docs/setup-map.md`,
+`deploy/generic-docspipe/docpipe.yaml`, `docs/web.md`, `docs/configuration.md`, `docs/setup.md`,
+план (раздел S24b).
+
+Шаг `web` разводит коллизии `doc_path` той же `tree.assign_doc_paths`, что шаг 1 (тест держит,
+что это один объект), по всем узлам вместе с разделами; узел без спора сохраняет путь байт
+в байт — фикстуры и golden не изменились. «Не обёртка» — запись с обязательной `reason`:
+кандидат не идёт в `http-wrappers` (`declared_not_wrappers`) и в `link.calls_invisible`,
+входит в охват решений и в `setup explain`; на манифест не влияет. Обёртка и «не обёртка»
+на один вызов — отказ загрузки, две разные регулярки на один вызов — отказ прогона (код 2).
+
+| | squidex | abp |
+|---|---|---|
+| дефектов (`docs.unavailable`) | 21 → 0 | 13 → 0 |
+| `link.calls_invisible` с `not_wrappers` | 9 → 0 (7 записей) | 14 → 0 (7 записей) |
+| время / память `setup status` | 10,1 с / 224 МБ | 6,5 с / 144 МБ |
+
+**Находки.** «21 пара» на squidex — на деле 21 путь на 104 узла (38 `State`, 27 `Snapshot`,
+вид `dto`): план собирается, но разведённые `state-1a2b3c4d.md` читателю ничего не говорят —
+это вопрос классификации, и `setup status` о нём молчит. Пересечение двух регулярок загрузка
+не определит — его ловит прогон; `NotWrapperConflict` — подкласс `WrapperConflict`, чтобы три
+места, ловящие отказ прогона, назвали его ошибкой конфигурации.
+
+**Проверка:** команда S24b — 74 passed; клоны в `~/docspipe-examples` не тронуты (`--no-cache`).

@@ -43,7 +43,7 @@ from docpipe.model import (
     WebCall,
 )
 from docpipe.route import RewriteRule
-from docpipe.tree import doc_path_for, signature_hash
+from docpipe.tree import assign_doc_paths, doc_path_for, signature_hash
 from docpipe.web.absorb import FEATURE_KIND, PAGE_KIND, absorb
 from docpipe.web.calls import (
     BuilderUse,
@@ -274,6 +274,7 @@ def _calls_by_file(
             candidates=candidates_by_module.get(module.key, []) if wrappers else (),
             wrappers=wrappers,
             builders=builders,
+            not_wrappers=config.web.not_wrappers,
         )
 
         def with_member(call: WebCall) -> WebCall:
@@ -1149,7 +1150,15 @@ def run(
     # появляются только после классификации.
     features = (overrides or Overrides()).features
     feature_nodes, feature_stale = _feature_nodes(nodes, features, config)
-    nodes = absorb(sorted([*nodes, *feature_nodes], key=lambda node: node.id), features)
+    # Коллизии путей разводит та же функция, что у шага 1, и по всем узлам
+    # разом — с разделами: раздел и класс вида `feature` одного модуля спорят
+    # за тот же файл. Одноимённые классы в разных каталогах модуля у фронта —
+    # обычное дело (`users.service.ts` в `features/administration/` и в
+    # `shared/`), и без разведения план шага 2 фронта не собирался вовсе.
+    # Узел без спора путь не меняет.
+    nodes = absorb(
+        sorted(assign_doc_paths([*nodes, *feature_nodes]), key=lambda node: node.id), features
+    )
     override_report = override_report.model_copy(
         update={"stale": [*override_report.stale, *feature_stale]}
     )

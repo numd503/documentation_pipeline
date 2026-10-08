@@ -22,7 +22,7 @@
 | **входы**: текущий каталог, затем каталог `docpipe.yaml` | `rules`, `web.rules`, `web.pages`, `templates`, `ownership`, `registries`, `arch`, `arch_adapters[].options.spec` (адаптер `registries`) |
 | **цели записи**: только текущий каталог | `out`, `worklist`, `web.out`, `web.link_out`, `graph.out`, `graph.cache_dir` |
 | **бинарь движка**: только текущий каталог, `~` разворачивается | `graph.engine_path` (второй ступени нет: мост запускает и сверяет чек-сумму ровно по этому пути) |
-| не пути: глобы и значения | `enrolled`, `not_enrolled`, `exclude`, `domains`, `doc_layout`, `docs_scan_exclude`, `di_methods`, `dispatch_interfaces`, `web.url_rewrite`, `web.registry_calls`, `web.http_wrappers`, `web.url_builders`, `link.*` |
+| не пути: глобы и значения | `enrolled`, `not_enrolled`, `exclude`, `domains`, `doc_layout`, `docs_scan_exclude`, `di_methods`, `dispatch_interfaces`, `web.url_rewrite`, `web.registry_calls`, `web.http_wrappers`, `web.url_builders`, `web.not_wrappers`, `link.*` |
 
 Репо-относительные ключи проверяются валидатором: абсолютный путь, `..`
 и `\` отвергаются при загрузке. Причина у `docs_root`, `modules_dir`
@@ -85,7 +85,7 @@ enrolled:
 умолчание (оно названо в сообщении). Правило действует для всех ключей-списков
 верхнего уровня (`roots`, `enrolled`, `not_enrolled`, `exclude`, `docs_scan_exclude`,
 `dispatch_interfaces`, `di_methods`, `arch_adapters`), секции `web`
-(`roots`, `url_rewrite`, `registry_calls`, `http_wrappers`, `url_builders`)
+(`roots`, `url_rewrite`, `registry_calls`, `http_wrappers`, `url_builders`, `not_wrappers`)
 и секции `link` (`external_targets`, `external_callers`, `unresolvable`);
 перечень строится по модели,
 так что новый ключ-список попадает под него сам. Словарь без записей
@@ -95,7 +95,9 @@ enrolled:
 **Повтор — отказ.** Два `arch_adapters` с одним `id` неразличимы в счётчиках
 и ошибках сборки; два `web.url_rewrite` одного модуля раньше молча давали
 первую запись, а правка во второй не применялась никогда. Так же — две записи
-`web.http_wrappers` (с `method`) или `web.url_builders` на один вызов.
+`web.http_wrappers` (с `method`) или `web.url_builders` на один вызов, две
+записи `web.not_wrappers` на одно имя, а обёртка и «не обёртка» на один
+вызов — противоречие двух решений (S24b).
 
 Настройка, которая загружалась до этого, может теперь получить отказ —
 это и есть цель: она содержала опечатку или пустой список, читавшийся
@@ -137,8 +139,9 @@ web:
 | `web.roots` | `"путь"` | `path`, `reason` |
 | `web.url_rewrite[]`, `web.registry_calls[]`, `web.http_wrappers[]`, `web.url_builders[]` | — | поле `reason` рядом с прежними |
 | `link.external_targets[]`, `link.external_callers[]`, `link.unresolvable[]` | **нет** | `reason` — обязательна (S20) |
+| `web.not_wrappers[]` | **нет** | `receiver`, `method` или `method_regex`, `reason` — обязательна (S24b) |
 
-`reason` у всех, кроме `not_enrolled` и записей секции `link`, необязателен. Форма выбирается по виду
+`reason` у всех, кроме `not_enrolled`, `web.not_wrappers` и записей секции `link`, необязателен. Форма выбирается по виду
 записи: словарь — вторая, иначе — короткая; опечатка в ключе записи
 (`reson:`) даёт одну ошибку про этот ключ. Путь `web.roots` проверяется
 одинаково в обеих формах: абсолютный, `..` и `\` — отказ.
@@ -307,6 +310,7 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 | `web.registry_calls` | | ✓ | | | | | | | | |
 | `web.http_wrappers` | | ✓ | | | | | | | | |
 | `web.url_builders` | | ✓ | | | | | | | | |
+| `web.not_wrappers` | | ✓ | | | | | | | | |
 | `link` | | | ✓ | | | | | | | |
 
 ✓ — читается и влияет на результат; ○ — читается мягко: неготовый бизнес-слой
@@ -330,7 +334,11 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 без повторного `web scan`. Отсюда же ловушка: правка префикса в `url_rewrite` без повторного
 `web scan` не меняет ни одной связи, исчезает только строка «модуль
 не настроен» — и правка выглядит сделанной. То же с `http_wrappers`
-и `url_builders`: их `web link` не читает вовсе.
+и `url_builders`: их `web link` не читает вовсе. `web.not_wrappers` `web scan`
+читает только ради сверки с обёртками — вызов, совпавший с обеими записями,
+роняет прогон с кодом 2, — а на манифест он не влияет: решение «не обёртка»
+касается кандидатов (`setup candidates http-wrappers`, `setup status`,
+`setup explain`), а не вызовов.
 
 **`enrolled` и `domains` на шаг `web` не действуют.** Каждый модуль фронта
 `enrolled: true` и без домена (`web/modules.py`, `_build`), поэтому
@@ -349,7 +357,9 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 объявленные (`declared`). `registry-calls` читает `web.registry_calls`
 ещё раз, тем же словарём правил, что прогон; `http-wrappers` и `url-builders` —
 `web.http_wrappers` и `web.url_builders`, тем же сравнением, что прогон,
-чтобы пометить уже объявленные (`configured`); на вызовы ручной состав
+чтобы пометить уже объявленные (`configured`), а `http-wrappers` ещё
+и `web.not_wrappers` — снять группы, о которых решено «не обёртка»
+(`declared_not_wrappers`); на вызовы ручной состав
 не влияет, но названный и ненайденный `web.pages` роняет и этот вид —
 как `web scan`.
 
@@ -360,7 +370,7 @@ docpipe config check --config docs/ml/docpipe/docpipe.yaml --root .
 коду под целью. Сверх того он читает **причины** записей (`exclude`,
 `enrolled`, `not_enrolled`, `di_methods`, `dispatch_interfaces`,
 `web.roots`, `web.url_rewrite`, `web.registry_calls`, `web.http_wrappers`,
-`web.url_builders`, записи секции `link`; у ключей со второй формой — через
+`web.url_builders`, `web.not_wrappers`, записи секции `link`; у ключей со второй формой — через
 свойства `*_entries`, а не сырые поля) и печатает их рядом с решением.
 Записи `link.external_targets` и `link.external_callers` решают только
 о конце без пары, поэтому для них `setup explain` сводит оба прогона
@@ -496,9 +506,32 @@ HTTP, номер аргумента не отрицателен; две запи
 как повтор модуля у `url_rewrite`. Пересечение регулярок видно только на
 вызове: такой вызов — отказ прогона с кодом 2 и обеими записями.
 
+**«Это не обёртка» — `web.not_wrappers`** (S24b). Кандидат в обёртки —
+любой вызов члена с аргументом, похожим на адрес, и среди них бывают вызовы
+без HTTP: `window.open(url)`, `url.startsWith('/api/')`. Решение «не
+документируем как вызов» — запись с обязательной причиной:
+
+```yaml
+web:
+  not_wrappers:
+    - receiver: window
+      method: open
+      reason: "открывает вкладку браузера, а не HTTP-вызов"
+```
+
+Получатель и имя сравниваются, как у `http_wrappers`; ровно одно из `method`
+и `method_regex`. Кандидат, совпавший с записью, не идёт в
+`setup candidates http-wrappers` и в находку `link.calls_invisible`.
+Проверки загрузки: нет `reason` или пустая — отказ; повтор пары «получатель +
+`method`» (или одной регулярки) — отказ; обёртка и «не обёртка» на один
+вызов — отказ, если это видно по записям (точное имя, регулярка против
+точного имени, одна регулярка), и отказ прогона с кодом 2, если пересеклись
+две разные регулярки. Две «не обёртки» на одном вызове — не отказ: решает
+первая в порядке файла.
+
 Записи в ключ кэша разбора не входят и не должны: извлечение от них не
 зависит по построению, применяет их интерпретация (`build_calls`). Старый
-`docpipe` отвергнет оба ключа (`extra="forbid"`).
+`docpipe` отвергнет все три ключа (`extra="forbid"`).
 
 ## Диспетчеризация по типу запроса: `dispatch_interfaces`
 

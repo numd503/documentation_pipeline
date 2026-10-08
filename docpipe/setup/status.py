@@ -53,7 +53,7 @@ from docpipe.materialize.ownership import Ownership, owner_of
 from docpipe.materialize.plan import shadowed_docs
 from docpipe.model import DocNode, Manifest, Symbol
 from docpipe.route import normalize_route
-from docpipe.setup.candidates import DEFAULT_LIMIT, http_wrapper_candidates
+from docpipe.setup.candidates import DEFAULT_LIMIT, declined_calls, http_wrapper_candidates
 from docpipe.setup.context import InputError, SetupContext
 from docpipe.setup.explain import covering_root, shown_root
 from docpipe.setup.link import clusters_of
@@ -131,7 +131,7 @@ FINDING_CODES: Final[tuple[FindingCode, ...]] = (
         "link.calls_invisible",
         "decision",
         "вызов через необъявленную обёртку: прогон его не видит",
-        "docpipe.yaml: `web.http_wrappers`",
+        "docpipe.yaml: `web.http_wrappers` или `web.not_wrappers` с причиной",
     ),
     FindingCode(
         "link.calls_without_endpoint",
@@ -610,7 +610,7 @@ def _cover_dotnet(ctx: SetupContext, scan: ScanResult, ledger: _Ledger) -> None:
 
 
 def _cover_calls(ctx: SetupContext, web: WebScanResult, ledger: _Ledger) -> None:
-    """`web.url_rewrite`, `web.registry_calls`, обёртки, построители и `link.unresolvable`.
+    """Записи вызовов фронта: `web.*` (`url_rewrite`, обёртки, «не обёртки»…), `unresolvable`.
 
     Сравнение — тем же, что у прогона: правило модуля — `rewrite_for` по
     модулю, по правилам которого построен ключ; обёртка — `wrapper_matches`,
@@ -654,6 +654,14 @@ def _cover_calls(ctx: SetupContext, web: WebScanResult, ledger: _Ledger) -> None
         for wrapper in wrappers:
             if parameter is not None and name_matches(wrapper, parameter.function):
                 ledger.hit(config, "web.http_wrappers", wrapper.label, [raw.file])
+
+    # «Не обёртка» решает о вызове-кандидате: охват — вызовы, которые без неё
+    # стояли бы в `link.calls_invisible`, тем же `declined_calls`, что у отчёта.
+    declined = settings.web.not_wrappers
+    for refusal in declined:
+        ledger.declare(config, "web.not_wrappers", refusal.label, refusal.reason)
+    for index, candidate in declined_calls(web.candidate_calls, web.builder_uses, declined):
+        ledger.hit(config, "web.not_wrappers", declined[index].label, [candidate.file])
 
     # `link.unresolvable` решает сам по себе: сведение со стороной .NET ему не нужно.
     for unresolvable in settings.link.unresolvable:
@@ -974,6 +982,7 @@ def _seam_findings(ctx: SetupContext, runs: _Runs, limit: int) -> list[_Found | 
             web.builder_uses,
             web.calls,
             wrappers=ctx.settings.web.http_wrappers,
+            not_wrappers=ctx.settings.web.not_wrappers,
             limit=0,
         )
         invisible = [item for item in candidates.items if not item.configured]

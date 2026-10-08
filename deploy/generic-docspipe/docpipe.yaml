@@ -156,6 +156,10 @@ web:
   # http-wrappers` и `url-builders`; распознавать обёртку по имени нельзя.
   # http_wrappers: []   # {receiver: rest, method: request, url: {arg: 0, field: url}, http_method: {arg: 0, field: method}}
   # url_builders: []    # {receiver: apiUrl, method: buildUrl, path: {arg: 0}}
+  # Кандидат, который HTTP не делает (`window.open`, `url.startsWith`), —
+  # «не обёртка» с обязательной причиной: снимает его из кандидатов и из
+  # находки `link.calls_invisible`. На разбор и связи не влияет.
+  # not_wrappers: []    # {receiver: window, method: open, reason: "открывает вкладку браузера, не HTTP"}
 
 # ==========================================================================
 # Реестр графа — docs/setup-map.md, «Реестр графа: `arch` и адаптеры»
